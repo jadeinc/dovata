@@ -1,0 +1,55 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Kernel build artifacts
+*.ko
+*.o
+*.mod
+*.mod.c
+*.mod.o
+*.order
+*.symvers
+kernel/modules/*/build/
+
+# Kernel source — fetched at build time, never committed
+../linux/
+
+# Build output
+build/
+dist/
+*.iso
+*.img
+*.bin
+
+# Local model files — download with: make model
+# Hardware path: /jade/inference/model.gguf (not in repo)
+# Dev path:      models/model.gguf (gitignored, loaded via JADE_MODEL_PATH)
+*.gguf
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+
+# Claude
+CLAUDE.md
+
+# Architecture diagrams (local reference only)
+kernel/modules/jade_core/ARCHITECTURE.md
+jade-tree/ARCHITECTURE.md
+
+# Archived plans and open design questions (local reference only)
+archived-plans/
+open-questions/
+
+keys/
+jade.toml
+.env
+.env.ec2
+.ec2-host
+.venv/
