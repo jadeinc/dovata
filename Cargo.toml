@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "jade-protocol",
+    "jaded",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+authors = ["JADE OS Contributors"]
+license = "MIT"

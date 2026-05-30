@@ -1,0 +1,28 @@
+// 02 — Typed coercion of primitives via grammar-constrained decoding.
+// Exercises: full-primitive grammars (control.rs: grammar stays active for the
+// whole output). Successful `?p |> T` means the daemon produced grammar-valid
+// output the runtime coerced without retries.
+
+let ok = false
+let detail = ""
+try {
+    prompt pi = "What is 6 times 7? Respond with only the integer, nothing else."
+    let n = ?pi |> int
+
+    prompt pb = "Is the sky blue on a clear day? Respond with only true or false."
+    let b = ?pb |> bool
+
+    prompt pf = "What is pi to two decimal places? Respond with only the number."
+    let fl = ?pf |> float
+
+    detail = f"int={n} bool={b} float={fl}"
+    ok = true
+} catch e {
+    detail = f"raised: {e}"
+}
+
+if ok {
+    print(f"PASS: typed coercion int/bool/float decoded  [{detail}]")
+} else {
+    print(f"FAIL: primitive coercion — {detail}")
+}

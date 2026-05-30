@@ -1,0 +1,55 @@
+// 08 — Coarse latency / throughput probe (Phase 0 bench, Jade-level).
+//
+// Measures what the language layer can observe: wall-clock around `?` derefs —
+// i.e. what an actual JADE OS program experiences. True TTFT / tok-s belongs in
+// a protocol-level harness; this is the end-to-end proxy.
+//
+// A time-based nonce busts the daemon's response cache so each run measures real
+// inference rather than a cache replay.
+
+use std.time
+use llm
+
+let nonce = time.now_ms()
+
+let ok = false
+let detail = ""
+try {
+    // Warm up the connection (model is already resident).
+    prompt warm = f"Say hi. ({nonce})"
+    let w = ?warm
+
+    // TTFT proxy: a 1-token generation ≈ prefill + first token.
+    llm.set_max_tokens(1)
+    prompt p1 = f"Count slowly: one two three. ({nonce})"
+    let t0 = time.now_ms()
+    let r1 = ?p1
+    let ttft = time.now_ms() - t0
+
+    // Decode throughput: a longer generation; subtract TTFT to isolate decode.
+    llm.set_max_tokens(128)
+    prompt p2 = f"Write two sentences about the ocean. ({nonce})"
+    let t1 = time.now_ms()
+    let out = ?p2
+    let total = time.now_ms() - t1
+
+    let approx_tokens = out.len() / 4          // ~4 chars/token heuristic
+    let decode_ms = total - ttft
+    let tok_per_s = 0.0
+    if decode_ms > 0 && approx_tokens > 1 {
+        tok_per_s = (approx_tokens - 1) * 1000.0 / decode_ms
+    }
+
+    print(f"  TTFT (1-tok proxy): {ttft} ms")
+    print(f"  decode: ~{approx_tokens} tok in {decode_ms} ms  (~{tok_per_s} tok/s, approx)")
+    detail = f"ttft={ttft}ms tok_s~{tok_per_s}"
+    ok = ttft > 0 && total > 0 && approx_tokens > 0
+} catch e {
+    detail = f"raised: {e}"
+}
+
+if ok {
+    print(f"PASS: latency/throughput probe  [{detail}]")
+} else {
+    print(f"FAIL: latency probe — {detail}")
+}

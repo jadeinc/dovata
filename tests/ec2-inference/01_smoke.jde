@@ -1,0 +1,23 @@
+// 01 — Smoke: the daemon answers a plain prompt with non-empty text.
+// Exercises: socket connect, prompt formatting, unconstrained generation.
+
+use llm
+
+llm.set_max_tokens(64)
+
+let ok = false
+let detail = ""
+try {
+    prompt greet = "Reply with a short, friendly one-sentence greeting."
+    let reply = ?greet
+    detail = reply.trim()
+    ok = detail.len() > 0
+} catch e {
+    detail = f"raised: {e}"
+}
+
+if ok {
+    print(f"PASS: plain inference returned non-empty text  [{detail}]")
+} else {
+    print(f"FAIL: plain inference — {detail}")
+}

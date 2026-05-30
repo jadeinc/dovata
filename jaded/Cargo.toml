@@ -1,23 +1,25 @@
 [package]
-name = "jade-tree"
+name = "jaded"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "JADE OS primary interaction layer — inference daemon and OS interface"
+description = "JADE OS inference daemon — serves jade-protocol inference requests over a Unix socket"
+
+[lib]
+name = "jaded"
+path = "src/lib.rs"
 
 [[bin]]
-name = "jade-tree"
+name = "jaded"
 path = "src/main.rs"
 
 [features]
 default = []
-# Full inference backend with llama.cpp — required for production boot
+# Full inference backend with llama.cpp — required for production boot (Linux only)
 inference = ["dep:llama-cpp-2", "dep:llama-cpp-sys-2", "dep:encoding_rs", "dep:io-uring"]
 # GPU offload on NVIDIA hardware
 cuda = ["inference", "llama-cpp-2/cuda"]
-# Dev/dummy mode — simple REPL, no llama.cpp, cross-compiles from macOS
-dummy = []
 
 [dependencies]
 jade-protocol = { path = "../jade-protocol" }

@@ -1,0 +1,47 @@
+// 07 — Anchored tool-call grammar (the highest-value daemon test).
+// Exercises the exact control.rs path we refactored:
+//   * grammar enforcement DEFERRED until the model emits the "<tool>" anchor,
+//   * grammar RETIRED when the JSON span closes (depth tracker),
+//   * "</tool>" stop-anchor stripped from the streamed output.
+// The GBNF below is the same one programs/lib/tools.jde uses in production.
+
+use std.json
+
+let _TOOL_GBNF = """root   ::= "{" ws toolkv (ws "," ws pair)* ws "}"
+toolkv ::= [\\x22] "tool_name" [\\x22] ws ":" ws str
+pair   ::= str ws ":" ws val
+val    ::= str | num | obj | arr | "true" | "false" | "null"
+obj    ::= "{" ws (pair (ws "," ws pair)*)? ws "}"
+arr    ::= "[" ws (val (ws "," ws val)*)? ws "]"
+str    ::= [\\x22] ([^\\x22\\x5c] | [\\x5c] .)* [\\x22]
+num    ::= "-"? [0-9]+ ("." [0-9]+)?
+ws     ::= [ ]*"""
+
+let ok = false
+let detail = ""
+try {
+    let g = Grammar.new(_TOOL_GBNF, "<tool>", "</tool>")
+    prompt p = """You can call tools. To call one, emit a tool tag like:
+<tool>{"tool_name": "get_time"}</tool>
+Call the get_time tool now."""
+    let resp = ?p |> g
+    detail = resp
+
+    if resp.contains("<tool>") {
+        let after = resp.split("<tool>")[1].trim()
+        let json_str = after
+        if after.contains("</tool>") {
+            json_str = after.split("</tool>")[0].trim()
+        }
+        let parsed = json.parse(json_str)
+        ok = parsed.has("tool_name")
+    }
+} catch e {
+    detail = f"raised: {e}"
+}
+
+if ok {
+    print(f"PASS: anchored tool grammar produced a valid tool call  [{detail}]")
+} else {
+    print(f"FAIL: tool-call grammar — {detail}")
+}
