@@ -143,3 +143,31 @@ jobs:
             ${{ steps.stage.outputs.sha_path }}
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      # Tag pushes: also mirror the binary + checksum to S3 so the bootloader /
+      # other consumers can pull from the bucket instead of GitHub Releases.
+      # Auth is via long-lived access keys (repo secrets); bucket + region are
+      # repo variables so nothing is hardcoded here.
+      - name: Configure AWS credentials (tag pushes)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Upload binary to S3 (tag pushes)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          BUCKET: ${{ vars.AWS_S3_BUCKET }}
+          ASSET_PATH: ${{ steps.stage.outputs.asset_path }}
+          SHA_PATH: ${{ steps.stage.outputs.sha_path }}
+        run: |
+          test -n "$BUCKET" || { echo "::error::AWS_S3_BUCKET variable is not set"; exit 1; }
+          # Fixed key — every release overwrites jaded-x86_64 (+ .sha256) at the
+          # same path. Bucket versioning preserves prior builds, so the previous
+          # binary stays retrievable by version id.
+          DEST="s3://${BUCKET}/artifacts"
+          aws s3 cp "$ASSET_PATH" "$DEST/" --no-progress
+          aws s3 cp "$SHA_PATH"   "$DEST/" --no-progress
+          echo "Uploaded to $DEST/"
