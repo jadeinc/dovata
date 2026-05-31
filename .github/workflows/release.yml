@@ -1,0 +1,141 @@
+name: release-jaded
+
+# Builds the jaded inference daemon with the CUDA backend (Linux x86_64) and
+# publishes the binary so the JADE OS bootloader can install a prebuilt daemon
+# at /jade/inference/ instead of compiling it on the target box.
+#
+# Triggers:
+#   * push of a tag matching v*  → builds + creates a GitHub Release with the
+#     binary attached (this is the real "release").
+#   * manual run (workflow_dispatch) → builds + uploads the binary as a workflow
+#     artifact only (no Release is created). Use for ad-hoc / test builds.
+#
+# Runtime requirements on the booted OS:
+#   The CUDA runtime (cudart/cublas) is linked STATICALLY into the binary
+#   (see llama-cpp-sys-2 build.rs), so the rootfs does NOT need the CUDA toolkit.
+#   It needs only: libcuda.so.1 (shipped by the NVIDIA driver), glibc,
+#   libstdc++.so.6, and libgomp.so.1 (OpenMP). The model is provided separately
+#   at $JADE_MODEL_PATH (default /jade/inference/model.gguf).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      cuda_archs:
+        description: "CUDA compute arch(es), semicolon-separated (A10G=86, A100=80, L4/Ada=89)"
+        required: false
+        default: "86"
+
+permissions:
+  contents: write # needed to create the Release and upload assets
+
+env:
+  # CUDA toolkit version installed in CI. The binary statically links this
+  # toolkit's cudart/cublas; the target only needs a driver new enough for it.
+  CUDA_VERSION: "12.6.3"
+  # Compute capability the GPU kernels are built for. CMake reads CUDAARCHS as
+  # the default for CMAKE_CUDA_ARCHITECTURES (llama-cpp-sys-2 doesn't set it,
+  # and there's no GPU on the runner for auto-detection — so we must).
+  CUDAARCHS: "${{ github.event.inputs.cuda_archs || '86' }}"
+
+jobs:
+  build-cuda:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # CUDA toolkit (~3.5GB installed) + the llama.cpp cmake build can exhaust
+      # the runner's ~14GB of free space. Reclaim space from preinstalled SDKs.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false # keep apt fast; we install our own toolchain
+          swap-storage: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          # cmake + a C/C++ toolchain for the bundled llama.cpp build; clang +
+          # libclang for llama-cpp-sys-2's bindgen step. gcc-13 is the newest
+          # host compiler CUDA 12.6's nvcc accepts.
+          sudo apt-get install -y -qq \
+            build-essential cmake pkg-config \
+            clang libclang-dev llvm \
+            gcc-13 g++-13
+          echo "CUDAHOSTCXX=/usr/bin/g++-13" >> "$GITHUB_ENV"
+          echo "CC=gcc-13"  >> "$GITHUB_ENV"
+          echo "CXX=g++-13" >> "$GITHUB_ENV"
+
+      - name: Install CUDA toolkit ${{ env.CUDA_VERSION }}
+        uses: Jimver/cuda-toolkit@v0.2.35
+        id: cuda
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: "local" # full local installer — guarantees the static libs
+          linux-local-args: '["--toolkit"]' # toolkit only, skip the driver/samples
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + build (incl. compiled llama.cpp)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: cuda-${{ env.CUDA_VERSION }}-arch-${{ env.CUDAARCHS }}
+
+      - name: Sanity — verify nvcc on PATH
+        run: |
+          echo "CUDA_PATH=$CUDA_PATH"
+          nvcc --version
+
+      # Cheap correctness gate on the pure code before the long CUDA compile, so
+      # we never cut a release from a broken library/protocol.
+      - name: Test pure crates
+        run: |
+          cargo test -p jade-protocol
+          cargo test -p jaded --lib
+
+      - name: Build jaded (--features cuda)
+        run: cargo build --release -p jaded --features cuda
+
+      - name: Stage release asset
+        id: stage
+        run: |
+          BIN=target/release/jaded
+          test -f "$BIN" || { echo "::error::$BIN not produced"; exit 1; }
+          mkdir -p dist
+          # Encode target + backend + arch in the name so the bootloader can pick.
+          NAME="jaded-cuda${CUDAARCHS//;/_}-x86_64-linux"
+          cp "$BIN" "dist/$NAME"
+          ( cd dist && sha256sum "$NAME" > "$NAME.sha256" )
+          echo "Linked runtime libs (target must provide these):"
+          ldd "$BIN" || true
+          echo "asset_name=$NAME"            >> "$GITHUB_OUTPUT"
+          echo "asset_path=dist/$NAME"       >> "$GITHUB_OUTPUT"
+          echo "sha_path=dist/$NAME.sha256"  >> "$GITHUB_OUTPUT"
+
+      # Manual runs: keep the binary as a downloadable artifact, no Release.
+      - name: Upload artifact (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.asset_name }}
+          path: dist/*
+          if-no-files-found: error
+
+      # Tag pushes: create/update the GitHub Release and attach the binary.
+      - name: Publish Release (tag pushes)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.stage.outputs.asset_path }}
+            ${{ steps.stage.outputs.sha_path }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
