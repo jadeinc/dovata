@@ -110,8 +110,12 @@ jobs:
           BIN=target/release/jaded
           test -f "$BIN" || { echo "::error::$BIN not produced"; exit 1; }
           mkdir -p dist
-          # Encode target + backend + arch in the name so the bootloader can pick.
-          NAME="jaded-cuda${CUDAARCHS//;/_}-x86_64-linux"
+          # jade-os's scripts/install-jade.sh fetches this by EXACT asset name
+          # from jade-versions.lock (no globbing) and fails fast on a miss, so the
+          # name must be literally "jaded-x86_64". The CUDA arch ($CUDAARCHS) is
+          # recorded in the release notes / sha file instead of the filename, so
+          # the bootloader's pinned asset name stays stable across arch builds.
+          NAME="jaded-x86_64"
           cp "$BIN" "dist/$NAME"
           ( cd dist && sha256sum "$NAME" > "$NAME.sha256" )
           echo "Linked runtime libs (target must provide these):"
