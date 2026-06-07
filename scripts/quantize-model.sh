@@ -161,7 +161,11 @@ uv venv --python "$PYVER" "$VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 # Install into THIS venv with uv (fast, resolves wheels for the managed python).
-pyinstall() { uv pip install --python "$VENV/bin/python" "$@"; }
+# unsafe-best-match = pip-like resolution across all indexes: the convert reqs
+# add the official PyTorch index via --extra-index-url, and uv otherwise pins a
+# package to the first index that lists it (so e.g. transformers wouldn't resolve
+# against PyPI). Both indexes here are trusted.
+pyinstall() { uv pip install --python "$VENV/bin/python" --index-strategy unsafe-best-match "$@"; }
 
 info "installing convert + huggingface deps (pinned via llama.cpp's requirements)"
 pyinstall -r "$LLAMA_SRC/requirements/requirements-convert_hf_to_gguf.txt"
