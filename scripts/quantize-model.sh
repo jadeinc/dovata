@@ -143,18 +143,17 @@ done
 
 # --- 2. python env for the converter ----------------------------------------
 VENV="$WORKDIR/venv"
-if [[ ! -x "$VENV/bin/python" ]]; then
-    info "creating python venv for convert script"
-    python3 -m venv "$VENV"
-fi
+# Some distros ship python without ensurepip (the python3-venv package), so a
+# plain `python -m venv` fails outright. Create the venv WITHOUT pip in that case
+# and bootstrap pip via get-pip.py — no apt/sudo needed. Idempotent: re-running
+# over an existing/partial venv just re-syncs it.
+info "ensuring python venv for convert script"
+python3 -m venv "$VENV" 2>/dev/null || python3 -m venv --without-pip "$VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
-# Some distros ship python without a bundled pip/ensurepip (so `python -m venv`
-# yields a pip-less venv). Bootstrap pip robustly before installing anything.
 if ! python -m pip --version >/dev/null 2>&1; then
-    info "venv has no pip — bootstrapping"
-    python -m ensurepip --upgrade 2>/dev/null || \
-        curl -fsSL https://bootstrap.pypa.io/get-pip.py | python
+    info "venv has no pip — bootstrapping via get-pip.py"
+    curl -fsSL https://bootstrap.pypa.io/get-pip.py | python
 fi
 info "installing convert + huggingface deps (pinned via llama.cpp's requirements)"
 pip install -q --upgrade pip
