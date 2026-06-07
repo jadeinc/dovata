@@ -142,23 +142,30 @@ for f in "$IMATRIX_BIN" "$QUANTIZE_BIN" "$CONVERT_PY"; do
 done
 
 # --- 2. python env for the converter ----------------------------------------
+# The convert script's pinned deps (numpy 1.26, torch~=2.6) only ship wheels for
+# mainstream Python (<=3.12); a too-new host python (e.g. 3.14) has no wheels and
+# can't build them from source without dev headers/hours of compiling. So we
+# provision an isolated, KNOWN-good Python via uv (a single static binary that
+# fetches a standalone CPython) — no apt/sudo, reproducible across hosts.
 VENV="$WORKDIR/venv"
-# Some distros ship python without ensurepip (the python3-venv package), so a
-# plain `python -m venv` fails outright. Create the venv WITHOUT pip in that case
-# and bootstrap pip via get-pip.py — no apt/sudo needed. Idempotent: re-running
-# over an existing/partial venv just re-syncs it.
-info "ensuring python venv for convert script"
-python3 -m venv "$VENV" 2>/dev/null || python3 -m venv --without-pip "$VENV"
+PYVER="${JADE_PYTHON_VERSION:-3.12}"
+if ! command -v uv >/dev/null 2>&1; then
+    info "installing uv (python/dep manager)"
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+export PATH="$HOME/.local/bin:${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+command -v uv >/dev/null 2>&1 || die "uv not on PATH after install"
+
+info "creating Python $PYVER venv via uv"
+uv venv --python "$PYVER" "$VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
-if ! python -m pip --version >/dev/null 2>&1; then
-    info "venv has no pip — bootstrapping via get-pip.py"
-    curl -fsSL https://bootstrap.pypa.io/get-pip.py | python
-fi
+# Install into THIS venv with uv (fast, resolves wheels for the managed python).
+pyinstall() { uv pip install --python "$VENV/bin/python" "$@"; }
+
 info "installing convert + huggingface deps (pinned via llama.cpp's requirements)"
-pip install -q --upgrade pip
-pip install -q -r "$LLAMA_SRC/requirements/requirements-convert_hf_to_gguf.txt"
-pip install -q "huggingface_hub[cli,hf_transfer]"
+pyinstall -r "$LLAMA_SRC/requirements/requirements-convert_hf_to_gguf.txt"
+pyinstall "huggingface_hub[cli,hf_transfer]"
 export HF_HUB_ENABLE_HF_TRANSFER=1
 
 # --- 3. obtain weights ------------------------------------------------------
@@ -270,7 +277,7 @@ if [[ "$DO_UPLOAD" -eq 1 ]]; then
     # install it there rather than depending on a system/monorepo aws.
     if ! command -v aws >/dev/null; then
         info "aws CLI not found — installing awscli into the build venv"
-        pip install -q awscli || die "could not install awscli; install aws CLI or rerun without --upload"
+        pyinstall awscli || die "could not install awscli; install aws CLI or rerun without --upload"
     fi
     DEST="s3://${S3_BUCKET}/${S3_PREFIX}"
     info "uploading to $DEST/ (the jade-os contract)"
