@@ -157,7 +157,9 @@ export PATH="$HOME/.local/bin:${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
 command -v uv >/dev/null 2>&1 || die "uv not on PATH after install"
 
 info "creating Python $PYVER venv via uv"
-uv venv --python "$PYVER" "$VENV"
+# --clear makes this idempotent across reruns (uv caches the CPython + wheels, so
+# a rebuild is fast); a plain `uv venv` errors if the dir already exists.
+uv venv --clear --python "$PYVER" "$VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 # Install into THIS venv with uv (fast, resolves wheels for the managed python).
