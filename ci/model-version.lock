@@ -1,0 +1,45 @@
+# JADE OS inference model — pinned production build inputs.
+#
+# This file is the SINGLE SOURCE OF TRUTH for what model gets quantized and
+# published to s3://jade-os-release-bucket/models/model.gguf. Everything is
+# pinned so a build is byte-for-byte reproducible. Bumping a value here is the
+# intended way to cut a new model release; then run the pipeline by hand on the
+# EC2 GPU box: `bash scripts/ec2/quantize.sh` (drives scripts/quantize-model.sh).
+#
+# It is plain `KEY=VALUE` (no spaces, no quotes) so it can be `source`d by
+# scripts/quantize-model.sh AND read line-by-line by the workflow.
+
+# --- Source model -----------------------------------------------------------
+# Qwen3-Coder-30B-A3B-Instruct: a 30B-total / ~3B-active MoE coder model.
+# HF_REVISION is a full commit sha (NOT a branch/tag) so "latest" can never
+# silently change what we ship.
+HF_REPO=Qwen/Qwen3-Coder-30B-A3B-Instruct
+HF_REVISION=b2cff646eb4bb1d68355c01b18ae02e7cf42d120
+
+# --- Quantization -----------------------------------------------------------
+# Q4_K_M is a mixed K-quant scheme — do not hand-tune the per-tensor mix.
+# We DO drive it with an importance matrix (imatrix) calibrated on code
+# (ci/calib-code.txt), which meaningfully improves Q4 quality for a coder model.
+QUANT=Q4_K_M
+IMATRIX_CHUNKS=100
+
+# --- llama.cpp toolchain (THE compatibility contract) -----------------------
+# The GGUF is served by THIS repo's jaded, which statically links llama.cpp via
+# the `llama-cpp-sys-2` crate. To avoid quant-type / GGUF-version skew we
+# quantize with the EXACT llama.cpp commit that crate vendors, so the convert
+# script, imatrix, quantize, and GGUF writer are identical to jaded's.
+#
+# Provenance of this commit (re-derive when bumping the crate):
+#   1. jaded/Cargo.lock pins llama-cpp-sys-2 = 0.1.146
+#   2. utilityai/llama-cpp-rs tag 0.1.146 (commit 4afdaf0) submodule
+#      llama-cpp-sys-2/llama.cpp -> ggml-org/llama.cpp @ e21cdc11
+#   3. ggml-org/llama.cpp e21cdc11 is dated 2026-04-13
+# If you bump llama-cpp-sys-2 in Cargo.lock, re-trace step 2 and update this.
+# This may MATCH OR EXCEED jaded's pin; matching exactly is the safest.
+LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp
+LLAMA_CPP_COMMIT=e21cdc11a0461d8b0cbd28cc356d993bf6be7282
+
+# --- GPU offload ------------------------------------------------------------
+# CUDA compute arch the imatrix/quantize tools are built for (A10G=86, A100=80,
+# L4/Ada=89). Matches the release-jaded default. Overridable via CUDAARCHS.
+CUDAARCHS=86

@@ -1,0 +1,227 @@
+// JADE OS — importance-matrix calibration corpus (code).
+//
+// Used by scripts/quantize-model.sh: `llama-imatrix -f ci/calib-code.txt` builds
+// per-tensor activation statistics that steer the Q4_K_M quantization toward the
+// weights that matter for THIS workload. Qwen3-Coder is a coder model, so the
+// corpus is code — across the languages JADE programs are written in and call
+// out to, PLUS the JadeLang dialect itself and the exact wire shapes the daemon
+// feeds the model in production (the `_jade_protocol: messages` chat envelope and
+// the `<tool>`/`<tool_response>` tool-call format). Calibrating on the literal
+// formats the model sees at serve time is the point — generic web text would
+// waste the imatrix budget on tokens this deployment never generates.
+//
+// Sizing: llama-imatrix consumes this in ~512-token chunks, capped by
+// IMATRIX_CHUNKS in ci/model-version.lock (default 100); it uses
+// min(available_chunks, cap). This file alone is only a few chunks — it is the
+// deployment-SPECIFIC seed (Jade + wire formats), kept small and committed so
+// the high-value signal is identical every build. scripts/quantize-model.sh
+// then deterministically augments it with real source from the PINNED llama.cpp
+// checkout (diverse C/C++/Python/CUDA, fixed by LLAMA_CPP_COMMIT → reproducible,
+// no repo bloat) to reach a production chunk count. Set JADE_CALIB_AUGMENT=0 to
+// calibrate on this file alone; append more real code here to grow the seed.
+
+// ===== Rust =================================================================
+use std::collections::HashMap;
+
+#[derive(Debug, Clone)]
+pub struct LruCache<K, V> {
+    cap: usize,
+    map: HashMap<K, V>,
+    order: Vec<K>,
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V: Clone> LruCache<K, V> {
+    pub fn new(cap: usize) -> Self {
+        Self { cap, map: HashMap::with_capacity(cap), order: Vec::with_capacity(cap) }
+    }
+
+    pub fn get(&mut self, key: &K) -> Option<V> {
+        let v = self.map.get(key).cloned()?;
+        self.order.retain(|k| k != key);
+        self.order.push(key.clone());
+        Some(v)
+    }
+
+    pub fn put(&mut self, key: K, value: V) {
+        if self.map.insert(key.clone(), value).is_none() && self.order.len() >= self.cap {
+            if let Some(evict) = self.order.first().cloned() {
+                self.order.remove(0);
+                self.map.remove(&evict);
+            }
+        }
+        self.order.retain(|k| k != &key);
+        self.order.push(key);
+    }
+}
+
+fn shared_prefix_len<T: PartialEq>(a: &[T], b: &[T]) -> usize {
+    a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+}
+
+// ===== Python ===============================================================
+from __future__ import annotations
+import asyncio
+from dataclasses import dataclass, field
+
+
+@dataclass
+class TokenBucket:
+    rate: float
+    capacity: float
+    tokens: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.tokens = self.capacity
+
+    async def acquire(self, n: float = 1.0) -> None:
+        while self.tokens < n:
+            await asyncio.sleep((n - self.tokens) / self.rate)
+            self.tokens = min(self.capacity, self.tokens + self.rate)
+        self.tokens -= n
+
+
+def convert_hf_to_gguf(src: str, outfile: str, outtype: str = "f16") -> dict:
+    """Minimal stand-in mirroring the real converter's signature."""
+    meta = {"source": src, "outfile": outfile, "outtype": outtype}
+    assert outtype in {"f16", "bf16", "f32", "q8_0"}, f"bad outtype {outtype}"
+    return meta
+
+# ===== C ====================================================================
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+
+/* Length-prefixed frame: [1-byte type][2-byte LE len][payload]. */
+typedef struct {
+    uint8_t  type;
+    uint16_t len;
+    const uint8_t *payload;
+} frame_t;
+
+static size_t frame_encode(uint8_t *dst, size_t cap, const frame_t *f) {
+    size_t need = (size_t)3 + f->len;
+    if (cap < need) return 0;
+    dst[0] = f->type;
+    dst[1] = (uint8_t)(f->len & 0xff);
+    dst[2] = (uint8_t)((f->len >> 8) & 0xff);
+    memcpy(dst + 3, f->payload, f->len);
+    return need;
+}
+
+// ===== TypeScript / JS ======================================================
+export interface InferenceRequest {
+  prompt: string;
+  maxTokens: number;
+  grammar?: string;
+  anchor?: string;
+  stopAnchor?: string;
+  trust: 0 | 1;
+}
+
+export async function* streamTokens(req: InferenceRequest, sock: WebSocket) {
+  const queue: string[] = [];
+  sock.onmessage = (ev) => queue.push(String(ev.data));
+  sock.send(JSON.stringify(req));
+  while (true) {
+    if (queue.length === 0) { await new Promise((r) => setTimeout(r, 1)); continue; }
+    const frame = queue.shift()!;
+    if (frame === "[DONE]") return;
+    yield frame;
+  }
+}
+
+// ===== Go ===================================================================
+package cache
+
+import "sync"
+
+type Store struct {
+	mu   sync.RWMutex
+	data map[string][]byte
+}
+
+func New() *Store { return &Store{data: make(map[string][]byte)} }
+
+func (s *Store) Get(k string) ([]byte, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.data[k]
+	return v, ok
+}
+
+func (s *Store) Put(k string, v []byte) {
+	s.mu.Lock()
+	s.data[k] = v
+	s.mu.Unlock()
+}
+
+-- ===== SQL =================================================================
+CREATE TABLE inference_runs (
+    id          BIGSERIAL PRIMARY KEY,
+    model       TEXT        NOT NULL,
+    prompt_hash BYTEA       NOT NULL,
+    tokens_used INTEGER     NOT NULL CHECK (tokens_used >= 0),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+SELECT model, count(*) AS runs, sum(tokens_used) AS total_tokens
+FROM inference_runs
+WHERE created_at >= now() - interval '7 days'
+GROUP BY model
+ORDER BY total_tokens DESC;
+
+# ===== Shell ================================================================
+#!/usr/bin/env bash
+set -euo pipefail
+retry() {
+  local n=0 max=$1; shift
+  until "$@"; do
+    n=$((n + 1))
+    [[ $n -ge $max ]] && { echo "failed after $max tries: $*" >&2; return 1; }
+    sleep $((2 ** n))
+  done
+}
+retry 5 aws s3 cp model.gguf "s3://jade-os-release-bucket/models/model.gguf"
+
+// ===== GBNF (constrained decoding grammar) ==================================
+root   ::= object
+object ::= "{" ws ( pair ( "," ws pair )* )? ws "}"
+pair   ::= string ws ":" ws value
+value  ::= object | array | string | number | "true" | "false" | "null"
+array  ::= "[" ws ( value ( "," ws value )* )? ws "]"
+string ::= "\"" ( [^"\\] | "\\" . )* "\""
+number ::= "-"? [0-9]+ ( "." [0-9]+ )?
+ws     ::= [ \t\n]*
+
+; ===== JadeLang (.jde) — the dialect this model writes for JADE OS ==========
+use llm
+use std.json
+use std.time
+
+let schema = Grammar.new("root ::= \"{\" \"\\\"ok\\\"\" \":\" (\"true\"|\"false\") \"}\"")
+
+fn classify(text: Str) -> Bool {
+    let p = ?{ prompt: text, grammar: schema, anchor: "<tool>", stop_anchor: "</tool>" }
+    let obj = json.parse(?p)
+    return obj.ok
+}
+
+fn main() {
+    let started = time.now()
+    let ok = classify("does this compile cleanly")
+    print("PASS: classify -> {}", ok)
+    print("elapsed_ms={}", time.now() - started)
+}
+
+// ===== Daemon wire format: jade messages protocol (production input) ========
+{"_jade_protocol":"messages","system":"You are a coding assistant running inside JADE OS. Prefer small, correct diffs. When you need a tool, emit a single <tool>{...}</tool> JSON object and stop.","messages":[{"role":"user","content":"Read config.rs and tell me which env var sets the KV cache type."},{"role":"assistant","content":"<tool>{\"name\":\"fs.read\",\"args\":{\"path\":\"src/config.rs\"}}</tool>"},{"role":"tool","content":"JADE_KV_TYPE_K / JADE_KV_TYPE_V select the KV cache quantization; a quantized V cache requires flash attention."},{"role":"assistant","content":"`JADE_KV_TYPE_K` and `JADE_KV_TYPE_V` set the K and V cache types. Note a quantized V cache needs flash attention on, or the daemon refuses to start."}]}
+
+// ===== Tool-call exchange (the <tool_response> shape the template expects) ===
+<|im_start|>assistant
+<tool>{"name":"sh.exec","args":{"cmd":"cargo test -p jaded --lib"}}</tool><|im_end|>
+<|im_start|>tool
+<tool_response>
+running 42 tests ... test result: ok. 42 passed; 0 failed; 0 ignored
+</tool_response><|im_end|>
+<|im_start|>assistant
+All 42 library tests pass. The constrained-decoding state machine in control.rs is green.<|im_end|>

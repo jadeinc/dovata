@@ -31,6 +31,15 @@ pub struct InferenceRequest {
     /// If true, return the daemon-wide cumulative token counter without touching the model.
     #[serde(default)]
     pub stats_only: bool,
+    /// When true, the daemon makes the `stop_anchor` boundary observable in-band:
+    /// it does not strip the `stop_anchor` from client output, and it guarantees the
+    /// boundary appears exactly once at span close (synthesizing it if the model
+    /// retired the grammar via JSON depth-close without emitting it). This lets a
+    /// client deterministically delimit an anchored span (e.g. `<tool>…</tool>`) by
+    /// pure string parsing. Absent/false = legacy behavior (the `stop_anchor` is
+    /// stripped). Defaults to false for backward compatibility with old clients.
+    #[serde(default)]
+    pub keep_anchors: bool,
     /// Provenance of the prompt string. `0` (TRUSTED) means program-author-controlled;
     /// `1` (TAINTED) means it derived from an LLM, network, or other untrusted source.
     /// Absent from JSON defaults to TRUSTED for backward compatibility with old clients.
@@ -94,6 +103,7 @@ mod tests {
             stop_anchor: None,
             count_only: false,
             stats_only: false,
+            keep_anchors: false,
             trust: trust::TRUSTED,
         }
     }
@@ -109,6 +119,7 @@ mod tests {
             stop_anchor: None,
             count_only: false,
             stats_only: false,
+            keep_anchors: false,
             trust: trust::TRUSTED,
         };
         let decoded = InferenceRequest::decode(&r.encode().unwrap()).unwrap();
@@ -129,6 +140,7 @@ mod tests {
             stop_anchor: None,
             count_only: false,
             stats_only: false,
+            keep_anchors: false,
             trust: trust::TRUSTED,
         };
         let decoded = InferenceRequest::decode(&r.encode().unwrap()).unwrap();
@@ -147,6 +159,7 @@ mod tests {
             stop_anchor: None,
             count_only: false,
             stats_only: false,
+            keep_anchors: false,
             trust: trust::TRUSTED,
         };
         let decoded = InferenceRequest::decode(&r.encode().unwrap()).unwrap();
@@ -166,11 +179,32 @@ mod tests {
             stop_anchor: Some("</tool>".into()),
             count_only: false,
             stats_only: false,
+            keep_anchors: false,
             trust: trust::TRUSTED,
         };
         let decoded = InferenceRequest::decode(&r.encode().unwrap()).unwrap();
         assert_eq!(decoded.anchor, Some("<tool>".into()));
         assert_eq!(decoded.stop_anchor, Some("</tool>".into()));
+    }
+
+    #[test]
+    fn request_roundtrip_with_keep_anchors() {
+        let mut r = req("call a tool");
+        r.anchor = Some("<tool>".into());
+        r.stop_anchor = Some("</tool>".into());
+        r.keep_anchors = true;
+        let decoded = InferenceRequest::decode(&r.encode().unwrap()).unwrap();
+        assert!(decoded.keep_anchors);
+    }
+
+    #[test]
+    fn keep_anchors_absent_from_json_defaults_to_false() {
+        let json = br#"{"prompt":"hi","model":"m","max_tokens":10}"#;
+        let len = json.len() as u32;
+        let mut buf = len.to_le_bytes().to_vec();
+        buf.extend_from_slice(json);
+        let decoded = InferenceRequest::decode(&buf).unwrap();
+        assert!(!decoded.keep_anchors);
     }
 
     #[test]

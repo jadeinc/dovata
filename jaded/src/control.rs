@@ -33,10 +33,19 @@ pub struct DecodeControl {
     anchor: Option<String>,
     /// True once `anchor` has been seen in the output (or immediately if no anchor).
     anchor_triggered: bool,
-    /// End of the grammar-enforcement span; stripped from client output.
+    /// End of the grammar-enforcement span; stripped from client output unless
+    /// `keep_anchors` is set.
     stop_anchor: Option<String>,
     /// True once `stop_anchor` has fired (grammar retired, emit freely after).
     stop_anchor_seen: bool,
+    /// When set, the `stop_anchor` boundary is made observable in-band rather than
+    /// stripped: it is emitted to the client and, if the model retired the grammar
+    /// via JSON depth-close without emitting it, synthesized at the close point.
+    keep_anchors: bool,
+    /// True once the closing boundary has been emitted (either the model's own
+    /// `stop_anchor` or a synthesized one). Guards against double-emitting when the
+    /// model emits `</tool>` after we already synthesized the boundary.
+    boundary_emitted: bool,
     /// All decoded text so far — used only for anchor substring detection.
     emitted_so_far: String,
     /// Text buffered while confirming it is not (part of) the stop anchor.
@@ -71,6 +80,8 @@ impl DecodeControl {
             anchor,
             stop_anchor: req.stop_anchor.clone(),
             stop_anchor_seen: false,
+            keep_anchors: req.keep_anchors,
+            boundary_emitted: false,
             emitted_so_far: String::new(),
             stop_pending: String::new(),
             anchor_is_full_grammar,
@@ -126,7 +137,7 @@ impl DecodeControl {
             }
         }
 
-        let emit = self.process_stop_anchor(piece);
+        let mut emit = self.process_stop_anchor(piece);
 
         // Depth tracking: retire grammar when the top-level JSON span closes.
         // Only after the anchor has triggered — preamble braces must not count.
@@ -147,6 +158,25 @@ impl DecodeControl {
                         if self.json_depth == 0 {
                             self.anchor_active = false;
                             self.do_depth_track = false;
+                            // Make the span boundary observable: the model frequently
+                            // retires the grammar at the closing brace and stops (or
+                            // hits EOG) WITHOUT ever emitting the stop anchor, so a
+                            // client relying on `</tool>` to delimit the span would
+                            // never see it. Synthesize it here. `stop_pending` keeps
+                            // buffering afterward so a model-emitted duplicate is
+                            // stripped (see `process_stop_anchor`).
+                            //
+                            // Note: appended at piece end, so in the rare case the
+                            // closing brace is fused with trailing text in one BPE
+                            // token (`}foo`), the boundary lands after that text.
+                            if self.keep_anchors && !self.boundary_emitted && !self.stop_anchor_seen {
+                                if let Some(stop) = self.stop_anchor.clone() {
+                                    let mut out = emit.take().unwrap_or_default();
+                                    out.push_str(&stop);
+                                    emit = Some(out);
+                                    self.boundary_emitted = true;
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -171,11 +201,25 @@ impl DecodeControl {
         }
         self.stop_pending.push_str(piece);
         if let Some(stop_pos) = self.stop_pending.find(&stop) {
-            // Stop anchor complete — emit everything before it, retire grammar.
-            let emit = if stop_pos > 0 {
-                Some(self.stop_pending[..stop_pos].to_owned())
+            // Stop anchor complete — retire grammar.
+            let after_pos = stop_pos + stop.len();
+            let emit = if self.keep_anchors {
+                if self.boundary_emitted {
+                    // We already synthesized the boundary at depth-close; this is the
+                    // model's own duplicate anchor — strip just the anchor, keep the
+                    // text on either side.
+                    let mut out = self.stop_pending[..stop_pos].to_owned();
+                    out.push_str(&self.stop_pending[after_pos..]);
+                    (!out.is_empty()).then_some(out)
+                } else {
+                    // First boundary — emit everything including the anchor, in-band,
+                    // so the client can delimit the span by string match.
+                    self.boundary_emitted = true;
+                    Some(self.stop_pending.clone())
+                }
             } else {
-                None
+                // Legacy: strip the anchor and everything after it in this buffer.
+                (stop_pos > 0).then(|| self.stop_pending[..stop_pos].to_owned())
             };
             self.stop_pending.clear();
             self.stop_anchor_seen = true;
@@ -228,6 +272,7 @@ mod tests {
             stop_anchor: stop.map(|s| s.to_owned()),
             count_only: false,
             stats_only: false,
+            keep_anchors: false,
             trust: 0,
         }
     }
@@ -359,5 +404,67 @@ mod tests {
         let mut c = DecodeControl::new(&req(None, None, Some("</tool>")));
         let out = drive(&mut c, &["a<", "b"]);
         assert_eq!(out, "a<b");
+    }
+
+    // ── keep_anchors: observable tool-span boundary ───────────────────────────
+    //
+    // With keep_anchors the closing boundary is made visible in-band so a client
+    // can delimit `<tool>…</tool>` by string match. The daemon synthesizes the
+    // boundary at JSON depth-close (the model often retires the grammar at `}`
+    // and never emits `</tool>`), and strips a model-emitted duplicate.
+
+    fn req_ka(grammar: Option<&str>, anchor: Option<&str>, stop: Option<&str>) -> InferenceRequest {
+        let mut r = req(grammar, anchor, stop);
+        r.keep_anchors = true;
+        r
+    }
+
+    const TOOL_GBNF: &str = r#"root ::= "{" [^}]* "}""#;
+
+    #[test]
+    fn keep_anchors_synthesizes_boundary_at_depth_close() {
+        // Model emits the JSON and stops at `}` — never emits </tool>.
+        let mut c = DecodeControl::new(&req_ka(Some(TOOL_GBNF), Some("<tool>"), Some("</tool>")));
+        let out = drive(&mut c, &["<tool>", r#"{"tool_name": "get_weather", "city": "SF"}"#]);
+        assert_eq!(out, r#"<tool>{"tool_name": "get_weather", "city": "SF"}</tool>"#);
+        assert_eq!(c.finish(), None);
+    }
+
+    #[test]
+    fn keep_anchors_no_double_when_close_and_anchor_split() {
+        // `}` arrives, boundary is synthesized, then the model emits its own
+        // </tool> in a later token — it must be stripped, not doubled.
+        let mut c = DecodeControl::new(&req_ka(Some(TOOL_GBNF), Some("<tool>"), Some("</tool>")));
+        let out = drive(&mut c, &["<tool>", r#"{"x": 1"#, "}", "</tool>"]);
+        assert_eq!(out, r#"<tool>{"x": 1}</tool>"#);
+        assert_eq!(c.finish(), None);
+    }
+
+    #[test]
+    fn keep_anchors_no_double_when_close_and_anchor_fused() {
+        // `}</tool>` in one token: process_stop_anchor includes the anchor and
+        // retires depth tracking, so no synthesis happens.
+        let mut c = DecodeControl::new(&req_ka(Some(TOOL_GBNF), Some("<tool>"), Some("</tool>")));
+        let out = drive(&mut c, &["<tool>", r#"{"x": 1}</tool>"#]);
+        assert_eq!(out, r#"<tool>{"x": 1}</tool>"#);
+        assert_eq!(c.finish(), None);
+    }
+
+    #[test]
+    fn keep_anchors_free_text_after_boundary_flows() {
+        // After the synthesized boundary, trailing free text is emitted normally.
+        let mut c = DecodeControl::new(&req_ka(Some(TOOL_GBNF), Some("<tool>"), Some("</tool>")));
+        let out = drive(&mut c, &["<tool>", r#"{"x": 1}"#, " all done"]);
+        assert_eq!(out, r#"<tool>{"x": 1}</tool> all done"#);
+        assert_eq!(c.finish(), None);
+    }
+
+    #[test]
+    fn keep_anchors_false_does_not_synthesize_at_depth_close() {
+        // Legacy: no keep_anchors → boundary is stripped, none synthesized.
+        let mut c = DecodeControl::new(&req(Some(TOOL_GBNF), Some("<tool>"), Some("</tool>")));
+        let out = drive(&mut c, &["<tool>", r#"{"x": 1}"#]);
+        assert_eq!(out, r#"<tool>{"x": 1}"#);
+        assert_eq!(c.finish(), None);
     }
 }
