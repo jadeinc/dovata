@@ -106,6 +106,7 @@ mod tests {
             stop_anchor: None,
             count_only: false,
             stats_only: false,
+            health_only: false,
             keep_anchors: false,
             trust: 0,
         };

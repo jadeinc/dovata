@@ -24,8 +24,13 @@ use std::num::NonZeroU32;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+use std::time::Instant;
 
 static GLOBAL_TOKENS: AtomicU64 = AtomicU64::new(0);
+
+/// Process start, set once at the top of [`run`]. Backs `Health::uptime_secs`.
+static START: OnceLock<Instant> = OnceLock::new();
 
 const QUEUE_DEPTH: u32 = 128;
 
@@ -109,6 +114,7 @@ impl IoUringWriter {
 }
 
 pub fn run(sock_path: String) {
+    let _ = START.set(Instant::now());
     eprintln!("JADE OS — jaded v{}", env!("CARGO_PKG_VERSION"));
 
     let cfg = Config::from_env();
@@ -257,6 +263,20 @@ fn handle_connection(
         // TODO(trust): daemon-side enforcement hook — currently the runtime is
         // the sole gatekeeper (refuses tainted strings at sh.exec/http.get/fs.read).
         // jaded only records the trust level for observability.
+
+        if req.health_only {
+            let health = jade_protocol::Health {
+                status: "ok".to_owned(),
+                model: model_name.to_owned(),
+                model_loaded: true, // we only serve once the model is loaded
+                uptime_secs: START.get().map(|s| s.elapsed().as_secs()).unwrap_or(0),
+                protocol_version: jade_protocol::PROTOCOL_VERSION,
+            };
+            let json = serde_json::to_string(&health).unwrap_or_else(|_| "{}".to_owned());
+            stream.write_all(&Frame::Json(json).encode())?;
+            stream.write_all(&Frame::Done { tokens_used: 0 }.encode())?;
+            continue;
+        }
 
         if req.stats_only {
             let total = GLOBAL_TOKENS.load(Ordering::Relaxed);

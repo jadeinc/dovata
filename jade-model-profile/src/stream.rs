@@ -1,13 +1,19 @@
-//! Pure client-side token-stream parser.
+//! Pure, profile-driven token-stream parser.
 //!
-//! The daemon (with `keep_anchors`) guarantees an anchored tool span appears
-//! in-band as `<open>{…json…}<close>` (default `<tool>…</tool>`). This parser
-//! consumes the token text incrementally and splits it into two kinds of event:
-//! free **content** text, and complete **tool calls** (the JSON between the
-//! anchors, with `tool_name` lifted out). The anchor markers can be split across
-//! BPE tokens, so it buffers the same way the daemon does on the emit side.
+//! The daemon (with the `keep_anchors` request field) guarantees an anchored tool
+//! span appears in-band as `<open>{…json…}<close>`. This parser consumes the token
+//! text streamed back over the socket and splits it into two kinds of event: free
+//! **content** text, and complete **tool calls** (the JSON between the delimiters,
+//! with the tool name lifted out). All three model-specific strings — `open`,
+//! `close`, and the tool-name field — come from a [`ModelProfile`]; nothing here is
+//! hardcoded. The delimiters can be split across BPE tokens, so it buffers the same
+//! way the daemon does on the emit side.
 //!
-//! No sockets, no FFI — fully unit-tested on any platform.
+//! This is reference logic, not a transport: the frontend↔daemon boundary stays the
+//! socket. Consume it as a normal Rust dependency, or reimplement it from the
+//! descriptors — it is pure and fully unit-tested on any platform.
+
+use crate::ModelProfile;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
@@ -21,6 +27,8 @@ pub enum Event {
 pub struct ToolStreamParser {
     open: String,
     close: String,
+    /// JSON field naming the tool inside the call object (model-specific, from the profile).
+    name_field: String,
     /// When false, tool-span detection is off — every token is passed through as content.
     enabled: bool,
     in_tool: bool,
@@ -28,9 +36,19 @@ pub struct ToolStreamParser {
 }
 
 impl ToolStreamParser {
-    /// Tool-span detection active, using the given open/close delimiters.
-    pub fn new(open: String, close: String) -> Self {
-        ToolStreamParser { open, close, enabled: true, in_tool: false, buf: String::new() }
+    /// Tool-span detection active. `open`/`close` are the model's tool delimiters and
+    /// `name_field` the JSON key holding the tool name — all supplied by the model profile.
+    pub fn new(open: String, close: String, name_field: String) -> Self {
+        ToolStreamParser { open, close, name_field, enabled: true, in_tool: false, buf: String::new() }
+    }
+
+    /// Configure a parser directly from a model profile's tool-call descriptor.
+    pub fn from_profile(profile: &ModelProfile) -> Self {
+        Self::new(
+            profile.tool_call.open.clone(),
+            profile.tool_call.close.clone(),
+            profile.tool_call.name_field.clone(),
+        )
     }
 
     /// Pass-through mode: tokens are emitted as content, no span detection.
@@ -38,6 +56,7 @@ impl ToolStreamParser {
         ToolStreamParser {
             open: String::new(),
             close: String::new(),
+            name_field: String::new(),
             enabled: false,
             in_tool: false,
             buf: String::new(),
@@ -75,7 +94,8 @@ impl ToolStreamParser {
                 break;
             } else {
                 if let Some(p) = self.buf.find(&self.close) {
-                    out.push(parse_tool_call(&self.buf[..p]));
+                    let ev = self.parse_tool_call(&self.buf[..p]);
+                    out.push(ev);
                     self.buf = self.buf[p + self.close.len()..].to_owned();
                     self.in_tool = false;
                     continue;
@@ -99,12 +119,22 @@ impl ToolStreamParser {
         let tail = std::mem::take(&mut self.buf);
         if self.in_tool {
             if !tail.trim().is_empty() {
-                out.push(parse_tool_call(&tail));
+                let ev = self.parse_tool_call(&tail);
+                out.push(ev);
             }
         } else if !tail.is_empty() {
             out.push(Event::Content(tail));
         }
         out
+    }
+
+    fn parse_tool_call(&self, json: &str) -> Event {
+        let trimmed = json.trim();
+        let name = serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|v| v.get(&self.name_field).and_then(|n| n.as_str()).map(str::to_owned))
+            .unwrap_or_default();
+        Event::ToolCall { name, args: trimmed.to_owned() }
     }
 }
 
@@ -119,21 +149,12 @@ fn held_suffix_len(buf: &str, pat: &str) -> usize {
     0
 }
 
-fn parse_tool_call(json: &str) -> Event {
-    let trimmed = json.trim();
-    let name = serde_json::from_str::<serde_json::Value>(trimmed)
-        .ok()
-        .and_then(|v| v.get("tool_name").and_then(|n| n.as_str()).map(str::to_owned))
-        .unwrap_or_default();
-    Event::ToolCall { name, args: trimmed.to_owned() }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn parser() -> ToolStreamParser {
-        ToolStreamParser::new("<tool>".into(), "</tool>".into())
+        ToolStreamParser::new("<tool>".into(), "</tool>".into(), "tool_name".into())
     }
 
     /// Feed pieces, then finish; return the flat event list.
