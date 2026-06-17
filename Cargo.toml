@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "jade-protocol",
+    "jade-protocol-ffi",
     "jaded",
 ]
 resolver = "2"

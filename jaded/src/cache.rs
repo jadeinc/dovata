@@ -33,6 +33,9 @@ impl PromptCache {
         req.grammar.hash(&mut h);
         req.anchor.hash(&mut h);
         req.stop_anchor.hash(&mut h);
+        // keep_anchors changes whether the stop-anchor boundary appears in the
+        // output, so it must distinguish cache entries.
+        req.keep_anchors.hash(&mut h);
         h.finish()
     }
 
@@ -103,6 +106,7 @@ mod tests {
             stop_anchor: None,
             count_only: false,
             stats_only: false,
+            keep_anchors: false,
             trust: 0,
         };
         let same = base.clone();

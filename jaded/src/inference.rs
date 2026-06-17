@@ -312,8 +312,13 @@ fn handle_connection(
 
         match result {
             Ok(tokens_used) => {
-                if let Some(stop) = req.stop_anchor.as_deref() {
-                    jaded::prompt::strip_stop_anchor(&mut response_buf, stop);
+                // Clean the cached copy to match what was streamed. When keep_anchors
+                // is set the stream intentionally includes the boundary (control.rs
+                // emits/synthesizes it), so the cached replay must keep it too.
+                if !req.keep_anchors {
+                    if let Some(stop) = req.stop_anchor.as_deref() {
+                        jaded::prompt::strip_stop_anchor(&mut response_buf, stop);
+                    }
                 }
                 GLOBAL_TOKENS.fetch_add(tokens_used, Ordering::Relaxed);
                 cache.insert(cache_key, response_buf, tokens_used);
