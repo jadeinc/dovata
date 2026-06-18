@@ -16,8 +16,8 @@ match = ["Qwen3-Coder*", "qwen3-coder*"]
 # Delimiters the model emits around a tool invocation. The daemon makes the close
 # marker observable in-band (the `keep_anchors` request flag), so the client can
 # split the span by string match — it never needs to know these are "Qwen" tokens.
-open = "<tool>"
-close = "</tool>"
+open = "<tool_call>"
+close = "</tool_call>"
 # JSON field inside the tool-call object that names the tool.
 name_field = "tool_name"
 

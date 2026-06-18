@@ -220,8 +220,8 @@ mod tests {
     fn qwen_profile_fields() {
         let reg = Registry::builtin();
         let p = reg.select("Qwen3-Coder-30B").expect("qwen profile selected");
-        assert_eq!(p.tool_call.open, "<tool>");
-        assert_eq!(p.tool_call.close, "</tool>");
+        assert_eq!(p.tool_call.open, "<tool_call>");
+        assert_eq!(p.tool_call.close, "</tool_call>");
         assert_eq!(p.tool_call.name_field, "tool_name");
         assert_eq!(p.tool_result.role, "tool");
     }
@@ -292,7 +292,7 @@ mod tests {
         let p = reg.select("Qwen3-Coder-30B").unwrap();
         let mut parser = ToolStreamParser::from_profile(p);
         let mut evs = parser.push_token("Sure. ");
-        evs.extend(parser.push_token(r#"<tool>{"tool_name":"get_weather","city":"SF"}</tool>"#));
+        evs.extend(parser.push_token(r#"<tool_call>{"tool_name":"get_weather","city":"SF"}</tool_call>"#));
         evs.extend(parser.finish());
         assert_eq!(evs[0], Event::Content("Sure. ".into()));
         assert_eq!(
