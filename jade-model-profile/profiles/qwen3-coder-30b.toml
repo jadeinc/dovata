@@ -1,0 +1,40 @@
+# Model profile: Qwen3-Coder-30B
+#
+# Describes the model-specific token conventions the language must use to talk to
+# this model — tool-call delimiters, the tool-name field, and how a tool result
+# is rendered back into the conversation. Swap the model → swap this file; no Jade
+# program or wire-protocol change is required.
+
+schema_version = 1
+model = "Qwen3-Coder-30B"
+
+# Model names (as reported by the daemon's Meta frame) this profile applies to.
+# `*` is a wildcard; the first matching profile wins.
+match = ["Qwen3-Coder*", "qwen3-coder*"]
+
+[tool_call]
+# Delimiters the model emits around a tool invocation. The daemon makes the close
+# marker observable in-band (the `keep_anchors` request flag), so the client can
+# split the span by string match — it never needs to know these are "Qwen" tokens.
+open = "<tool_call>"
+close = "</tool_call>"
+# JSON field inside the tool-call object that names the tool.
+name_field = "tool_name"
+
+[tool_result]
+# How a tool result is presented back to the model on the next turn. Qwen3's chat
+# template only binds a result to its call when the role is `tool` and the content
+# is wrapped in <tool_response>…</tool_response>.
+role = "tool"
+wrap_prefix = "<tool_response>\n"
+wrap_suffix = "\n</tool_response>"
+
+# Additional special-token spans the model may stream that the client should
+# surface as structured events rather than raw content. Qwen3-Coder does not emit
+# a separate reasoning channel, so none are declared here. A thinking model would
+# add, for example:
+#
+#   [[span]]
+#   tag = "reasoning"
+#   open = "<think>"
+#   close = "</think>"

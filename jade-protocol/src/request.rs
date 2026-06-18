@@ -31,6 +31,10 @@ pub struct InferenceRequest {
     /// If true, return the daemon-wide cumulative token counter without touching the model.
     #[serde(default)]
     pub stats_only: bool,
+    /// If true, return a [`crate::Health`] report (one `Json` frame then `Done`) without
+    /// touching the model. A cheap liveness/readiness probe.
+    #[serde(default)]
+    pub health_only: bool,
     /// When true, the daemon makes the `stop_anchor` boundary observable in-band:
     /// it does not strip the `stop_anchor` from client output, and it guarantees the
     /// boundary appears exactly once at span close (synthesizing it if the model
@@ -103,6 +107,7 @@ mod tests {
             stop_anchor: None,
             count_only: false,
             stats_only: false,
+            health_only: false,
             keep_anchors: false,
             trust: trust::TRUSTED,
         }
@@ -119,6 +124,7 @@ mod tests {
             stop_anchor: None,
             count_only: false,
             stats_only: false,
+            health_only: false,
             keep_anchors: false,
             trust: trust::TRUSTED,
         };
@@ -140,6 +146,7 @@ mod tests {
             stop_anchor: None,
             count_only: false,
             stats_only: false,
+            health_only: false,
             keep_anchors: false,
             trust: trust::TRUSTED,
         };
@@ -159,6 +166,7 @@ mod tests {
             stop_anchor: None,
             count_only: false,
             stats_only: false,
+            health_only: false,
             keep_anchors: false,
             trust: trust::TRUSTED,
         };
@@ -179,6 +187,7 @@ mod tests {
             stop_anchor: Some("</tool>".into()),
             count_only: false,
             stats_only: false,
+            health_only: false,
             keep_anchors: false,
             trust: trust::TRUSTED,
         };
@@ -205,6 +214,24 @@ mod tests {
         buf.extend_from_slice(json);
         let decoded = InferenceRequest::decode(&buf).unwrap();
         assert!(!decoded.keep_anchors);
+    }
+
+    #[test]
+    fn request_roundtrip_with_health_only() {
+        let mut r = req("");
+        r.health_only = true;
+        let decoded = InferenceRequest::decode(&r.encode().unwrap()).unwrap();
+        assert!(decoded.health_only);
+    }
+
+    #[test]
+    fn health_only_absent_from_json_defaults_to_false() {
+        let json = br#"{"prompt":"hi","model":"m","max_tokens":10}"#;
+        let len = json.len() as u32;
+        let mut buf = len.to_le_bytes().to_vec();
+        buf.extend_from_slice(json);
+        let decoded = InferenceRequest::decode(&buf).unwrap();
+        assert!(!decoded.health_only);
     }
 
     #[test]

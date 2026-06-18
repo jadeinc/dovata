@@ -37,6 +37,7 @@
 //! 0x02  DONE    8-byte LE u64 total_tokens_used
 //! 0x03  ERROR   UTF-8 error message
 //! 0x04  META    UTF-8 model name (sent first)
+//! 0x05  JSON    UTF-8 structured payload (e.g. the health report)
 //! ```
 //!
 //! ## Request prompt format — the two-layer message contract
@@ -65,25 +66,30 @@
 //!   `user`) — Qwen3's embedded template only associates a tool result with the preceding
 //!   tool call when it sees `<|im_start|>tool`.
 //!
-//! ## Anchored tool-call spans
+//! ## Anchored spans (model-agnostic)
 //!
-//! A tool call is requested by setting `anchor` = [`anchors::TOOL_OPEN`], `stop_anchor` =
-//! [`anchors::TOOL_CLOSE`], and a `grammar` constraining the JSON body. With
-//! `keep_anchors = true`, the daemon makes the closing boundary observable in-band so a
-//! client can delimit the span by pure string parsing (see [`InferenceRequest::keep_anchors`]).
+//! A span is requested by setting `anchor` (its opening delimiter), `stop_anchor` (its
+//! closing delimiter), and a `grammar` constraining the body. With `keep_anchors = true`,
+//! the daemon makes the closing boundary observable in-band so a client can delimit the
+//! span by pure string parsing (see [`InferenceRequest::keep_anchors`]).
+//!
+//! The delimiter *strings* are deliberately **not** defined here: they are model-specific
+//! (e.g. `<tool>…</tool>` for one model, a different convention for another) and belong in
+//! a per-model profile owned by the language layer (`jade-model-profile`), not baked into
+//! the wire protocol. The protocol only knows "there is an anchored span"; it never knows
+//! the span means "tool call" or which tokens spell it.
 
+pub mod health;
 pub mod request;
 pub mod response;
 
+pub use health::Health;
 pub use request::{InferenceRequest, RequestDecodeError};
 pub use response::{Frame, FrameError};
 
-/// Canonical anchor strings for tool-call spans — the single source of truth shared by
-/// the daemon, the client library, and (eventually) the language compiler. A tool call is
-/// the text span `<tool>{…json…}</tool>`.
-pub mod anchors {
-    /// Opening delimiter of a tool-call span (the request `anchor`).
-    pub const TOOL_OPEN: &str = "<tool>";
-    /// Closing delimiter of a tool-call span (the request `stop_anchor`).
-    pub const TOOL_CLOSE: &str = "</tool>";
-}
+/// Wire-protocol revision the daemon and clients agree on. Reported in
+/// [`Health::protocol_version`]. Independent of the daemon's release/crate semver;
+/// bump only when the wire format changes. Additive, default-tolerant changes
+/// (new `#[serde(default)]` request fields, new frame types old clients can ignore)
+/// do not require a bump.
+pub const PROTOCOL_VERSION: u32 = 1;

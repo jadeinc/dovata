@@ -272,6 +272,7 @@ mod tests {
             stop_anchor: stop.map(|s| s.to_owned()),
             count_only: false,
             stats_only: false,
+            health_only: false,
             keep_anchors: false,
             trust: 0,
         }

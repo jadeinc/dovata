@@ -162,12 +162,26 @@ jobs:
           BUCKET: ${{ vars.AWS_S3_BUCKET }}
           ASSET_PATH: ${{ steps.stage.outputs.asset_path }}
           SHA_PATH: ${{ steps.stage.outputs.sha_path }}
+          ASSET_NAME: ${{ steps.stage.outputs.asset_name }}
+          TAG: ${{ github.ref_name }}
         run: |
           test -n "$BUCKET" || { echo "::error::AWS_S3_BUCKET variable is not set"; exit 1; }
-          # Fixed key — every release overwrites jaded-x86_64 (+ .sha256) at the
-          # same path. Bucket versioning preserves prior builds, so the previous
-          # binary stays retrievable by version id.
-          DEST="s3://${BUCKET}/artifacts"
-          aws s3 cp "$ASSET_PATH" "$DEST/" --no-progress
-          aws s3 cp "$SHA_PATH"   "$DEST/" --no-progress
-          echo "Uploaded to $DEST/"
+
+          # 1) Generic "latest" key — overwritten in place so consumers (the
+          #    bootloader / installer) can always pull the newest daemon from a
+          #    stable path. Safe to overwrite because every release is also
+          #    archived immutably under artifacts/versions/ below.
+          LATEST="s3://${BUCKET}/artifacts"
+          aws s3 cp "$ASSET_PATH" "$LATEST/" --no-progress
+          aws s3 cp "$SHA_PATH"   "$LATEST/" --no-progress
+
+          # 2) Immutable, tag-named archive copy — one per release, never
+          #    overwritten, so any prior version stays retrievable by git tag
+          #    even after the generic key moves forward. (Independent of bucket
+          #    versioning, which keys by opaque version id rather than git tag.)
+          VERSIONED="s3://${BUCKET}/artifacts/versions"
+          aws s3 cp "$ASSET_PATH" "$VERSIONED/${ASSET_NAME}-${TAG}"        --no-progress
+          aws s3 cp "$SHA_PATH"   "$VERSIONED/${ASSET_NAME}-${TAG}.sha256" --no-progress
+
+          echo "Uploaded latest  → $LATEST/${ASSET_NAME}"
+          echo "Archived release → $VERSIONED/${ASSET_NAME}-${TAG}"

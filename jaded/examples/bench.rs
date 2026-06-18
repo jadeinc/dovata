@@ -36,6 +36,7 @@ fn count_only(sock: &str, prompt: &str) -> std::io::Result<u64> {
         stop_anchor: None,
         count_only: true,
         stats_only: false,
+        health_only: false,
         keep_anchors: false,
         trust: 0,
     };
@@ -77,6 +78,7 @@ fn run_once(sock: &str, prompt: &str, max_tokens: u32) -> std::io::Result<Sample
         stop_anchor: None,
         count_only: false,
         stats_only: false,
+        health_only: false,
         keep_anchors: false,
         trust: 0,
     };
@@ -96,7 +98,7 @@ fn run_once(sock: &str, prompt: &str, max_tokens: u32) -> std::io::Result<Sample
                 Ok((frame, consumed)) => {
                     buf.drain(..consumed);
                     match frame {
-                        Frame::Meta { .. } => {}
+                        Frame::Meta { .. } | Frame::Json(_) => {}
                         Frame::Token(_) => {
                             if t_first.is_none() {
                                 t_first = Some(Instant::now());

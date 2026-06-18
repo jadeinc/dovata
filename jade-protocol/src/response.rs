@@ -2,6 +2,7 @@ const TYPE_TOKEN: u8 = 0x01;
 const TYPE_DONE: u8 = 0x02;
 const TYPE_ERROR: u8 = 0x03;
 const TYPE_META: u8 = 0x04;
+const TYPE_JSON: u8 = 0x05;
 
 /// A single streaming response frame from jade-tree.
 #[derive(Debug, Clone)]
@@ -14,6 +15,10 @@ pub enum Frame {
     Error(String),
     /// Metadata about the serving model. Sent as the first frame before any tokens.
     Meta { model: String },
+    /// A structured JSON payload (UTF-8). Used for out-of-band, non-token responses
+    /// such as the health report (see [`crate::Health`]). The payload is an opaque
+    /// JSON string; the schema is defined by the request that elicited it.
+    Json(String),
 }
 
 impl Frame {
@@ -24,6 +29,7 @@ impl Frame {
             Frame::Done { tokens_used } => encode_frame(TYPE_DONE, &tokens_used.to_le_bytes()),
             Frame::Error(msg) => encode_frame(TYPE_ERROR, msg.as_bytes()),
             Frame::Meta { model } => encode_frame(TYPE_META, model.as_bytes()),
+            Frame::Json(json) => encode_frame(TYPE_JSON, json.as_bytes()),
         }
     }
 
@@ -54,6 +60,7 @@ impl Frame {
             }
             TYPE_ERROR => Frame::Error(utf8(payload)?),
             TYPE_META => Frame::Meta { model: utf8(payload)? },
+            TYPE_JSON => Frame::Json(utf8(payload)?),
             other => return Err(FrameError::UnknownType(other)),
         };
         Ok((frame, 3 + payload_len))
@@ -125,6 +132,15 @@ mod tests {
         let (decoded, consumed) = Frame::decode(&encoded).unwrap();
         assert_eq!(consumed, encoded.len());
         assert!(matches!(decoded, Frame::Error(ref e) if e == "model not loaded"));
+    }
+
+    #[test]
+    fn json_roundtrip() {
+        let frame = Frame::Json(r#"{"status":"ok"}"#.into());
+        let encoded = frame.encode();
+        let (decoded, consumed) = Frame::decode(&encoded).unwrap();
+        assert_eq!(consumed, encoded.len());
+        assert!(matches!(decoded, Frame::Json(ref j) if j == r#"{"status":"ok"}"#));
     }
 
     #[test]
