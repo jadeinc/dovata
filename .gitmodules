@@ -1,3 +1,3 @@
-[submodule "llama-cpp/llama-cpp-sys-2/llama.cpp"]
-	path = llama-cpp/llama-cpp-sys-2/llama.cpp
+[submodule "llama-cpp/ffi/llama.cpp"]
+	path = llama-cpp/ffi/llama.cpp
 	url = https://github.com/joericks1998/llama.cpp.git

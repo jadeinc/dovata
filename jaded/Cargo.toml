@@ -26,7 +26,7 @@ jade-protocol = { path = "../jade-protocol" }
 serde_json = { version = "1", features = ["std"] }
 # Vendored in-tree (llama-cpp/ = llama-cpp-rs @ 0.1.150) with its llama.cpp
 # submodule repointed to our fork joericks1998/llama.cpp @ 9e3b928. See .gitmodules.
-llama-cpp-2 = { path = "../llama-cpp/llama-cpp-2", optional = true }
-llama-cpp-sys-2 = { path = "../llama-cpp/llama-cpp-sys-2", optional = true }
+llama-cpp-2 = { path = "../llama-cpp/api", optional = true }
+llama-cpp-sys-2 = { path = "../llama-cpp/ffi", optional = true }
 encoding_rs = { version = "0.8", optional = true }
 io-uring = { version = "0.6", optional = true }

@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-  "llama-cpp-sys-2",
-  "llama-cpp-2",
+  "ffi",   # package llama-cpp-sys-2 — cmake build + raw FFI bindings
+  "api",   # package llama-cpp-2 — safe Rust wrapper
 ]
 
 [workspace.dependencies]
