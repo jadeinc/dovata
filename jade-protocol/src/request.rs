@@ -1,3 +1,9 @@
+//! Request side of the wire protocol: client → daemon `InferenceRequest`.
+//!
+//! On-wire layout: `[4-byte little-endian length][JSON body]`. One request per
+//! frame; the client sends them sequentially over a single Unix-socket connection.
+//! Most fields are `#[serde(default)]` so older/simpler clients can omit them.
+
 use serde::{Deserialize, Serialize};
 
 /// Trust level for an inference request prompt. Carried over the wire so the
@@ -54,24 +60,31 @@ pub struct InferenceRequest {
 impl InferenceRequest {
     /// Encode as length-prefixed JSON for writing to the Unix socket.
     pub fn encode(&self) -> Result<Vec<u8>, serde_json::Error> {
+        // serialize the struct to JSON bytes, then prepend a 4-byte LE length so
+        // the reader knows exactly how many bytes the body is.
         let json = serde_json::to_vec(self)?;
         let len = json.len() as u32;
         let mut buf = Vec::with_capacity(4 + json.len());
-        buf.extend_from_slice(&len.to_le_bytes());
-        buf.extend_from_slice(&json);
+        buf.extend_from_slice(&len.to_le_bytes()); // 4-byte header
+        buf.extend_from_slice(&json);              // JSON body
         Ok(buf)
     }
 
     /// Decode from a length-prefixed JSON buffer.
     /// Returns `Err(RequestDecodeError::Incomplete)` if the buffer is too short.
     pub fn decode(buf: &[u8]) -> Result<Self, RequestDecodeError> {
+        // need the 4-byte length header before we can know the body size
         if buf.len() < 4 {
             return Err(RequestDecodeError::Incomplete);
         }
+        // read the declared body length...
         let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+        // ...and make sure the whole body has actually arrived yet
         if buf.len() < 4 + len {
             return Err(RequestDecodeError::Incomplete);
         }
+        // parse exactly the body slice. Note we only read `len` bytes, so any extra
+        // bytes after this frame (e.g. the start of the next request) are ignored.
         serde_json::from_slice(&buf[4..4 + len]).map_err(RequestDecodeError::Json)
     }
 }

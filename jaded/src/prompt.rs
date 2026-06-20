@@ -21,35 +21,56 @@ pub struct JadeMessage {
 /// Jinja2 template passes `message.content` verbatim inside
 /// `<|im_start|>tool\n{content}\n<|im_end|>`.
 pub fn extract_jade_protocol(prompt_str: &str) -> Option<(String, Vec<JadeMessage>)> {
+    // fast reject: the protocol is always a JSON object, so if it doesn't even
+    // start with '{' it's a plain prompt — skip the parse entirely.
     if !prompt_str.starts_with('{') {
         return None;
     }
+    // try to parse as JSON; if it isn't valid JSON, treat it as a plain prompt
+    // (the `?` turns the None from .ok() into an early return).
     let v: Value = serde_json::from_str(prompt_str).ok()?;
+    // it's JSON, but is it OUR protocol? Require the marker field. Any other JSON
+    // (e.g. a user who happened to send a JSON string) falls through to None.
     if v.get("_jade_protocol").and_then(|p| p.as_str()) != Some("messages") {
         return None;
     }
+    // system prompt is optional — default to empty string if absent/not a string
     let system = v.get("system")
         .and_then(|s| s.as_str())
         .unwrap_or("")
         .to_owned();
+    // the messages array is required; bail (None) if it's missing or not an array
     let raw_msgs = v.get("messages").and_then(|m| m.as_array())?;
+    // walk the raw JSON turns and normalize each into a JadeMessage
     let mut messages = Vec::with_capacity(raw_msgs.len());
     for msg in raw_msgs {
+        // pull role/content, defaulting to a user turn with empty text if a field
+        // is missing or the wrong type — we never want a malformed turn to abort
+        // the whole request.
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
         let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        // special case: a `tool` result. We KEEP the role as "tool" (do NOT remap
+        // to "user") and wrap the body in <tool_response>…</tool_response>. This
+        // is load-bearing for Qwen3 — its chat template only links a tool result
+        // to the preceding tool call when it sees the tool role + this wrapper.
         let (final_role, final_content) = if role == "tool" {
             (role.to_owned(), format!("<tool_response>\n{content}\n</tool_response>"))
         } else {
+            // every other role (user/assistant/system) passes through untouched
             (role.to_owned(), content.to_owned())
         };
         messages.push(JadeMessage { role: final_role, content: final_content });
     }
+    // hand back the system prompt and the normalized turn list
     Some((system, messages))
 }
 
 /// Strip a stop-anchor string from a response buffer in-place.
 /// If the anchor is not present the buffer is unchanged.
 pub fn strip_stop_anchor(buf: &mut String, stop: &str) {
+    // find the first occurrence of the stop string; if present, chop everything
+    // from that point on (the stop marker and anything after it). If it's not
+    // found, find() is None and we leave the buffer exactly as-is.
     if let Some(pos) = buf.find(stop) {
         buf.truncate(pos);
     }

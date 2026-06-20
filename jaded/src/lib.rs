@@ -8,7 +8,8 @@
 //! The llama.cpp + io_uring backend lives in the binary (`src/inference.rs`)
 //! behind the `inference` feature and only builds on Linux.
 
-pub mod cache;
-pub mod config;
-pub mod control;
-pub mod prompt;
+// Each module below is pure (no llama.cpp) and individually unit-tested:
+pub mod cache; // bounded LRU cache of past responses (skip the model on repeats)
+pub mod config; // env-var parsing + validation into a Config struct
+pub mod control; // the constrained-decoding state machine (anchors/grammar/stops)
+pub mod prompt; // turns a request prompt string into chat messages for the model

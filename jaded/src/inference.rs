@@ -77,9 +77,13 @@ impl IoUringWriter {
 
     fn write(&mut self, data: Vec<u8>) -> std::io::Result<()> {
         // Drain one completion before pushing when the ring is full.
+        // (back-pressure: never queue more than QUEUE_DEPTH outstanding writes.)
         if self.in_flight >= QUEUE_DEPTH as usize {
             self.reap(1)?;
         }
+        // take ownership of the bytes and keep them alive in self.buffers — the
+        // kernel will read from this exact heap allocation asynchronously, so it
+        // must NOT move or free until the completion is reaped.
         self.buffers.push(data);
         let buf = self.buffers.last().unwrap();
         let op = opcode::Write::new(types::Fd(self.fd), buf.as_ptr(), buf.len() as u32)
@@ -94,20 +98,27 @@ impl IoUringWriter {
     }
 
     fn reap(&mut self, min: usize) -> std::io::Result<()> {
+        // block until at least `min` writes have completed, then process every
+        // completion that's ready.
         self.ring.submit_and_wait(min)?;
         for cqe in self.ring.completion() {
+            // a negative result is a kernel errno for that write — surface it.
             if cqe.result() < 0 {
                 return Err(std::io::Error::from_raw_os_error(-cqe.result()));
             }
+            // one fewer write outstanding
             self.in_flight -= 1;
         }
         Ok(())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
+        // wait for ALL outstanding writes to land so the client has every token...
         if self.in_flight > 0 {
             self.reap(self.in_flight)?;
         }
+        // ...only now is it safe to drop the buffers (kernel is done with them).
+        // MUST be called before sending the Done frame.
         self.buffers.clear();
         Ok(())
     }
@@ -230,20 +241,28 @@ fn handle_connection(
     kv_tokens: &mut Vec<LlamaToken>,
     model_name: &str,
 ) -> std::io::Result<()> {
-    let mut buf: Vec<u8> = Vec::new();
-    let mut tmp = [0u8; 4096];
-    let mut request_count: u64 = 0;
+    let mut buf: Vec<u8> = Vec::new();      // accumulates raw bytes off the socket
+    let mut tmp = [0u8; 4096];              // scratch read buffer
+    let mut request_count: u64 = 0;        // just for the close-log line
 
+    // outer loop: one pass per request. A single client connection sends many
+    // requests back-to-back over its lifetime, processed strictly in order.
     loop {
+        // inner loop: keep reading from the socket until `buf` holds at least one
+        // complete request frame ([4-byte len][JSON]), then return it.
         let req = loop {
             match InferenceRequest::decode(&buf) {
                 Ok(req) => {
+                    // a full frame decoded — consume its bytes from the front of
+                    // buf (4 length bytes + the JSON payload) and hand it back.
                     let payload_len =
                         u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
                     buf.drain(..4 + payload_len);
                     break req;
                 }
                 Err(jade_protocol::RequestDecodeError::Incomplete) => {
+                    // not enough bytes yet — read more. n == 0 means EOF (client
+                    // hung up cleanly), so this connection is done.
                     let n = stream.read(&mut tmp)?;
                     if n == 0 {
                         eprintln!("jaded: connection closed after {request_count} requests");
@@ -252,6 +271,7 @@ fn handle_connection(
                     buf.extend_from_slice(&tmp[..n]);
                 }
                 Err(e) => {
+                    // garbage on the wire — we can't resync, so drop the connection.
                     eprintln!("jaded: malformed request: {e}");
                     return Ok(());
                 }
@@ -308,26 +328,36 @@ fn handle_connection(
             req.model, req.max_tokens, req.prompt.len(), req.trust
         );
 
+        // first frame of every real response is Meta (the serving model name),
+        // sent before any tokens so the client knows what answered.
         stream.write_all(&Frame::Meta { model: model_name.to_owned() }.encode())?;
 
+        // token frames go out through the async io_uring writer (overlaps the next
+        // token's compute with the kernel draining this token's bytes).
         let mut writer = IoUringWriter::new(stream.as_raw_fd())?;
 
+        // response cache: identical request → replay the stored text as one token
+        // frame and skip the model entirely.
         let cache_key = PromptCache::key(&req);
         if let Some((cached_text, tokens_used)) = cache.get(cache_key) {
             eprintln!("jaded: cache hit (key={cache_key:016x})");
             writer.write(Frame::Token(cached_text.clone()).encode())?;
-            writer.flush()?;
+            writer.flush()?; // flush before Done so the client sees the bytes
             GLOBAL_TOKENS.fetch_add(*tokens_used, Ordering::Relaxed);
             stream.write_all(&Frame::Done { tokens_used: *tokens_used }.encode())?;
             continue;
         }
 
+        // cache miss: actually run the model. The closure fires once per generated
+        // token — we both stream it to the client AND accumulate it so we can cache
+        // the full response afterward.
         let mut response_buf = String::new();
         let result = infer_streaming(&req, model, ctx, tmpl, kv_tokens, |token| {
             response_buf.push_str(token);
             writer.write(Frame::Token(token.to_owned()).encode()).ok();
         });
 
+        // make sure every streamed token byte has landed before the Done/Error frame
         writer.flush()?;
 
         match result {
@@ -425,16 +455,23 @@ fn infer_streaming(
     }
 
     // Chunked prefill: process only the new suffix tokens at their absolute positions.
+    // We start at prefix_len (the shared prefix is already in the KV cache) and feed
+    // the model the new tokens in batches of at most n_batch at a time.
     let n_batch = ctx.n_batch() as usize;
-    let last = n_prompt - 1;
+    let last = n_prompt - 1; // index of the final prompt token (needs logits)
     let mut pos = prefix_len;
     while pos < n_prompt {
+        // this chunk covers [pos, chunk_end); never more than n_batch tokens
         let chunk_end = (pos + n_batch).min(n_prompt);
         let mut batch = LlamaBatch::new(chunk_end - pos, 1);
         for i in pos..chunk_end {
+            // add token i at absolute position i, sequence 0. The 4th arg asks for
+            // logits ONLY on the very last prompt token — that's the one we sample
+            // the first generated token from; the rest are just context.
             batch.add(tokens[i], i as i32, &[0], i == last)
                 .map_err(|e| format!("batch add failed: {e}"))?;
         }
+        // run the forward pass for this chunk, populating the KV cache
         ctx.decode(&mut batch).map_err(|e| format!("prefill failed at chunk {pos}..{chunk_end}: {e}"))?;
         pos = chunk_end;
     }
@@ -471,38 +508,56 @@ fn infer_streaming(
     // and what text to emit.
     let mut control = DecodeControl::new(req);
 
+    // cap on new tokens: whichever is smaller — the room left in the context
+    // window, or what the request asked for.
     let max_new = (ctx_size as usize).saturating_sub(n_prompt).min(req.max_tokens as usize);
     let mut n_gen = 0usize;
-    let mut gen_batch = LlamaBatch::new(1, 1);
+    let mut gen_batch = LlamaBatch::new(1, 1); // we decode one new token at a time
 
     loop {
+        // Pick the sampler the control machine tells us to use this step, and
+        // sample the next token from the most recent logits (index -1).
+        //
         // LlamaSampler::sample() already accepts the token internally
         // (llama_sampler_sample calls llama_sampler_accept at the end). Do NOT
         // call sampler.accept() again — double-accepting empties the grammar
         // stacks and causes an abort on the next sample.
         let token = if control.use_grammar() {
+            // constrained step: use the grammar sampler, then tell control it ran
+            // (so it can retire the grammar after this first anchored token).
             let gsamp = anchor_sampler.as_mut().unwrap();
             let t = gsamp.sample(&ctx, -1);
             control.notice_grammar_sampled();
             t
         } else {
+            // free step: ordinary temperature/min-p sampling
             free_sampler.sample(&ctx, -1)
         };
 
+        // stop conditions: the model emitted an end-of-generation token, or we hit
+        // the token budget. Either way we don't emit this token.
         if model.is_eog_token(token) || n_gen >= max_new {
             break;
         }
 
+        // turn the token id into its text fragment (a "piece"); the decoder handles
+        // multi-token UTF-8 sequences split across pieces.
         let piece = model.token_to_piece(token, &mut decoder, true, None)
             .map_err(|e| format!("token to str failed: {e}"))?;
         n_gen += 1;
 
+        // run the piece through the control machine; it returns the text that's
+        // actually safe to stream (may be None while buffering a stop anchor).
         if let Some(text) = control.on_piece(&piece) {
             on_token(&text);
         }
 
+        // record this token as now resident in the KV cache (for next-request
+        // prefix reuse).
         kv_tokens.push(token);
 
+        // feed the just-generated token back in as the next position so the model
+        // can produce the following token. position = n_prompt + n_gen - 1.
         gen_batch.clear();
         let gen_pos = (n_prompt + n_gen - 1) as i32;
         gen_batch.add(token, gen_pos, &[0], true)

@@ -9,13 +9,19 @@ use jade_protocol::InferenceRequest;
 use std::collections::{HashMap, VecDeque};
 
 pub struct PromptCache {
+    // the actual store: request-hash -> (generated text, tokens used to make it)
     map: HashMap<u64, (String, u64)>,
+    // insertion order of the keys, oldest at the front. This is the "LRU" book-
+    // keeping: we evict from the front when we hit capacity. (Insertion-order,
+    // not true access-order — we don't reshuffle on a hit.)
     order: VecDeque<u64>,
+    // hard cap on how many entries we keep; 0 disables caching entirely
     max_entries: usize,
 }
 
 impl PromptCache {
     pub fn new(max_entries: usize) -> Self {
+        // start empty; the map and order grow together as we insert
         PromptCache {
             map: HashMap::new(),
             order: VecDeque::new(),
@@ -26,6 +32,10 @@ impl PromptCache {
     /// Hash the request fields that determine the generated output.
     pub fn key(req: &InferenceRequest) -> u64 {
         use std::hash::{Hash, Hasher};
+        // fold every output-affecting field into one 64-bit hash. Two requests
+        // with the same hash are treated as the same query. We deliberately hash
+        // ONLY the fields that change the generated text — fields like `trust`
+        // (provenance only) or the *_only probe flags are not included.
         let mut h = std::collections::hash_map::DefaultHasher::new();
         req.prompt.hash(&mut h);
         req.model.hash(&mut h);
@@ -36,22 +46,30 @@ impl PromptCache {
         // keep_anchors changes whether the stop-anchor boundary appears in the
         // output, so it must distinguish cache entries.
         req.keep_anchors.hash(&mut h);
+        // collapse the accumulated state into the final key
         h.finish()
     }
 
     pub fn get(&self, key: u64) -> Option<&(String, u64)> {
+        // straight lookup; None means a cache miss (caller then runs the model)
         self.map.get(&key)
     }
 
     pub fn insert(&mut self, key: u64, text: String, tokens_used: u64) {
+        // bail out in two no-op cases: caching is disabled (cap 0), or we already
+        // have this key. We keep the FIRST value for a key rather than overwriting
+        // (see the reinsert test) — simpler and avoids churning the order queue.
         if self.max_entries == 0 || self.map.contains_key(&key) {
             return;
         }
+        // if we're at capacity, make room by evicting the oldest entry: pull the
+        // front key off the order queue and drop it from the map too.
         if self.map.len() >= self.max_entries {
             if let Some(oldest) = self.order.pop_front() {
                 self.map.remove(&oldest);
             }
         }
+        // now there's room: store the value and record this key as newest (back)
         self.map.insert(key, (text, tokens_used));
         self.order.push_back(key);
     }
