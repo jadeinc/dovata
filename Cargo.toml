@@ -4,6 +4,10 @@ members = [
     "jade-model-profile",
     "jaded",
 ]
+# Vendored llama-cpp-rs (0.1.150) is its own workspace — its crates inherit from
+# their own [workspace.dependencies]/[lints]. Exclude it here so it stays an
+# independent workspace root; jaded consumes its crates via path deps.
+exclude = ["vendor/llama-cpp-rs"]
 resolver = "2"
 
 [workspace.package]
