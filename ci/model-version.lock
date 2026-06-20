@@ -31,7 +31,7 @@ IMATRIX_CHUNKS=100
 #
 # Provenance of this commit (re-derive when bumping the engine):
 #   jaded no longer pulls llama-cpp-sys-2 from crates.io — it vendors
-#   utilityai/llama-cpp-rs 0.1.150 in-tree (vendor/llama-cpp-rs/) with the
+#   utilityai/llama-cpp-rs 0.1.150 in-tree (llama-cpp/) with the
 #   llama-cpp-sys-2/llama.cpp submodule repointed to OUR fork
 #   joericks1998/llama.cpp, pinned at commit 9e3b928 (dated 2026-06-07 — the
 #   exact upstream commit 0.1.150's safe wrappers target). The daemon thus links

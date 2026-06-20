@@ -47,7 +47,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # llama.cpp is now a vendored git submodule (vendor/llama-cpp-rs/
+          # llama.cpp is now a vendored git submodule (llama-cpp/
           # llama-cpp-sys-2/llama.cpp → our fork @ pinned commit), not a bundled
           # crates.io copy. The CUDA build compiles it from source, so it must be
           # checked out here or the build hits an empty directory.
