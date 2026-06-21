@@ -53,6 +53,20 @@ static START: OnceLock<Instant> = OnceLock::new();
 
 const QUEUE_DEPTH: u32 = 128;
 
+// ── Over-context routing constants ─────────────────────────────────────────────
+//
+// A request whose formatted prompt leaves fewer than NATIVE_GEN_HEADROOM tokens of
+// window is treated as "over context" and answered by the blended KV-composition
+// engine instead of native full-context inference (which would have no room to
+// generate, or not fit at all). Native handles everything that fits — highest fidelity.
+const NATIVE_GEN_HEADROOM: u32 = 512;
+/// Fallback RLM frontier = this × the native window, when no profile/env limit is set.
+const RLM_FRONTIER_WINDOW_MULT: u32 = 8;
+/// Defaults for the over-context blended pipeline (overridable via env): retrieve
+/// `RLM_DEFAULT_N` candidates, rerank, compose the top `RLM_DEFAULT_K`.
+const RLM_DEFAULT_N: usize = 12;
+const RLM_DEFAULT_K: usize = 4;
+
 // ── Async token writer (io_uring) ─────────────────────────────────────────────
 //
 // Submits each Frame::Token write to the io_uring submission queue and returns
@@ -245,15 +259,42 @@ pub fn run(sock_path: String) {
     // the entire conversation history on every turn.
     let mut kv_tokens: Vec<LlamaToken> = Vec::new();
 
+    // The RLM efficient frontier (max corpus tokens) for the over-context path,
+    // resolved once: the active model's profile, else env, else a multiple of the
+    // window. A request whose corpus exceeds this is rejected (see `answer_over_context`).
+    let rlm_max = rlm_max_context(&model_name, cfg.ctx_size);
+    eprintln!("jaded: rlm frontier (max corpus tokens) = {rlm_max}");
+
     eprintln!("jaded: listening on {sock_path}");
-    listen(&listener, &model, &mut ctx, &mut cache, &chat_template, &mut kv_tokens, &model_name);
+    listen(&listener, &model, &mut ctx, &mut cache, &chat_template, &mut kv_tokens, &model_name, rlm_max);
 }
 
-fn listen(listener: &UnixListener, model: &LlamaModel, ctx: &mut LlamaContext, cache: &mut PromptCache, tmpl: &LlamaChatTemplate, kv_tokens: &mut Vec<LlamaToken>, model_name: &str) {
+/// The RLM efficient-frontier limit (max corpus tokens) for the active model: env
+/// `JADE_RLM_MAX_CONTEXT` (operator override) if set, else the model profile's
+/// `rlm_max_context`, else [`RLM_FRONTIER_WINDOW_MULT`]× the native window. This is the
+/// limit beyond which the over-context path rejects a request rather than answer with
+/// degraded accuracy.
+fn rlm_max_context(model_name: &str, ctx_size: u32) -> u32 {
+    // operator override wins (e.g. to A/B the limit or test the reject path)
+    if let Some(n) = std::env::var("JADE_RLM_MAX_CONTEXT").ok().and_then(|v| v.trim().parse::<u32>().ok()) {
+        if n > 0 {
+            return n;
+        }
+    }
+    if let Some(p) = jade_model_profile::Registry::builtin().select(model_name) {
+        if let Some(m) = p.limits.rlm_max_context() {
+            return m;
+        }
+    }
+    ctx_size.saturating_mul(RLM_FRONTIER_WINDOW_MULT)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn listen(listener: &UnixListener, model: &LlamaModel, ctx: &mut LlamaContext, cache: &mut PromptCache, tmpl: &LlamaChatTemplate, kv_tokens: &mut Vec<LlamaToken>, model_name: &str, rlm_max: u32) {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                if let Err(e) = handle_connection(&mut stream, model, ctx, cache, tmpl, kv_tokens, model_name) {
+                if let Err(e) = handle_connection(&mut stream, model, ctx, cache, tmpl, kv_tokens, model_name, rlm_max) {
                     eprintln!("jaded: connection error: {e}");
                 }
             }
@@ -262,6 +303,7 @@ fn listen(listener: &UnixListener, model: &LlamaModel, ctx: &mut LlamaContext, c
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_connection(
     stream: &mut UnixStream,
     model: &LlamaModel,
@@ -270,6 +312,7 @@ fn handle_connection(
     tmpl: &LlamaChatTemplate,
     kv_tokens: &mut Vec<LlamaToken>,
     model_name: &str,
+    rlm_max: u32,
 ) -> std::io::Result<()> {
     let mut buf: Vec<u8> = Vec::new();      // accumulates raw bytes off the socket
     let mut tmp = [0u8; 4096];              // scratch read buffer
@@ -353,11 +396,33 @@ fn handle_connection(
             continue;
         }
 
-        // RLM mode: in-process recursive decomposition over a large (possibly
-        // pre-uploaded) context. Separate path from single-shot inference.
+        // RLM mode: explicit, pre-chunked / context-handle decomposition over a large
+        // context. Separate path from single-shot inference (now blended-backed).
         if req.rlm {
             rlm::handle_rlm(&req, model, ctx, stream, model_name)?;
             continue;
+        }
+
+        // Over-context routing: tokenize the formatted prompt up front (cheap vs.
+        // inference) to decide the path. A prompt that won't fit the native window
+        // with room to generate is answered by the blended KV-composition engine;
+        // everything that fits falls through to native full-context inference below.
+        match build_formatted_prompt(&req.prompt, model, tmpl)
+            .and_then(|f| model.str_to_token(&f, AddBos::Always).map_err(|e| format!("tokenize failed: {e}")))
+        {
+            Ok(toks) if toks.len() as u32 + NATIVE_GEN_HEADROOM > ctx.n_ctx() => {
+                eprintln!(
+                    "jaded: over-context ({} prompt tokens, window {}) → blended RLM compose",
+                    toks.len(), ctx.n_ctx()
+                );
+                answer_over_context(&req, model, ctx, stream, model_name, rlm_max)?;
+                continue;
+            }
+            Ok(_) => {} // fits → native path below
+            Err(e) => {
+                stream.write_all(&Frame::Error(e).encode())?;
+                continue;
+            }
         }
 
         eprintln!(
@@ -417,6 +482,66 @@ fn handle_connection(
             }
         }
     }
+}
+
+/// Answer an over-context request with the blended KV-composition engine. The prompt
+/// is split into a retrievable corpus + a question (`jaded::route`), chunked into
+/// blocks, and — if the corpus is within the model's RLM frontier (`rlm_max`) — answered
+/// by retrieve→rerank→compose→single-decode. A corpus beyond the frontier is rejected
+/// with an `Error` frame (the documented limit) rather than answered with degraded
+/// accuracy. Emits `Meta` → `Token`(answer) → `Done`, mirroring the explicit `rlm` path.
+fn answer_over_context(
+    req: &InferenceRequest,
+    model: &LlamaModel,
+    ctx: &mut LlamaContext,
+    stream: &mut UnixStream,
+    model_name: &str,
+    rlm_max: u32,
+) -> std::io::Result<()> {
+    // Split prompt → (corpus blocks, question) and tokenize the corpus into a store.
+    let input = jaded::route::derive_rlm_input(&req.prompt, jaded::route::DEFAULT_CHUNK_CHARS);
+    let store = match compose::BlockStore::from_texts(model, &input.corpus) {
+        Ok(s) => s,
+        Err(e) => {
+            stream.write_all(&Frame::Error(format!("over-context chunking failed: {e}")).encode())?;
+            return Ok(());
+        }
+    };
+    let corpus_tokens: usize = store.blocks.iter().map(|b| b.ids.len()).sum();
+
+    // Frontier gate: reject a corpus larger than this model's measured RLM limit so
+    // we never silently answer past the point accuracy is known to hold.
+    if corpus_tokens as u32 > rlm_max {
+        let msg = format!(
+            "context corpus ({corpus_tokens} tokens) exceeds this model's RLM limit \
+             ({rlm_max} tokens); reduce the context (see the model profile's limits.rlm_max_context)"
+        );
+        eprintln!("jaded: [over-context] REJECT — {msg}");
+        stream.write_all(&Frame::Error(msg).encode())?;
+        return Ok(());
+    }
+
+    // Defaults overridable via env, mirroring the bench knobs.
+    let n_cand = std::env::var("JADE_RLM_N").ok().and_then(|v| v.parse().ok()).unwrap_or(RLM_DEFAULT_N);
+    let k = std::env::var("JADE_RLM_K").ok().and_then(|v| v.parse().ok()).unwrap_or(RLM_DEFAULT_K);
+
+    // One-shot request → ephemeral (cap-0) KV cache; PICK→rerank→COMBINE→one decode.
+    let mut kv = compose::KvBlockCache::new(0);
+    match compose::blended_compose_and_answer(model, ctx, &store, &mut kv, &input.question, n_cand, k.max(1)) {
+        Ok((answer, picked, _scored)) => {
+            eprintln!(
+                "jaded: [over-context] {} blocks ({corpus_tokens} tok) → composed {picked:?}",
+                store.blocks.len()
+            );
+            stream.write_all(&Frame::Meta { model: model_name.to_owned() }.encode())?;
+            stream.write_all(&Frame::Token(answer).encode())?;
+            stream.write_all(&Frame::Done { tokens_used: 0 }.encode())?;
+        }
+        Err(e) => {
+            stream.write_all(&Frame::Error(format!("over-context compose: {e}")).encode())?;
+        }
+    }
+    Ok(())
 }
 
 /// Render a request prompt into the model's chat format. A `_jade_protocol`

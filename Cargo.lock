@@ -228,6 +228,7 @@ version = "0.1.0"
 dependencies = [
  "encoding_rs",
  "io-uring",
+ "jade-model-profile",
  "jade-protocol",
  "llama-cpp-2",
  "llama-cpp-sys-2",

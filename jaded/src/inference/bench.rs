@@ -48,6 +48,7 @@ pub(crate) fn dispatch(model: &LlamaModel, ctx: &mut LlamaContext, tmpl: &LlamaC
         ("JADE_GEN_BENCH", selftest_gen_bench),
         ("JADE_RLM_OVERWINDOW", selftest_rlm_overwindow),
         ("JADE_BLENDED", selftest_blended),
+        ("JADE_FRONTIER", selftest_frontier),
     ];
     for (var, run) in routines {
         if std::env::var(var).is_ok() {
@@ -555,6 +556,213 @@ fn selftest_rlm_overwindow(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &L
     if let Err(e) = run() {
         eprintln!("jaded: [overwindow] error: {e}");
     }
+}
+
+// ── Efficient-frontier study (`JADE_FRONTIER`) ──────────────────────────────────
+//
+// A RULER-style synthetic sweep that locates where the blended KV-composition engine
+// stops answering reliably — the "effective RLM context length" that becomes the
+// model profile's `rlm_max_context`. For each task and each corpus size we score three
+// arms: NATIVE full-context (the accuracy ceiling, only where the corpus fits the
+// window), PLAIN compose (IDF retrieve→compose), and BLENDED (retrieve→rerank→compose).
+// Tasks mirror RULER: single needle, multi-key needle, multi-hop variable tracking
+// (the binding constraint — multi-hop degrades fastest), and distractor QA. All
+// synthetic/templated → zero downloads.
+
+/// Tiny deterministic LCG so cells vary across repeats but reproduce across runs
+/// (the workflow can't use a real RNG; positions/values are seeded per task+length).
+fn lcg(state: &mut u64) -> u64 {
+    *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *state >> 33
+}
+/// A random 6-digit value as a string (needle payload).
+fn rand6(rng: &mut u64) -> String {
+    format!("{}", 100_000 + (lcg(rng) % 900_000))
+}
+/// A ~500-token filler block with no codes/secrets/assignments (the haystack).
+fn frontier_filler(i: usize) -> String {
+    format!(
+        "Section {i}. This section contains routine operational notes. {}",
+        "There are no special codes, secrets, or variable assignments in this part of the document. ".repeat(24)
+    )
+}
+/// Case-insensitive substring hit (the expected answer string appears in the output).
+fn frontier_hit(answer: &str, expected: &str) -> bool {
+    answer.to_lowercase().contains(&expected.to_lowercase())
+}
+
+/// Build one task instance: `n_blocks` filler blocks with the needle(s) placed at
+/// distinct random positions. Returns (corpus blocks, question, expected answer string).
+fn gen_frontier_task(task: &str, n_blocks: usize, rng: &mut u64) -> (Vec<String>, String, String) {
+    let mut corpus: Vec<String> = (0..n_blocks).map(frontier_filler).collect();
+    // pick `count` distinct block indices to host needles.
+    let pick = |rng: &mut u64, used: &mut Vec<usize>| -> usize {
+        loop {
+            let p = (lcg(rng) as usize) % n_blocks;
+            if !used.contains(&p) {
+                used.push(p);
+                return p;
+            }
+        }
+    };
+    let mut used = Vec::new();
+    match task {
+        "niah_single" => {
+            let val = rand6(rng);
+            let p = pick(rng, &mut used);
+            corpus[p] = format!("{} The special magic number for the alpha project is {val}. Keep it safe.", corpus[p]);
+            (corpus, "What is the special magic number for the alpha project?".into(), val)
+        }
+        "niah_multikey" => {
+            let keys = ["alpha", "bravo", "charlie", "delta"];
+            let vals: Vec<String> = (0..keys.len()).map(|_| rand6(rng)).collect();
+            for (i, key) in keys.iter().enumerate() {
+                let p = pick(rng, &mut used);
+                corpus[p] = format!("{} The magic number for the {key} project is {}.", corpus[p], vals[i]);
+            }
+            let ask = (lcg(rng) as usize) % keys.len();
+            (corpus, format!("What is the magic number for the {} project?", keys[ask]), vals[ask].clone())
+        }
+        "vt" => {
+            // multi-hop chain: VAR_1 = value; VAR_2 = VAR_1; ... VAR_H = VAR_{H-1}.
+            let hops = 4usize;
+            let val = rand6(rng);
+            for i in 1..=hops {
+                let p = pick(rng, &mut used);
+                let stmt = if i == 1 {
+                    format!("Note: the variable VAR_1 is assigned the value {val}.")
+                } else {
+                    format!("Note: the variable VAR_{i} is assigned the same value as VAR_{}.", i - 1)
+                };
+                corpus[p] = format!("{} {stmt}", corpus[p]);
+            }
+            (corpus, format!("Tracing the assignments, what numeric value does VAR_{hops} hold?"), val)
+        }
+        _ /* "qa" */ => {
+            // needle + lexically-similar distractors that echo the query but hold no code.
+            let val = format!("XQ-{}", rand6(rng));
+            let p = pick(rng, &mut used);
+            corpus[p] = format!("{} The secret access code is {val}. Rotate it quarterly.", corpus[p]);
+            for _ in 0..3 {
+                let d = pick(rng, &mut used);
+                corpus[d] = format!("{} This section discusses the secret access code policy and what a secret access code is, but lists no actual code.", corpus[d]);
+            }
+            (corpus, "What is the secret access code?".into(), val)
+        }
+    }
+}
+
+/// Native full-context answer (the accuracy ceiling), or `None` if the corpus + question
+/// doesn't fit the window. Concatenates all blocks + the question and decodes once.
+fn frontier_native(model: &LlamaModel, ctx: &mut LlamaContext, corpus: &[String], question: &str, n_ctx: usize) -> Option<String> {
+    let text = format!("{}\n\nQuestion: {question}\nAnswer: ", corpus.join("\n\n"));
+    let toks = model.str_to_token(&text, AddBos::Always).ok()?;
+    if toks.len() + 128 > n_ctx {
+        return None; // doesn't fit natively — this is the whole point of RLM
+    }
+    ctx.clear_kv_cache();
+    prefill(ctx, &toks, 0, 0, true).ok()?;
+    let ans = gen_loop(model, ctx, 0, toks.len() as i32, 96).ok()?;
+    ctx.clear_kv_cache();
+    Some(ans)
+}
+
+fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaChatTemplate) {
+    let n_ctx = ctx.n_ctx() as usize;
+    let reps: usize = std::env::var("JADE_FRONTIER_REPS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+    let mults: Vec<f64> = std::env::var("JADE_FRONTIER_MULTS")
+        .ok()
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![0.5, 1.0, 2.0, 4.0, 8.0]);
+    let (n_cand, k) = (12usize, 4usize);
+    let tau = 0.85f64;
+    let tasks = ["niah_single", "niah_multikey", "vt", "qa"];
+
+    // measure the filler block's real token length (corpus sizing + reporting).
+    let block_tok = model
+        .str_to_token(&frontier_filler(0), AddBos::Never)
+        .map(|t| t.len())
+        .unwrap_or(500)
+        .max(1);
+
+    // warm the single-token decode graph so the first cell isn't polluted.
+    ctx.clear_kv_cache();
+    if let Ok(w) = model.str_to_token("Warm up the decode graph for the frontier study.", AddBos::Always) {
+        let _ = prefill(ctx, &w, 0, 0, true).and_then(|_| gen_loop(model, ctx, 0, w.len() as i32, 8));
+    }
+
+    eprintln!("jaded: [frontier] RULER-style sweep; window={n_ctx} tok, block≈{block_tok} tok, reps={reps}, k={k}, N={n_cand}, τ={tau}");
+    eprintln!("jaded: [frontier] accuracy per arm (native = full-context ceiling; n/a = doesn't fit window)");
+    eprintln!("jaded: [frontier] {:>13} {:>6} {:>11} {:>7} {:>8} {:>8} {:>8}",
+        "task", "xwin", "corpus_tok", "blocks", "native", "plain", "blended");
+
+    // (task, corpus_tok, blended_accuracy) records for the frontier computation.
+    let mut records: Vec<(&str, usize, f64)> = Vec::new();
+
+    for task in tasks {
+        for &mult in &mults {
+            let target = (mult * n_ctx as f64) as usize;
+            let n_blocks = (target / block_tok).max(k + 4);
+            let corpus_tok = n_blocks * block_tok;
+            // deterministic per-cell seed
+            let mut rng = 0x9E3779B97F4A7C15u64
+                ^ (task.bytes().fold(0u64, |a, b| a.wrapping_mul(131).wrapping_add(b as u64)))
+                ^ ((mult * 1000.0) as u64).wrapping_mul(0x100000001B3);
+
+            let (mut nat_hits, mut plain_hits, mut blend_hits) = (0usize, 0usize, 0usize);
+            let mut native_ran = false;
+            for _ in 0..reps {
+                let (corpus, question, expected) = gen_frontier_task(task, n_blocks, &mut rng);
+                if let Some(ans) = frontier_native(model, ctx, &corpus, &question, n_ctx) {
+                    native_ran = true;
+                    if frontier_hit(&ans, &expected) { nat_hits += 1; }
+                }
+                let store = match BlockStore::from_texts(model, &corpus) {
+                    Ok(s) => s,
+                    Err(e) => { eprintln!("jaded: [frontier] build error: {e}"); continue; }
+                };
+                let mut c0 = KvBlockCache::new(0);
+                if let Ok((ans, _)) = compose_and_answer(model, ctx, &store, &mut c0, &question, k) {
+                    if frontier_hit(&ans, &expected) { plain_hits += 1; }
+                }
+                let mut c1 = KvBlockCache::new(0);
+                if let Ok((ans, _, _)) = blended_compose_and_answer(model, ctx, &store, &mut c1, &question, n_cand, k) {
+                    if frontier_hit(&ans, &expected) { blend_hits += 1; }
+                }
+            }
+            let r = reps as f64;
+            let blended_acc = blend_hits as f64 / r;
+            let native_str = if native_ran { format!("{:.2}", nat_hits as f64 / r) } else { "   n/a".into() };
+            eprintln!("jaded: [frontier] {task:>13} {mult:>5}x {corpus_tok:>11} {n_blocks:>7} {native_str:>8} {:>8.2} {:>8.2}",
+                plain_hits as f64 / r, blended_acc);
+            records.push((task, corpus_tok, blended_acc));
+        }
+    }
+
+    // Frontier per task = the largest corpus where BLENDED accuracy ≥ τ. A task that
+    // ALSO fails at the SMALLEST length (sub-window, where native succeeds) is a
+    // length-INDEPENDENT capability gap, not a length frontier — it's flagged and
+    // EXCLUDED from the length-frontier min (otherwise one unsupported task type would
+    // drive the limit to zero). rlm_max_context = the min largest-passing-length over
+    // the tasks the engine actually performs.
+    eprintln!("jaded: [frontier] ── effective RLM length per task (largest corpus with blended ≥ {tau}) ──");
+    let smallest_corpus = records.iter().map(|(_, tok, _)| *tok).min().unwrap_or(0);
+    let mut overall = usize::MAX;
+    for task in tasks {
+        let rows = records.iter().filter(|(t, _, _)| *t == task);
+        // a capability gap fails even at the smallest corpus size (where it fits the window).
+        let passes_small = rows.clone().any(|(_, tok, acc)| *tok == smallest_corpus && *acc >= tau);
+        let best = rows.clone().filter(|(_, _, acc)| *acc >= tau).map(|(_, tok, _)| *tok).max();
+        match (passes_small, best) {
+            (true, Some(tok)) => {
+                eprintln!("jaded: [frontier]   {task:>13}: {tok} tok");
+                overall = overall.min(tok);
+            }
+            _ => eprintln!("jaded: [frontier]   {task:>13}: CAPABILITY GAP (fails sub-window; excluded from frontier)"),
+        }
+    }
+    if overall == usize::MAX { overall = 0; } // every task was a capability gap
+    eprintln!("jaded: [frontier] SUGGESTED rlm_max_context = {overall} tok (min length-frontier over supported tasks; set in the model profile)");
 }
 
 // ── Continuous-batching engine self-test (`JADE_RLM_SELFTEST`) ──────────────────

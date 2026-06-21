@@ -16,7 +16,7 @@
 //! infrastructure for concurrent / mass prompting, independent of RLM; its self-test
 //! lives in [`super::bench`].
 
-use super::compose::{compose_and_answer, BlockStore, KvBlockCache};
+use super::compose::{blended_compose_and_answer, BlockStore, KvBlockCache};
 use jade_protocol::{Frame, InferenceRequest};
 use llama_cpp_2::{context::LlamaContext, model::LlamaModel};
 use std::collections::HashMap;
@@ -120,18 +120,22 @@ pub(crate) fn handle_rlm(
         return Ok(());
     }
 
-    // QUERY: compose-and-answer over a stored handle (warm cache persists) or an
-    // inline one-shot context (ephemeral, no caching).
+    // QUERY: blended compose-and-answer (PICK→rerank→COMBINE) over a stored handle
+    // (warm cache persists) or an inline one-shot context (ephemeral, no caching).
     let question = payload.get("question").and_then(|q| q.as_str()).unwrap_or("");
-    // `max_spans` caps how many blocks the retriever composes into the window (the k).
-    let k = payload.get("max_spans").and_then(|m| m.as_u64()).unwrap_or(4) as usize;
+    // `max_spans` caps how many blocks COMBINE composes into the window (the k); the
+    // reranker considers a wider candidate pool first.
+    let k = (payload.get("max_spans").and_then(|m| m.as_u64()).unwrap_or(4) as usize).max(1);
+    let n_cand = (k * 3).max(8);
+    // blended returns (answer, composed top-k, rerank scores); drop the scores here.
     let result: Result<(String, Vec<usize>), String> =
         if let Some(h) = payload.get("handle").and_then(|h| h.as_u64()) {
             // Single-threaded daemon: holding the store lock across the inference is
             // uncontended and lets the persistent KV cache mutate in place.
             let mut map = rlm_stores().lock().unwrap();
             match map.get_mut(&h) {
-                Some(sc) => compose_and_answer(model, ctx, &sc.blocks, &mut sc.kv_cache, question, k.max(1)),
+                Some(sc) => blended_compose_and_answer(model, ctx, &sc.blocks, &mut sc.kv_cache, question, n_cand, k)
+                    .map(|(a, picked, _)| (a, picked)),
                 None => Err(format!("unknown context handle {h}")),
             }
         } else if let Some(secs) = payload.get("sections") {
@@ -139,7 +143,8 @@ pub(crate) fn handle_rlm(
             match BlockStore::from_texts(model, &bodies) {
                 Ok(bs) => {
                     let mut cache = KvBlockCache::new(0); // one-shot inline: no caching
-                    compose_and_answer(model, ctx, &bs, &mut cache, question, k.max(1))
+                    blended_compose_and_answer(model, ctx, &bs, &mut cache, question, n_cand, k)
+                        .map(|(a, picked, _)| (a, picked))
                 }
                 Err(e) => Err(e),
             }

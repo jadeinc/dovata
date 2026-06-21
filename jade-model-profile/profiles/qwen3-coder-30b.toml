@@ -29,6 +29,20 @@ role = "tool"
 wrap_prefix = "<tool_response>\n"
 wrap_suffix = "\n</tool_response>"
 
+[limits]
+# Context-length limits, in tokens. `context_window` is the native attention window
+# the daemon serves (a prompt that fits is answered with full-context inference).
+# `rlm_max_context` is the efficient frontier of the blended KV-composition (RLM+RAG)
+# engine — the largest corpus it answers reliably; a request exceeding it is rejected
+# rather than answered with degraded accuracy. Programmers read this to know the
+# model's usable limit. Measured 2026-06-21 with the RULER-style frontier harness
+# (JADE_FRONTIER) on the A10G: blended single-needle / multi-hop / distractor-QA all hold
+# ≥0.85 accuracy out to 8× the window (262 144 tok = the largest size tested; no length
+# break was found below that). Multi-key disambiguation is a known capability gap
+# (length-independent), tracked separately. So the frontier is the validated 8× ceiling.
+context_window = 32768
+rlm_max_context = 262144
+
 # Additional special-token spans the model may stream that the client should
 # surface as structured events rather than raw content. Qwen3-Coder does not emit
 # a separate reasoning channel, so none are declared here. A thinking model would

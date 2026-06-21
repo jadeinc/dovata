@@ -63,6 +63,16 @@ fn rlm(sock: &str, payload: String) -> std::io::Result<(String, Option<String>)>
     read_response(&mut s)
 }
 
+/// Send one ordinary (non-rlm) request with a plain-text prompt. Used to prove the
+/// daemon TRANSPARENTLY routes an over-context standard request through the blended
+/// engine — no `rlm` flag, no pre-chunking; the client just sends a huge prompt.
+fn standard(sock: &str, prompt: String) -> std::io::Result<(String, Option<String>)> {
+    let mut s = UnixStream::connect(sock)?;
+    let req = InferenceRequest { prompt, max_tokens: 256, ..Default::default() };
+    s.write_all(&req.encode().expect("encode"))?;
+    read_response(&mut s)
+}
+
 fn main() {
     let sock = std::env::var("JADE_SOCK")
         .unwrap_or_else(|_| format!("{}/.jade/llm.sock", std::env::var("HOME").unwrap()));
@@ -110,7 +120,27 @@ fn main() {
     println!("query(inline) ANSWER: {:?}", ans2.trim());
     println!("  needle found: {}", ans2.contains(needle));
 
-    let ok = ans1.contains(needle) && ans2.contains(needle);
+    // 4. TRANSPARENT over-context: an ORDINARY request (no rlm flag) whose plain-text
+    //    prompt exceeds the window. The daemon must auto-chunk it and answer via blended
+    //    — the client does nothing special. Build a >window plain prompt with the needle
+    //    in the middle and the question as the trailing line.
+    let big_n = 400usize;
+    let big_needle_at = big_n / 2;
+    let para = "routine operational detail with no special codes or secrets ".repeat(20);
+    let mut blob = String::new();
+    for i in 0..big_n {
+        if i == big_needle_at {
+            blob.push_str(&format!("Section {i}: Access Credentials. The secret access code is {needle}. {para}\n\n"));
+        } else {
+            blob.push_str(&format!("Section {i}: general routine details. {para}\n\n"));
+        }
+    }
+    blob.push_str("What is the secret access code?");
+    let (ans3, _) = standard(&sock, blob).expect("over-context standard query");
+    println!("standard(over-context) ANSWER: {:?}", ans3.trim());
+    println!("  needle found: {}", ans3.contains(needle));
+
+    let ok = ans1.contains(needle) && ans2.contains(needle) && ans3.contains(needle);
     println!("RLM SOCKET TEST: {}", if ok { "PASS" } else { "FAIL" });
     std::process::exit(if ok { 0 } else { 1 });
 }

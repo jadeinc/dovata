@@ -1,9 +1,9 @@
 # Blended RAG-RLM: KV-Composition Engine — Design & Results
 
-> Status: **prototype, validated end-to-end on EC2 (A10G), uncommitted** on branch
-> `feat/rlm-phase0-fork-vendor`. All selftests are env-gated and now live in a dedicated
-> `jaded/src/inference/bench.rs` (the cleanup pass below is done). This document is the
-> results snapshot to work from before this becomes a production path.
+> Status: **the official over-context inference path**, validated end-to-end on EC2
+> (A10G), on branch `feat/rlm-phase0-fork-vendor`. A standard request over the context
+> window is auto-routed through this engine (see §1b); native full-context serves
+> everything that fits. Selftests/benches are env-gated in `jaded/src/inference/bench.rs`.
 
 All numbers below were measured on the EC2 `g5.xlarge` (NVIDIA A10G, 23 GB), serving the
 deployed 30B-MoE Q4 model (~18.5 GB GGUF), `JADE_CTX_SIZE=32768`, `q4_0` K/V cache,
@@ -60,7 +60,63 @@ Three building blocks:
   as general infra for concurrent / mass prompting; currently only exercised by the
   `selftest_rlm` bench (`JADE_RLM_SELFTEST`). Not on the compose path.
 - `kv.rs` — KV helpers (cache-type map, multi-turn prefix reuse, shared-prefix prefill).
-- `standard.rs` — single-shot inference (the production non-RLM path).
+- `standard.rs` — single-shot inference (the production native path, ≤ window).
+- `route.rs` (pure) — over-context corpus/question split + text chunking for the auto-route.
+
+---
+
+## 1b. Routing & the efficient frontier (how the protocol uses this)
+
+The blended engine is the **official over-context path**, wired transparently into the
+**standard** request — no client change, no `rlm` flag. `handle_connection` tokenizes the
+formatted prompt and routes by length:
+
+```
+n_prompt + NATIVE_GEN_HEADROOM(512) ≤ ctx_size   → standard::infer_streaming   (native, full-context)
+                                       >  ctx_size → OVER-CONTEXT:
+   route::derive_rlm_input → corpus blocks + question
+   corpus_tokens > rlm_max_context → Frame::Error      (documented limit; hard reject)
+   else → blended_compose_and_answer → answer
+```
+
+This is the **dynamic routing** the RAG-vs-long-context literature recommends (arxiv
+2407.16833; LaRA, ICML'25): full read while it fits (highest fidelity), retrieval-compose
+beyond. The split policy (`route.rs`): a **messages** prompt → question = last `user` turn,
+corpus = system + prior turns; a **plain** prompt → question = trailing paragraph, corpus =
+the whole thing. Corpus is chunked to ~2048-char (≈512-token) blocks on paragraph/sentence
+boundaries. The explicit `rlm` mode (pre-chunked / context handles) stays and is also
+blended now.
+
+### The frontier (`JADE_FRONTIER`, RULER-style, A10G, 2026-06-21)
+
+Synthetic RULER tasks, corpus swept 0.5×–8× the 32k window, three arms (native ceiling /
+plain / blended), τ=0.85, reps=3:
+
+| task | tests | blended accuracy 0.5×→8× | frontier |
+|---|---|---|---|
+| `niah_single` | single-fact retrieval | 1.00 1.00 1.00 1.00 1.00 | **≥ 8× (262k)** |
+| `vt` | multi-hop chain tracing | 1.00 1.00 1.00 1.00 1.00 | **≥ 8× (262k)** |
+| `qa` | fact among lexical distractors | 0.67 1.00 0.67 0.67 1.00 | **≥ 8× (262k)**, noisy |
+| `niah_multikey` | disambiguate 4 near-identical facts | 0.00 0.33 0.00 0.00 0.00 | **capability gap** |
+
+**Read of the result.** For everything the engine *can* do, accuracy holds to **8× the
+window — the largest size tested; no length break was found**. The decode rate is flat past
+the window (§4), so the binding limit is *retrieval/fidelity*, not speed. `multikey` fails
+at *every* length **including sub-window** (0.5×, where native scores 1.00) → that's a
+length-**independent capability gap** (the compose path's raw, non-chat-templated framing
+can't reliably pick among near-duplicate facts), **not** a length frontier — so it is
+excluded from the frontier min rather than dragging it to zero.
+
+**Documented frontier:** `rlm_max_context = 262144` tokens (8×), set in the model profile
+(`jade-model-profile/profiles/qwen3-coder-30b.toml`, `[limits]`). Beyond it the daemon
+hard-rejects (untested territory). This is the **validated** ceiling, not a proven breaking
+point — pushing 16×/32× to find the true edge is future work.
+
+**Known limitation (next lever):** the `multikey` gap is the clearest improvement target —
+chat-template the compose framing (instruction/question through the model's own template)
+instead of the raw `"You are given several notes…"` prefix, so the model is in its
+instruction-following mode when disambiguating. Until then, near-duplicate-fact
+disambiguation over composed blocks is unreliable regardless of length.
 
 ---
 

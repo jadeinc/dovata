@@ -44,6 +44,10 @@ pub struct ModelProfile {
     /// surfaced as structured events instead of raw content.
     #[serde(default, rename = "span")]
     pub spans: Vec<Span>,
+    /// Context-length limits for this model: the native attention window and the
+    /// measured RLM (KV-composition) efficient frontier. Absent → both unset.
+    #[serde(default)]
+    pub limits: Limits,
 }
 
 /// Delimiters + parsing convention for a tool call the model emits.
@@ -82,6 +86,37 @@ pub struct Span {
     pub close: String,
 }
 
+/// Context-length limits for a model. Both fields are token counts; `0` means
+/// "unset" (the daemon falls back to its env/config default).
+///
+/// * `context_window` — the native attention window the daemon serves below which
+///   a prompt is answered with full-context inference (highest fidelity).
+/// * `rlm_max_context` — the **efficient frontier** of the blended KV-composition
+///   (RLM+RAG) engine: the largest corpus, in tokens, over which it answers
+///   reliably (measured with the RULER-style frontier harness). A request whose
+///   corpus exceeds this is rejected rather than answered with degraded accuracy.
+///   This is documented here so Jade programmers know each model's usable limit.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Limits {
+    #[serde(default)]
+    pub context_window: u32,
+    #[serde(default)]
+    pub rlm_max_context: u32,
+}
+
+impl Limits {
+    /// The RLM efficient frontier in tokens, or `None` when unset (`0`).
+    pub fn rlm_max_context(&self) -> Option<u32> {
+        (self.rlm_max_context > 0).then_some(self.rlm_max_context)
+    }
+
+    /// Whether a corpus of `corpus_tokens` is within this model's RLM frontier.
+    /// `true` when the limit is unset (enforcement deferred to the daemon default).
+    pub fn rlm_corpus_allowed(&self, corpus_tokens: u32) -> bool {
+        self.rlm_max_context().map_or(true, |max| corpus_tokens <= max)
+    }
+}
+
 fn default_name_field() -> String {
     "tool_name".to_owned()
 }
@@ -112,6 +147,14 @@ impl ModelProfile {
             if s.open.is_empty() || s.close.is_empty() || s.tag.is_empty() {
                 return Err(ProfileError::Invalid("span tag/open/close must be non-empty"));
             }
+        }
+        // when both context limits are set, the RLM frontier must be at least the
+        // native window — RLM only ever serves prompts that DON'T fit natively.
+        if self.limits.context_window > 0
+            && self.limits.rlm_max_context > 0
+            && self.limits.rlm_max_context < self.limits.context_window
+        {
+            return Err(ProfileError::Invalid("limits.rlm_max_context must be >= limits.context_window"));
         }
         Ok(())
     }
@@ -326,6 +369,58 @@ mod tests {
                 args: r#"{"tool_name":"get_weather","city":"SF"}"#.into(),
             },
         );
+    }
+
+    #[test]
+    fn limits_parse_and_gate_corpus() {
+        let p = ModelProfile::from_toml(
+            r#"
+            schema_version = 1
+            model = "m"
+            [tool_call]
+            open = "<tool>"
+            close = "</tool>"
+            [tool_result]
+            role = "tool"
+            [limits]
+            context_window = 32768
+            rlm_max_context = 262144
+        "#,
+        )
+        .unwrap();
+        assert_eq!(p.limits.context_window, 32768);
+        assert_eq!(p.limits.rlm_max_context(), Some(262144));
+        assert!(p.limits.rlm_corpus_allowed(262144));
+        assert!(!p.limits.rlm_corpus_allowed(262145));
+    }
+
+    #[test]
+    fn limits_absent_defaults_to_unset_and_allows_everything() {
+        let reg = Registry::builtin();
+        let p = reg.select("Qwen3-Coder-30B").unwrap();
+        // The bundled profile may or may not set limits; an unset limit allows any corpus.
+        if p.limits.rlm_max_context().is_none() {
+            assert!(p.limits.rlm_corpus_allowed(u32::MAX));
+        }
+    }
+
+    #[test]
+    fn validate_rejects_rlm_frontier_below_window() {
+        let r = ModelProfile::from_toml(
+            r#"
+            schema_version = 1
+            model = "m"
+            [tool_call]
+            open = "<tool>"
+            close = "</tool>"
+            [tool_result]
+            role = "tool"
+            [limits]
+            context_window = 32768
+            rlm_max_context = 16384
+        "#,
+        );
+        assert!(r.is_err());
     }
 
     #[test]
