@@ -20,6 +20,7 @@ mod kv;
 mod standard;
 mod concurrency;
 mod rlm;
+mod compose;
 
 use io_uring::{opcode, types, IoUring};
 use jade_protocol::{Frame, InferenceRequest};
@@ -189,7 +190,7 @@ pub fn run(sock_path: String) {
         llama_cpp_sys_2::LLAMA_FLASH_ATTN_TYPE_DISABLED
     };
 
-    let ctx_params = LlamaContextParams::default()
+    let mut ctx_params = LlamaContextParams::default()
         .with_n_ctx(Some(NonZeroU32::new(cfg.ctx_size).unwrap()))
         .with_n_batch(cfg.n_batch)
         .with_n_ubatch(cfg.n_ubatch)
@@ -199,6 +200,13 @@ pub fn run(sock_path: String) {
         .with_type_k(kv::kv_cache_type(cfg.kv_type_k))
         .with_type_v(kv::kv_cache_type(cfg.kv_type_v))
         .with_flash_attention_policy(flash_attn_policy);
+    // KV-composition spike: a unified KV buffer puts all sequences in one stream, so
+    // cross-sequence seq_cp becomes a cheap metadata-only op (no `is_full` block) —
+    // the cheap path for multi-block composition. Opt-in so the default is unchanged.
+    if std::env::var("JADE_KV_UNIFIED").is_ok() {
+        ctx_params = ctx_params.with_kv_unified(true);
+        eprintln!("jaded: kv_unified enabled (composition spike)");
+    }
     let mut ctx = model.new_context(&backend, ctx_params).unwrap_or_else(|e| {
         eprintln!("jaded: context init failed: {e}");
         std::process::exit(1);
@@ -224,6 +232,16 @@ pub fn run(sock_path: String) {
     // Latency A/B: standard single-shot vs RLM on a doc that fits the window.
     if std::env::var("JADE_RLM_COMPARE").is_ok() {
         rlm::selftest_rlm_compare(&model, &mut ctx, &chat_template);
+        return;
+    }
+    // KV-composition Phase A: state-seq KV save/restore round-trip.
+    if std::env::var("JADE_KV_ROUNDTRIP").is_ok() {
+        compose::selftest_kv_roundtrip(&model, &mut ctx, &chat_template);
+        return;
+    }
+    // KV-composition C0 spike: compose two precomputed blocks into one sequence.
+    if std::env::var("JADE_KV_COMPOSE").is_ok() {
+        compose::selftest_kv_compose(&model, &mut ctx, &chat_template);
         return;
     }
 
