@@ -90,10 +90,18 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # The compiled llama.cpp (incl. the MoE driver sources) is cached under the
+      # key below. That key MUST include the llama.cpp submodule commit — without
+      # it, repointing the submodule (e.g. to a new fork commit) reuses a stale
+      # cached build that never recompiles the changed C++/CUDA sources.
+      - name: Resolve llama.cpp submodule SHA (cache key)
+        id: llama_sha
+        run: echo "sha=$(git -C llama-cpp/ffi/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo + build (incl. compiled llama.cpp)
         uses: Swatinem/rust-cache@v2
         with:
-          key: cuda-${{ env.CUDA_VERSION }}-arch-${{ env.CUDAARCHS }}
+          key: cuda-${{ env.CUDA_VERSION }}-arch-${{ env.CUDAARCHS }}-llama-${{ steps.llama_sha.outputs.sha }}
 
       - name: Sanity — verify nvcc on PATH
         run: |
