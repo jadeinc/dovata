@@ -107,7 +107,14 @@ fn main() {
     println!("query(inline) ANSWER: {:?}", ans2.trim());
     println!("  needle found: {}", ans2.contains(needle));
 
-    let ok = ans1.contains(needle) && ans2.contains(needle);
+    // 4. COMPOSE query — tensor-level KV-composition engine (daemon needs JADE_KV_UNIFIED=1).
+    let (ans3, _) = rlm(&sock, format!(
+        "{{\"compose\":true,\"handle\":{handle},\"question\":\"{question}\",\"max_spans\":4}}"
+    )).expect("compose query");
+    println!("query(compose, handle={handle}) ANSWER: {:?}", ans3.trim());
+    println!("  needle found: {}", ans3.contains(needle));
+
+    let ok = ans1.contains(needle) && ans2.contains(needle) && ans3.contains(needle);
     println!("RLM SOCKET TEST: {}", if ok { "PASS" } else { "FAIL" });
     std::process::exit(if ok { 0 } else { 1 });
 }

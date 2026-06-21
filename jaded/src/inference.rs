@@ -244,6 +244,16 @@ pub fn run(sock_path: String) {
         compose::selftest_kv_compose(&model, &mut ctx, &chat_template);
         return;
     }
+    // KV-composition RLM demo: retrieve -> compose -> single decode (needs JADE_KV_UNIFIED=1).
+    if std::env::var("JADE_COMPOSE_DEMO").is_ok() {
+        compose::selftest_compose_demo(&model, &mut ctx, &chat_template);
+        return;
+    }
+    // Multi-block composition + CacheBlend test (needs JADE_KV_UNIFIED=1).
+    if std::env::var("JADE_COMPOSE_MULTI").is_ok() {
+        compose::selftest_compose_multi(&model, &mut ctx, &chat_template);
+        return;
+    }
 
     let mut cache = PromptCache::new(cfg.cache_size);
     eprintln!("jaded: prompt cache size={}", cfg.cache_size);

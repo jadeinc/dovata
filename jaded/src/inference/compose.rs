@@ -14,6 +14,7 @@
 //! Both are gated by env vars in `run` and reuse the loaded model/context.
 
 use super::build_formatted_prompt;
+use std::collections::{HashMap, HashSet};
 use llama_cpp_2::{
     context::LlamaContext,
     llama_batch::LlamaBatch,
@@ -184,5 +185,224 @@ pub(crate) fn selftest_kv_compose(model: &LlamaModel, ctx: &mut LlamaContext, _t
     };
     if let Err(e) = run() {
         eprintln!("jaded: [kv-compose] error: {e}");
+    }
+}
+
+// ── KV-composition RLM engine (Phases B + C + D) ───────────────────────────────
+//
+// Full context lives as CPU-RAM token blocks. Per query: retrieve top-k blocks by
+// IDF-weighted token overlap (Phase B — non-agentic, zero LLM calls), precompute
+// each block's KV on a scratch sequence, splice them into ONE sequence at distinct
+// positions (Phase C — `seq_add` + same-stream `seq_cp`, needs `kv_unified`), then
+// a single decode answers over the composed window. Optional CacheBlend-style
+// in-context recompute of a fraction of each block (Phase D) restores cross-block
+// attention. NO agentic PICK/COMBINE calls, NO per-branch re-prompting.
+
+/// One context block held as token ids (the full corpus lives in RAM as these).
+pub(crate) struct Block {
+    pub(crate) ids: Vec<i32>,
+    pub(crate) text: String,
+}
+
+/// The corpus: blocks + a built-in IDF retriever.
+pub(crate) struct BlockStore {
+    pub(crate) blocks: Vec<Block>,
+}
+
+impl BlockStore {
+    /// Tokenize each text into a block (no BOS — blocks are mid-context fragments).
+    pub(crate) fn from_texts(model: &LlamaModel, texts: &[String]) -> Result<Self, String> {
+        let mut blocks = Vec::with_capacity(texts.len());
+        for t in texts {
+            let ids = model
+                .str_to_token(t, AddBos::Never)
+                .map_err(|e| format!("tokenize block: {e}"))?
+                .iter()
+                .map(|tok| tok.0)
+                .collect();
+            blocks.push(Block { ids, text: t.clone() });
+        }
+        Ok(BlockStore { blocks })
+    }
+
+    /// Retrieve the top-`k` block indices for `query_ids` by IDF-weighted shared-token
+    /// score (non-agentic; no model call). Falls back to the first `k` if nothing
+    /// overlaps. (Lexical for now; a semantic embedder can drop in here later.)
+    fn retrieve(&self, query_ids: &[i32], k: usize) -> Vec<usize> {
+        let n = self.blocks.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let sets: Vec<HashSet<i32>> = self.blocks.iter().map(|b| b.ids.iter().copied().collect()).collect();
+        let mut df: HashMap<i32, usize> = HashMap::new();
+        for s in &sets {
+            for &t in s {
+                *df.entry(t).or_insert(0) += 1;
+            }
+        }
+        let q: HashSet<i32> = query_ids.iter().copied().collect();
+        let mut scored: Vec<(f32, usize)> = (0..n)
+            .map(|i| {
+                let score: f32 = q
+                    .iter()
+                    .filter(|t| sets[i].contains(t))
+                    .map(|t| (n as f32 / *df.get(t).unwrap_or(&1) as f32).ln().max(0.0))
+                    .sum();
+                (score, i)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let picked: Vec<usize> = scored.iter().filter(|(s, _)| *s > 0.0).take(k).map(|(_, i)| *i).collect();
+        if picked.is_empty() {
+            (0..n.min(k)).collect()
+        } else {
+            picked
+        }
+    }
+}
+
+/// Splice one precomputed block (ids) into `seq 0` of `ctx` at `[off, off+len)` using
+/// a scratch sequence: prefill in isolation, `seq_add` to the offset (RoPE-correct),
+/// same-stream `seq_cp` into seq 0. Requires a unified KV cache. Returns `len`.
+fn splice_block(ctx: &mut LlamaContext, ids: &[i32], off: i32, scratch: i32) -> Result<i32, String> {
+    let toks: Vec<LlamaToken> = ids.iter().map(|&x| LlamaToken(x)).collect();
+    let len = toks.len() as i32;
+    prefill(ctx, &toks, 0, scratch, false)?;
+    ctx.kv_cache_seq_add(scratch, Some(0), Some(len as u32), off).map_err(|e| format!("seq_add: {e}"))?;
+    ctx.copy_kv_cache_seq(scratch, 0, Some(off as u32), Some((off + len) as u32)).map_err(|e| format!("seq_cp: {e}"))?;
+    Ok(len)
+}
+
+/// Answer `question` over `store` by KV composition. Retrieve top-`k`, compose into
+/// one sequence, optionally CacheBlend-recompute the trailing `recompute_frac` of
+/// each block in-context, then a single decode. Returns (answer, selected indices).
+/// **Requires the context to be created with `kv_unified=true`.**
+pub(crate) fn compose_and_answer(
+    model: &LlamaModel,
+    ctx: &mut LlamaContext,
+    store: &BlockStore,
+    question: &str,
+    k: usize,
+    recompute_frac: f32,
+) -> Result<(String, Vec<usize>), String> {
+    // ── Phase B: retrieve (non-agentic) ────────────────────────────────────────
+    let q_ids: Vec<i32> = model
+        .str_to_token(question, AddBos::Never)
+        .map_err(|e| format!("tok query: {e}"))?
+        .iter()
+        .map(|t| t.0)
+        .collect();
+    let selected = store.retrieve(&q_ids, k);
+    eprintln!("jaded: [compose] retrieved blocks {selected:?} of {}", store.blocks.len());
+
+    // ── Phase C: compose selected blocks into one sequence ──────────────────────
+    ctx.clear_kv_cache();
+    let prefix = model
+        .str_to_token("You are given several notes. Use them to answer the question.\n\n", AddBos::Always)
+        .map_err(|e| format!("tok prefix: {e}"))?;
+    prefill(ctx, &prefix, 0, 0, false)?;
+    let mut off = prefix.len() as i32;
+    // record each composed block's [start,end) for the optional recompute pass.
+    let mut spans: Vec<(usize, i32, i32)> = Vec::new(); // (block_idx, start, len)
+    for (j, &bi) in selected.iter().enumerate() {
+        let start = off;
+        let len = splice_block(ctx, &store.blocks[bi].ids, off, (j + 1) as i32)?;
+        spans.push((bi, start, len));
+        off += len;
+    }
+
+    // ── Phase D: CacheBlend-lite (EXPERIMENTAL, default OFF). Recompute the trailing
+    // fraction of each block IN CONTEXT so those tokens attend to preceding blocks.
+    // NOTE: this positional heuristic is NOT real CacheBlend — proper HKVD token
+    // selection needs per-layer KV-deviation access (ggml/fork work), and this naive
+    // version did not help (even hurt) in testing, so callers pass 0.0. Kept as a knob.
+    if recompute_frac > 0.0 {
+        for &(bi, start, len) in spans.iter().skip(1) {
+            let m = ((len as f32 * recompute_frac).ceil() as i32).clamp(1, len);
+            let rstart = start + (len - m); // recompute the last m tokens of the block
+            // evict those cells, then re-prefill the tokens at their composed
+            // positions — now attending to everything before them in seq 0.
+            ctx.clear_kv_cache_seq(Some(0), Some(rstart as u32), Some((start + len) as u32))
+                .map_err(|e| format!("blend clear: {e}"))?;
+            let toks: Vec<LlamaToken> = store.blocks[bi].ids[(len - m) as usize..].iter().map(|&x| LlamaToken(x)).collect();
+            prefill(ctx, &toks, rstart, 0, false)?;
+        }
+        eprintln!("jaded: [compose] cacheblend recompute ~{:.0}% of {} blocks", recompute_frac * 100.0, spans.len().saturating_sub(1));
+    }
+
+    // ── single decode over the composed window ──────────────────────────────────
+    let qtext = format!("\nQuestion: {question}\nAnswer: ");
+    let qtoks = model.str_to_token(&qtext, AddBos::Never).map_err(|e| format!("tok q: {e}"))?;
+    prefill(ctx, &qtoks, off, 0, true)?;
+    let ans = gen_loop(model, ctx, 0, off + qtoks.len() as i32, 96)?;
+    ctx.clear_kv_cache();
+    Ok((ans, selected))
+}
+
+/// End-to-end composition demo (gated by `JADE_COMPOSE_DEMO`; needs `JADE_KV_UNIFIED=1`):
+/// a needle-in-haystack answered by retrieve → compose → single decode — no agentic
+/// calls, no re-prompting. Compares to the agentic baseline conceptually.
+pub(crate) fn selftest_compose_demo(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaChatTemplate) {
+    let needle = "XQ-42";
+    let n_sections: usize = std::env::var("JADE_RLM_DEMO_SECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(40);
+    let topics = ["Introduction","Hardware","Boot","Networking","Filesystem","Processes","Logging","Power","Updates","Telemetry","Scheduling","Memory","Drivers","Crypto","Backups","Glossary"];
+    let filler = "This section documents routine operational details with no special codes or secrets. ".repeat(20);
+    let needle_at = n_sections / 2;
+    let mut texts: Vec<String> = Vec::new();
+    for i in 0..n_sections {
+        if i == needle_at {
+            texts.push(format!("Section {i}: Access Credentials. The secret access code is {needle}. Rotate it quarterly. {filler}"));
+        } else {
+            let t = topics[i % topics.len()];
+            texts.push(format!("Section {i}: {t}. This section describes {t}. {filler}"));
+        }
+    }
+    let store = match BlockStore::from_texts(model, &texts) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("jaded: [compose-demo] build error: {e}"); return; }
+    };
+    let question = "What is the secret access code?";
+    eprintln!("jaded: [compose-demo] {} blocks, question: {question:?}", store.blocks.len());
+    let t = std::time::Instant::now();
+    match compose_and_answer(model, ctx, &store, question, 4, 0.0) {
+        Ok((ans, sel)) => {
+            let ms = t.elapsed().as_millis();
+            eprintln!("jaded: [compose-demo] selected {sel:?}");
+            eprintln!("jaded: [compose-demo] ANSWER: {:?}", ans.trim());
+            eprintln!("jaded: [compose-demo] needle {needle} found: {}  ({ms}ms, ONE decode, zero agentic calls)", ans.contains(needle));
+        }
+        Err(e) => eprintln!("jaded: [compose-demo] error: {e}"),
+    }
+}
+
+/// Multi-block + CacheBlend test (gated by `JADE_COMPOSE_MULTI`; needs `JADE_KV_UNIFIED=1`):
+/// the answer requires TWO different blocks, so composition must place both in the
+/// window. Runs once WITHOUT CacheBlend recompute and once WITH, to show the fidelity
+/// knob. Success = both facts present in the answer.
+pub(crate) fn selftest_compose_multi(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaChatTemplate) {
+    let filler = "This section has routine details and no codes. ".repeat(20);
+    let mut texts: Vec<String> = Vec::new();
+    for i in 0..20 {
+        texts.push(match i {
+            7 => format!("Section 7: Launch. The launch code is ALPHA-9. {filler}"),
+            13 => format!("Section 13: Abort. The abort code is OMEGA-3. {filler}"),
+            _ => format!("Section {i}: Misc. {filler}"),
+        });
+    }
+    let store = match BlockStore::from_texts(model, &texts) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("jaded: [compose-multi] build error: {e}"); return; }
+    };
+    let question = "What are the launch code and the abort code?";
+    for &frac in &[0.0f32, 0.15] {
+        match compose_and_answer(model, ctx, &store, question, 4, frac) {
+            Ok((ans, sel)) => {
+                let lc = ans.to_lowercase();
+                let both = lc.contains("alpha-9") && lc.contains("omega-3");
+                eprintln!("jaded: [compose-multi] recompute={frac} selected={sel:?} both={both}");
+                eprintln!("jaded: [compose-multi]   ANSWER: {:?}", ans.trim());
+            }
+            Err(e) => eprintln!("jaded: [compose-multi] error (frac={frac}): {e}"),
+        }
     }
 }

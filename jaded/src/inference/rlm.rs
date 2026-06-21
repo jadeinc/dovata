@@ -50,6 +50,10 @@ impl ContextStore {
     fn len(&self) -> usize {
         self.bodies.len()
     }
+    /// The block texts — the corpus the KV-composition engine builds blocks from.
+    pub(crate) fn bodies(&self) -> &[String] {
+        &self.bodies
+    }
     /// The structural map the root navigates: one line per span, `id: summary`.
     fn map_text(&self) -> String {
         self.summaries
@@ -314,6 +318,9 @@ pub(crate) fn handle_rlm(
     // QUERY: resolve the context (by handle or inline), then run the RLM.
     let question = payload.get("question").and_then(|q| q.as_str()).unwrap_or("");
     let max_spans = payload.get("max_spans").and_then(|m| m.as_u64()).unwrap_or(4) as usize;
+    // `"compose": true` selects the tensor-level KV-composition engine (retrieve →
+    // splice blocks → single decode); otherwise the agentic PICK→fan-out→COMBINE path.
+    let compose = payload.get("compose").and_then(|c| c.as_bool()).unwrap_or(false);
     let store = if let Some(h) = payload.get("handle").and_then(|h| h.as_u64()) {
         match get_context(h) {
             Some(s) => s,
@@ -330,9 +337,19 @@ pub(crate) fn handle_rlm(
     };
 
     stream.write_all(&Frame::Meta { model: model_name.to_owned() }.encode())?;
-    match run_rlm(model, ctx, tmpl, question, &store, max_spans.max(1), false) {
+    let result = if compose {
+        // Tensor-level KV composition (needs the daemon launched with JADE_KV_UNIFIED=1).
+        match super::compose::BlockStore::from_texts(model, store.bodies()) {
+            Ok(bs) => super::compose::compose_and_answer(model, ctx, &bs, question, max_spans.max(1), 0.0),
+            Err(e) => Err(e),
+        }
+    } else {
+        run_rlm(model, ctx, tmpl, question, &store, max_spans.max(1), false)
+    };
+    match result {
         Ok((answer, picked)) => {
-            eprintln!("jaded: [rlm] query answered (spans {picked:?})");
+            eprintln!("jaded: [rlm] query answered ({} {picked:?})",
+                if compose { "compose blocks" } else { "agentic spans" });
             stream.write_all(&Frame::Token(answer).encode())?;
             stream.write_all(&Frame::Done { tokens_used: 0 }.encode())?;
         }
