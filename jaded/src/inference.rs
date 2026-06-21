@@ -9,8 +9,12 @@
 //! * [`standard`]    — single-shot inference (one sequence, constrained decode).
 //! * [`concurrency`] — the continuous-batching engine (N sequences, one decode
 //!                     per tick) over the pure [`jaded::sched::Scheduler`].
-//! * [`rlm`]         — Recursive Language Model: context store, model-driven
-//!                     PICK→fan-out→COMBINE recursion, and its socket dispatch.
+//! * [`compose`]     — Recursive Language Model engine: tensor-level KV-cache
+//!                     composition (retrieve → splice block KV → one decode).
+//! * [`rlm`]         — RLM socket dispatch: context-handle upload + query routing
+//!                     onto the [`compose`] engine.
+//! * [`bench`]       — env-gated developer self-tests and benchmarks (not a request
+//!                     path); [`bench::dispatch`] runs one and exits if requested.
 //!
 //! The platform-independent logic (anchors/stop/grammar, config, response cache,
 //! scheduler) lives in the `jaded` library and is unit-tested on any platform;
@@ -21,6 +25,7 @@ mod standard;
 mod concurrency;
 mod rlm;
 mod compose;
+mod bench;
 
 use io_uring::{opcode, types, IoUring};
 use jade_protocol::{Frame, InferenceRequest};
@@ -197,11 +202,10 @@ pub fn run(sock_path: String) {
         .with_type_v(kv::kv_cache_type(cfg.kv_type_v))
         .with_flash_attention_policy(flash_attn_policy);
     // A unified KV buffer puts all sequences in one stream, so cross-sequence seq_cp
-    // becomes a cheap metadata-only op (no `is_full` block) — the path multi-block KV
-    // composition needs. Since composition is now the default RLM engine, unified is
-    // ON by default; set JADE_KV_UNIFIED=0/off/false to opt out (e.g. to A/B the
-    // standard path). Disabling it makes the default (compose) RLM path abort, so the
-    // legacy agentic engine must be selected explicitly (`"compose": false`).
+    // becomes a cheap metadata-only op (no `is_full` block) — exactly what multi-block
+    // KV composition needs. The RLM engine is composition, so unified is ON by default;
+    // set JADE_KV_UNIFIED=0/off/false to opt out (e.g. to A/B the standard path).
+    // Disabling it makes the `rlm` request path abort at compose time.
     let kv_unified = match std::env::var("JADE_KV_UNIFIED") {
         Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false"),
         Err(_) => true,
@@ -210,7 +214,7 @@ pub fn run(sock_path: String) {
         ctx_params = ctx_params.with_kv_unified(true);
         eprintln!("jaded: kv_unified enabled (default; set JADE_KV_UNIFIED=0 to disable)");
     } else {
-        eprintln!("jaded: kv_unified DISABLED — default (compose) RLM path unavailable");
+        eprintln!("jaded: kv_unified DISABLED — the rlm (compose) request path is unavailable");
     }
     let mut ctx = model.new_context(&backend, ctx_params).unwrap_or_else(|e| {
         eprintln!("jaded: context init failed: {e}");
@@ -218,56 +222,10 @@ pub fn run(sock_path: String) {
     });
     eprintln!("jaded: context ready (ctx_size={})", cfg.ctx_size);
 
-    // Continuous-batching engine self-test: set JADE_RLM_SELFTEST=1 to run a batch of
-    // sub-inferences through the multi-sequence scheduler against the just-loaded
-    // model, print outputs + timing, and exit. The normal daemon path is untouched.
-    if std::env::var("JADE_RLM_SELFTEST").is_ok() {
-        rlm::selftest_rlm(&model, &mut ctx, &chat_template);
-        return;
-    }
-    // KV-composition Phase A: state-seq KV save/restore round-trip.
-    if std::env::var("JADE_KV_ROUNDTRIP").is_ok() {
-        compose::selftest_kv_roundtrip(&model, &mut ctx, &chat_template);
-        return;
-    }
-    // KV-composition C0 spike: compose two precomputed blocks into one sequence.
-    if std::env::var("JADE_KV_COMPOSE").is_ok() {
-        compose::selftest_kv_compose(&model, &mut ctx, &chat_template);
-        return;
-    }
-    // KV-composition RLM demo: retrieve -> compose -> single decode (needs JADE_KV_UNIFIED=1).
-    if std::env::var("JADE_COMPOSE_DEMO").is_ok() {
-        compose::selftest_compose_demo(&model, &mut ctx, &chat_template);
-        return;
-    }
-    // Multi-block composition + CacheBlend test (needs JADE_KV_UNIFIED=1).
-    if std::env::var("JADE_COMPOSE_MULTI").is_ok() {
-        compose::selftest_compose_multi(&model, &mut ctx, &chat_template);
-        return;
-    }
-    // KV transfer-vs-recompute benchmark: GPU re-prefill vs CPU-RAM KV restore (PCIe).
-    if std::env::var("JADE_KV_BENCH").is_ok() {
-        compose::selftest_kv_bench(&model, &mut ctx, &chat_template);
-        return;
-    }
-    // End-to-end cold-vs-warm compose bench: KV-cache restore vs re-prefill per query.
-    if std::env::var("JADE_COMPOSE_CACHE").is_ok() {
-        compose::selftest_compose_cache(&model, &mut ctx, &chat_template);
-        return;
-    }
-    // Pure generation-throughput baseline: decode tok/s vs resident context size.
-    if std::env::var("JADE_GEN_BENCH").is_ok() {
-        compose::selftest_gen_bench(&model, &mut ctx, &chat_template);
-        return;
-    }
-    // Generation tok/s PAST the ctx window via RLM: corpus >> window, decode stays flat.
-    if std::env::var("JADE_RLM_OVERWINDOW").is_ok() {
-        compose::selftest_rlm_overwindow(&model, &mut ctx, &chat_template);
-        return;
-    }
-    // Blended RAG-RLM: PICK (retrieve) -> FAN-OUT (cross-encoder rerank) -> COMBINE.
-    if std::env::var("JADE_BLENDED").is_ok() {
-        compose::selftest_blended(&model, &mut ctx, &chat_template);
+    // Developer self-tests / benchmarks: if a JADE_* selftest var is set, run that one
+    // routine against the just-loaded model and exit WITHOUT serving (see `bench`). The
+    // normal daemon path below is untouched when no such var is set.
+    if bench::dispatch(&model, &mut ctx, &chat_template) {
         return;
     }
 

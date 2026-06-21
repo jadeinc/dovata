@@ -12,54 +12,18 @@
 //! copy) rather than re-prefilled — ~50× cheaper per block on the A10G. This module
 //! owns the socket dispatch ([`handle_rlm`]) and the upload context handles.
 //!
-//! It also hosts a self-test for the continuous-batching engine ([`selftest_rlm`],
-//! gated by `JADE_RLM_SELFTEST`). That engine ([`super::concurrency`]) is retained as
-//! general infrastructure for concurrent / mass prompting, independent of RLM.
+//! The continuous-batching engine ([`super::concurrency`]) is retained as general
+//! infrastructure for concurrent / mass prompting, independent of RLM; its self-test
+//! lives in [`super::bench`].
 
-use super::build_formatted_prompt;
 use super::compose::{compose_and_answer, BlockStore, KvBlockCache};
-use super::concurrency::{run_concurrent, SubInfer};
 use jade_protocol::{Frame, InferenceRequest};
-use jaded::control::DecodeControl;
-use llama_cpp_2::{
-    context::LlamaContext,
-    model::{AddBos, LlamaChatTemplate, LlamaModel},
-};
+use llama_cpp_2::{context::LlamaContext, model::LlamaModel};
 use std::collections::HashMap;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
-
-/// Build one [`SubInfer`] from a plain prompt: apply the chat template, tokenize, and
-/// attach a fresh `DecodeControl` (+ optional grammar). Used by the continuous-batching
-/// self-test below.
-fn build_sub(
-    model: &LlamaModel,
-    tmpl: &LlamaChatTemplate,
-    prompt: &str,
-    grammar: Option<&str>,
-    max_new: usize,
-) -> Result<SubInfer, String> {
-    let formatted = build_formatted_prompt(prompt, model, tmpl)?;
-    let tokens = model
-        .str_to_token(&formatted, AddBos::Always)
-        .map_err(|e| format!("tokenize failed: {e}"))?;
-    let req = InferenceRequest {
-        prompt: prompt.to_owned(),
-        max_tokens: max_new as u32,
-        grammar: grammar.map(|g| g.to_owned()),
-        ..Default::default()
-    };
-    Ok(SubInfer {
-        tokens,
-        base_pos: 0,
-        grammar: grammar.map(|g| g.to_owned()),
-        control: DecodeControl::new(&req),
-        max_new,
-    })
-}
 
 // ── RLM over the socket: context handles + request dispatch ────────────────────
 
@@ -167,7 +131,7 @@ pub(crate) fn handle_rlm(
             // uncontended and lets the persistent KV cache mutate in place.
             let mut map = rlm_stores().lock().unwrap();
             match map.get_mut(&h) {
-                Some(sc) => compose_and_answer(model, ctx, &sc.blocks, &mut sc.kv_cache, question, k.max(1), 0.0),
+                Some(sc) => compose_and_answer(model, ctx, &sc.blocks, &mut sc.kv_cache, question, k.max(1)),
                 None => Err(format!("unknown context handle {h}")),
             }
         } else if let Some(secs) = payload.get("sections") {
@@ -175,7 +139,7 @@ pub(crate) fn handle_rlm(
             match BlockStore::from_texts(model, &bodies) {
                 Ok(bs) => {
                     let mut cache = KvBlockCache::new(0); // one-shot inline: no caching
-                    compose_and_answer(model, ctx, &bs, &mut cache, question, k.max(1), 0.0)
+                    compose_and_answer(model, ctx, &bs, &mut cache, question, k.max(1))
                 }
                 Err(e) => Err(e),
             }
@@ -198,101 +162,11 @@ pub(crate) fn handle_rlm(
     Ok(())
 }
 
-// ── Self-test for the continuous-batching engine (gated by `JADE_RLM_SELFTEST`) ──
-
-/// Build a handful of sub-inferences, run them both sequentially (baseline) and
-/// concurrently (one batch/tick), and print outputs + wall-clock so the fan-out
-/// speedup and correctness are visible. Check `nvidia-smi` alongside to confirm VRAM
-/// tracks live KV rather than scaling with the number of sub-calls. This exercises
-/// the [`super::concurrency`] engine, which is retained for concurrent / mass
-/// prompting independent of the RLM compose path.
-pub(crate) fn selftest_rlm(model: &LlamaModel, ctx: &mut LlamaContext, tmpl: &LlamaChatTemplate) {
-    let prompts = [
-        "Reply with exactly one word: the capital of France.",
-        "Reply with exactly one word: a primary color.",
-        "Reply with exactly one word: the largest planet.",
-        "Reply with exactly one word: the opposite of hot.",
-        "Reply with exactly one word: a fruit that is yellow.",
-        "Reply with exactly one word: the chemical symbol for water.",
-        "Reply with exactly one word: the number after ten.",
-        "Reply with exactly one word: a animal that barks.",
-    ];
-    let max_new = 24usize;
-
-    // Build a SubInfer per prompt (tokenize through the model's chat template).
-    let build_subs = || -> Result<Vec<SubInfer>, String> {
-        prompts
-            .iter()
-            .map(|p| build_sub(model, tmpl, p, None, max_new))
-            .collect()
-    };
-
-    eprintln!("jaded: [selftest] {} sub-inferences, max_new={max_new}", prompts.len());
-
-    // Sequential baseline: one sub per run_concurrent call, summed wall-clock.
-    let seq_start = Instant::now();
-    let mut seq_outputs = Vec::new();
-    match build_subs() {
-        Ok(subs) => {
-            for sub in subs {
-                match run_concurrent(model, ctx, vec![sub]) {
-                    Ok(mut o) => seq_outputs.push(o.pop().unwrap_or_default()),
-                    Err(e) => { eprintln!("jaded: [selftest] sequential error: {e}"); return; }
-                }
-            }
-        }
-        Err(e) => { eprintln!("jaded: [selftest] build error: {e}"); return; }
-    }
-    let seq_ms = seq_start.elapsed().as_millis();
-
-    // Concurrent: all subs in one run (one decode per tick advances all).
-    let con_start = Instant::now();
-    let con_outputs = match build_subs() {
-        Ok(subs) => match run_concurrent(model, ctx, subs) {
-            Ok(o) => o,
-            Err(e) => { eprintln!("jaded: [selftest] concurrent error: {e}"); return; }
-        },
-        Err(e) => { eprintln!("jaded: [selftest] build error: {e}"); return; }
-    };
-    let con_ms = con_start.elapsed().as_millis();
-
-    eprintln!("jaded: [selftest] ── outputs (concurrent) ──");
-    for (i, (p, o)) in prompts.iter().zip(con_outputs.iter()).enumerate() {
-        eprintln!("  [{i}] {p}\n       -> {:?}", o.trim());
-    }
-    eprintln!("jaded: [selftest] sequential={seq_ms}ms  concurrent={con_ms}ms  speedup={:.2}x",
-        seq_ms as f64 / con_ms.max(1) as f64);
-    // Sanity: concurrent outputs should match sequential (same greedy-ish sampling
-    // path, modulo the shared free sampler's RNG — compare trimmed first words).
-    let matches = seq_outputs.iter().zip(con_outputs.iter())
-        .filter(|(a, b)| a.trim() == b.trim()).count();
-    eprintln!("jaded: [selftest] concurrent==sequential on {matches}/{} outputs", prompts.len());
-
-    // Concurrency sweep: latency + throughput vs N concurrent sub-inferences (the
-    // A10G knee). Latency staying ~flat as N grows = continuous batching working.
-    eprintln!("jaded: [selftest] ── concurrency sweep (N concurrent, max_new={max_new}) ──");
-    for &nn in &[1usize, 2, 4, 8, 16] {
-        let mut subs = Vec::with_capacity(nn);
-        let mut ok = true;
-        for k in 0..nn {
-            match build_sub(model, tmpl, prompts[k % prompts.len()], None, max_new) {
-                Ok(s) => subs.push(s),
-                Err(_) => { ok = false; break; }
-            }
-        }
-        if !ok { continue; }
-        let t = Instant::now();
-        if run_concurrent(model, ctx, subs).is_err() { continue; }
-        let ms = t.elapsed().as_millis().max(1);
-        eprintln!("  N={nn:2}  {ms:4}ms  throughput {:.1} sub-inferences/s", nn as f64 * 1000.0 / ms as f64);
-    }
-}
-
 // ── Unit tests ──────────────────────────────────────────────────────────────
 //
 // These cover the PURE, model-free logic of this module: the upload payload parser.
-// The compose engine itself needs a real model and is exercised by the compose
-// selftests + `examples/rlm_client.rs` on the box; its pure pieces (retrieval, KV
+// The compose engine itself needs a real model and is exercised by the selftests in
+// `super::bench` + `examples/rlm_client.rs` on the box; its pure pieces (retrieval, KV
 // cache LRU) are unit-tested in `super::compose`. This whole module is behind the
 // Linux-only `inference` feature, so these run under `cargo test -p jaded --features
 // inference` (not the macOS pure suite).

@@ -1,10 +1,9 @@
 # Blended RAG-RLM: KV-Composition Engine — Design & Results
 
 > Status: **prototype, validated end-to-end on EC2 (A10G), uncommitted** on branch
-> `feat/rlm-phase0-fork-vendor`. All selftests are env-gated and live in
-> `jaded/src/inference/compose.rs`. This document is the results snapshot to work from;
-> the codebase needs a cleanup pass (see [Cleanup before implementation](#cleanup-before-implementation))
-> before this becomes a production path.
+> `feat/rlm-phase0-fork-vendor`. All selftests are env-gated and now live in a dedicated
+> `jaded/src/inference/bench.rs` (the cleanup pass below is done). This document is the
+> results snapshot to work from before this becomes a production path.
 
 All numbers below were measured on the EC2 `g5.xlarge` (NVIDIA A10G, 23 GB), serving the
 deployed 30B-MoE Q4 model (~18.5 GB GGUF), `JADE_CTX_SIZE=32768`, `q4_0` K/V cache,
@@ -48,13 +47,18 @@ Three building blocks:
      phases share work.
 
 ### Module map (`jaded/src/inference/`)
-- `compose.rs` — the KV-composition engine, KV cache, blended pipeline, **and all the
-  env-gated benches/selftests** (the part that needs splitting out).
-- `rlm.rs` — socket dispatch (`handle_rlm`), the persistent handle store
-  (`StoredContext` = `BlockStore` + `KvBlockCache`), and the batching-engine selftest.
+- `compose.rs` — the KV-composition engine only: KV save/restore + prefill/decode
+  primitives, `BlockStore` + IDF retrieve, `KvBlockCache`, `compose_and_answer`, and the
+  blended rerank pipeline (`score_block_query`/`rerank`/`blended_compose_and_answer`).
+  Plus the pure (model-free) unit tests.
+- `bench.rs` — **all** env-gated developer selftests/benches and the single `dispatch()`
+  entry point (`inference.rs::run` calls it once, then exits if a `JADE_*` var was set).
+  Not a request path.
+- `rlm.rs` — socket dispatch (`handle_rlm`) and the persistent handle store
+  (`StoredContext` = `BlockStore` + `KvBlockCache`). Routes queries onto `compose`.
 - `concurrency.rs` + `sched.rs` — continuous-batching engine + pure scheduler. **Retained**
-  as general infra for concurrent / mass prompting; currently only exercised by
-  `selftest_rlm` (`JADE_RLM_SELFTEST`). Not on the compose path.
+  as general infra for concurrent / mass prompting; currently only exercised by the
+  `selftest_rlm` bench (`JADE_RLM_SELFTEST`). Not on the compose path.
 - `kv.rs` — KV helpers (cache-type map, multi-turn prefix reuse, shared-prefix prefill).
 - `standard.rs` — single-shot inference (the production non-RLM path).
 
@@ -199,10 +203,10 @@ Runtime knobs: `JADE_KV_CACHE_MB` (per-handle cache cap, default 2048),
 
 - **Toy evals, not benchmarks.** §5/§6 demonstrate mechanism and correctness, not accuracy
   numbers. Latency comparisons are confounded by first-call CUDA graph compilation.
-- **Cross-block reasoning fidelity (CacheBlend) is deferred.** `recompute_frac` exists but
-  the naive positional version didn't help; proper HKVD selection needs per-layer KV
-  access (fork/ggml work). Callers pass `0.0`. Independent/RAG-style blocks work fine;
-  multi-hop reasoning across composed blocks is unproven.
+- **Cross-block reasoning fidelity (CacheBlend) is deferred.** The naive positional
+  `recompute_frac` knob has been removed (it never helped); proper HKVD selection needs
+  per-layer KV access (fork/ggml work). Independent/RAG-style blocks work fine; multi-hop
+  reasoning across composed blocks is unproven.
 - **Retrieval is lexical IDF.** A semantic embedder for PICK is the obvious upgrade and
   matters most for recall quality.
 - **Blended pipeline is selftest-only.** Not wired into the socket (`handle_rlm`) yet.
@@ -214,26 +218,29 @@ Runtime knobs: `JADE_KV_CACHE_MB` (per-handle cache cap, default 2048),
 
 ## Cleanup before implementation
 
-The engine file has accumulated prototype scaffolding that should be tidied before this
-becomes a real feature:
+The first cleanup pass is **done** (2026-06-21):
 
-1. **Split benches/selftests out of `compose.rs`.** There are 8 env-gated selftests
-   (`selftest_kv_roundtrip`, `selftest_kv_compose`, `selftest_compose_demo`,
-   `selftest_compose_multi`, `selftest_kv_bench`, `selftest_compose_cache`,
-   `selftest_rlm_overwindow`, `selftest_blended`) + their dispatch block in
-   `inference.rs::run`. Move them to a dedicated bench module (or behind a `bench` cfg) so
-   the engine file is just the engine.
-2. **Prune dead/experimental knobs.** `recompute_frac` (CacheBlend) is effectively dead
-   (always `0.0`) — either revive it properly or remove it. The `Block.text` field is
-   unused (dead-code warning).
+1. ~~**Split benches/selftests out of `compose.rs`.**~~ ✅ All env-gated selftests/benches
+   (the 9 `selftest_*` routines + `build_sub`) moved to `jaded/src/inference/bench.rs`; the
+   ~10 env-var checks in `inference.rs::run` collapsed to one `bench::dispatch()` call.
+   `compose.rs` is now just the engine + its pure unit tests.
+2. ~~**Prune dead/experimental knobs.**~~ ✅ The dead `recompute_frac` (CacheBlend-lite)
+   parameter and its code path were removed from all three compose signatures; the unused
+   `Block.text` field and the orphaned `kv::common_prefix_len` were deleted.
+
+Still open (these are design decisions, not tidy-ups — deferred to implementation):
+
 3. **Decide the engine surface.** Which is the production path — plain compose or blended?
    Wire the chosen one into `handle_rlm` (a `"blended": true` flag and/or default) with
-   `N`/`k` defaults; drop the rest to selftests.
+   `N`/`k` defaults. (`handle_rlm` currently routes to plain `compose_and_answer`; the
+   blended pipeline is exercised only by the `JADE_BLENDED` bench.)
 4. **Revisit the retained batching engine.** `concurrency.rs` + `sched.rs` are kept for
    mass/concurrent prompting but have no production caller yet — either wire them in or
-   keep them clearly marked as infra (currently kept alive only by `selftest_rlm`).
+   keep them clearly marked as infra (currently kept alive only by the `selftest_rlm` bench).
 5. **Naming.** The module is called `rlm` but the path is no longer recursive — consider
-   renaming to reflect "retrieval + KV composition" to avoid confusion.
+   renaming to reflect "retrieval + KV composition". Deferred: the `rlm` request field is
+   part of the wire protocol (`jade-protocol`) and shared with clients, so a rename is a
+   deliberate protocol change, not a local cleanup.
 
 ---
 
