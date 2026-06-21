@@ -255,6 +255,21 @@ pub fn run(sock_path: String) {
         compose::selftest_compose_cache(&model, &mut ctx, &chat_template);
         return;
     }
+    // Pure generation-throughput baseline: decode tok/s vs resident context size.
+    if std::env::var("JADE_GEN_BENCH").is_ok() {
+        compose::selftest_gen_bench(&model, &mut ctx, &chat_template);
+        return;
+    }
+    // Generation tok/s PAST the ctx window via RLM: corpus >> window, decode stays flat.
+    if std::env::var("JADE_RLM_OVERWINDOW").is_ok() {
+        compose::selftest_rlm_overwindow(&model, &mut ctx, &chat_template);
+        return;
+    }
+    // Blended RAG-RLM: PICK (retrieve) -> FAN-OUT (cross-encoder rerank) -> COMBINE.
+    if std::env::var("JADE_BLENDED").is_ok() {
+        compose::selftest_blended(&model, &mut ctx, &chat_template);
+        return;
+    }
 
     let mut cache = PromptCache::new(cfg.cache_size);
     eprintln!("jaded: prompt cache size={}", cfg.cache_size);

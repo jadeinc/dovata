@@ -367,17 +367,38 @@ pub(crate) fn compose_and_answer(
     k: usize,
     recompute_frac: f32,
 ) -> Result<(String, Vec<usize>), String> {
-    // ── Phase B: retrieve (non-agentic) ────────────────────────────────────────
-    let q_ids: Vec<i32> = model
+    // ── PICK: retrieve top-k (non-agentic) ──────────────────────────────────────
+    let q_ids = tokenize_query(model, question)?;
+    let selected = store.retrieve(&q_ids, k);
+    eprintln!("jaded: [compose] retrieved blocks {selected:?} of {}", store.blocks.len());
+    // ── COMBINE: compose + single decode ────────────────────────────────────────
+    let ans = compose_selected(model, ctx, store, cache, &selected, question, recompute_frac)?;
+    Ok((ans, selected))
+}
+
+/// Tokenize a query string to raw token ids (no BOS — it's mid-context).
+fn tokenize_query(model: &LlamaModel, question: &str) -> Result<Vec<i32>, String> {
+    Ok(model
         .str_to_token(question, AddBos::Never)
         .map_err(|e| format!("tok query: {e}"))?
         .iter()
         .map(|t| t.0)
-        .collect();
-    let selected = store.retrieve(&q_ids, k);
-    eprintln!("jaded: [compose] retrieved blocks {selected:?} of {}", store.blocks.len());
+        .collect())
+}
 
-    // ── Phase C: compose selected blocks into one sequence ──────────────────────
+/// COMBINE: compose the `selected` blocks' KV into one sequence (restore-or-prefill via
+/// `cache`), optional CacheBlend recompute, then a single decode. Shared by the plain
+/// (retrieve→compose) and blended (retrieve→rerank→compose) pipelines. Requires
+/// `kv_unified=true`.
+fn compose_selected(
+    model: &LlamaModel,
+    ctx: &mut LlamaContext,
+    store: &BlockStore,
+    cache: &mut KvBlockCache,
+    selected: &[usize],
+    question: &str,
+    recompute_frac: f32,
+) -> Result<String, String> {
     ctx.clear_kv_cache();
     let prefix = model
         .str_to_token("You are given several notes. Use them to answer the question.\n\n", AddBos::Always)
@@ -393,32 +414,127 @@ pub(crate) fn compose_and_answer(
         off += len;
     }
 
-    // ── Phase D: CacheBlend-lite (EXPERIMENTAL, default OFF). Recompute the trailing
-    // fraction of each block IN CONTEXT so those tokens attend to preceding blocks.
-    // NOTE: this positional heuristic is NOT real CacheBlend — proper HKVD token
-    // selection needs per-layer KV-deviation access (ggml/fork work), and this naive
-    // version did not help (even hurt) in testing, so callers pass 0.0. Kept as a knob.
+    // CacheBlend-lite (EXPERIMENTAL, default OFF) — recompute the trailing fraction of
+    // each block IN CONTEXT so those tokens attend to preceding blocks. Naive positional
+    // heuristic, not real HKVD CacheBlend; callers pass 0.0. Kept as a knob.
     if recompute_frac > 0.0 {
         for &(bi, start, len) in spans.iter().skip(1) {
             let m = ((len as f32 * recompute_frac).ceil() as i32).clamp(1, len);
-            let rstart = start + (len - m); // recompute the last m tokens of the block
-            // evict those cells, then re-prefill the tokens at their composed
-            // positions — now attending to everything before them in seq 0.
+            let rstart = start + (len - m);
             ctx.clear_kv_cache_seq(Some(0), Some(rstart as u32), Some((start + len) as u32))
                 .map_err(|e| format!("blend clear: {e}"))?;
             let toks: Vec<LlamaToken> = store.blocks[bi].ids[(len - m) as usize..].iter().map(|&x| LlamaToken(x)).collect();
             prefill(ctx, &toks, rstart, 0, false)?;
         }
-        eprintln!("jaded: [compose] cacheblend recompute ~{:.0}% of {} blocks", recompute_frac * 100.0, spans.len().saturating_sub(1));
     }
 
-    // ── single decode over the composed window ──────────────────────────────────
+    // single decode over the composed window
     let qtext = format!("\nQuestion: {question}\nAnswer: ");
     let qtoks = model.str_to_token(&qtext, AddBos::Never).map_err(|e| format!("tok q: {e}"))?;
     prefill(ctx, &qtoks, off, 0, true)?;
     let ans = gen_loop(model, ctx, 0, off + qtoks.len() as i32, 96)?;
     ctx.clear_kv_cache();
-    Ok((ans, selected))
+    Ok(ans)
+}
+
+/// Per-token natural-log softmax value at `idx` over a logits row (numerically stable).
+fn log_softmax_at(logits: &[f32], idx: usize) -> f32 {
+    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let lse = max + logits.iter().map(|&l| (l - max).exp()).sum::<f32>().ln();
+    logits[idx] - lse
+}
+
+/// FAN-OUT score for ONE candidate: query-likelihood `P(query | block)` as the mean
+/// log-prob the model assigns to the query tokens with the block resident as context —
+/// a cross-encoder relevance signal read from logits (NO generation, no agentic call).
+/// Higher = more relevant. Reuses the KV cache: the block is restored (cheap) when warm,
+/// else prefilled once and cached (the same canonical 0..len KV that COMBINE reuses).
+fn score_block_query(
+    model: &LlamaModel,
+    ctx: &mut LlamaContext,
+    cache: &mut KvBlockCache,
+    store: &BlockStore,
+    bi: usize,
+    q_ids: &[i32],
+) -> Result<f32, String> {
+    if q_ids.len() < 2 {
+        return Ok(f32::NEG_INFINITY);
+    }
+    let ids = &store.blocks[bi].ids;
+    let lb = ids.len() as i32;
+    // Make the block resident on a scratch seq (seq 1), restore-or-prefill via the cache.
+    ctx.clear_kv_cache();
+    let restored = match cache.get(bi) {
+        Some(bytes) => load_seq(ctx, bytes, 1),
+        None => false,
+    };
+    if !restored {
+        let toks: Vec<LlamaToken> = ids.iter().map(|&x| LlamaToken(x)).collect();
+        prefill(ctx, &toks, 0, 1, false)?;
+        let bytes = save_seq(ctx, 1);
+        cache.insert(bi, bytes);
+    }
+    // Teacher-force the query after the block, logits ON for every query position.
+    let mut batch = LlamaBatch::new(q_ids.len(), 1);
+    for (j, &t) in q_ids.iter().enumerate() {
+        batch.add(LlamaToken(t), lb + j as i32, &[1], true).map_err(|e| format!("score add: {e}"))?;
+    }
+    ctx.decode(&mut batch).map_err(|e| format!("score decode: {e}"))?;
+    // logits at batch index j predict q[j+1]; score = mean log P(q[j+1] | block, q[..=j]).
+    let mut sum = 0f64;
+    let mut cnt = 0usize;
+    for j in 0..q_ids.len() - 1 {
+        let logits = ctx.get_logits_ith(j as i32);
+        let next = q_ids[j + 1] as usize;
+        if next < logits.len() {
+            sum += log_softmax_at(logits, next) as f64;
+            cnt += 1;
+        }
+    }
+    ctx.clear_kv_cache();
+    Ok(if cnt > 0 { (sum / cnt as f64) as f32 } else { f32::NEG_INFINITY })
+}
+
+/// FAN-OUT: score every candidate block by query-likelihood and return them sorted by
+/// relevance (desc). Block-level, no generation, no language-level reasoning.
+fn rerank(
+    model: &LlamaModel,
+    ctx: &mut LlamaContext,
+    cache: &mut KvBlockCache,
+    store: &BlockStore,
+    candidates: &[usize],
+    q_ids: &[i32],
+) -> Result<Vec<(usize, f32)>, String> {
+    let mut scored: Vec<(usize, f32)> = Vec::with_capacity(candidates.len());
+    for &bi in candidates {
+        let s = score_block_query(model, ctx, cache, store, bi, q_ids)?;
+        scored.push((bi, s));
+    }
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(scored)
+}
+
+/// Blended RAG-RLM pipeline: PICK (retrieve `n_candidates`) → FAN-OUT (cross-encoder
+/// rerank by query-likelihood) → COMBINE (compose top-`k` blocks' KV + single decode).
+/// All block/KV-level, zero agentic LLM calls. Returns (answer, composed top-k,
+/// full rerank scores). Requires `kv_unified=true`.
+pub(crate) fn blended_compose_and_answer(
+    model: &LlamaModel,
+    ctx: &mut LlamaContext,
+    store: &BlockStore,
+    cache: &mut KvBlockCache,
+    question: &str,
+    n_candidates: usize,
+    k: usize,
+    recompute_frac: f32,
+) -> Result<(String, Vec<usize>, Vec<(usize, f32)>), String> {
+    let q_ids = tokenize_query(model, question)?;
+    let candidates = store.retrieve(&q_ids, n_candidates.max(k)); // PICK (recall)
+    let scored = rerank(model, ctx, cache, store, &candidates, &q_ids)?; // FAN-OUT (rerank)
+    let selected: Vec<usize> = scored.iter().take(k).map(|(i, _)| *i).collect();
+    eprintln!("jaded: [blended] PICK {} candidates -> RERANK -> COMBINE top-{k} {selected:?}", candidates.len());
+    let ans = compose_selected(model, ctx, store, cache, &selected, question, recompute_frac)?; // COMBINE
+    Ok((ans, selected, scored))
 }
 
 /// End-to-end composition demo (gated by `JADE_COMPOSE_DEMO`; needs `JADE_KV_UNIFIED=1`):
@@ -575,6 +691,142 @@ pub(crate) fn selftest_kv_bench(model: &LlamaModel, ctx: &mut LlamaContext, _tmp
     }
 }
 
+/// Pure generation-throughput baseline (gated by `JADE_GEN_BENCH`). For each resident
+/// context size, prefill that many tokens (UNTIMED), then time generating a fixed
+/// `JADE_GEN_TOKENS` (default 128) tokens one-at-a-time (greedy, EOG ignored so the
+/// loop runs the full count for clean timing). Reports decode tok/s per resident size
+/// — the metric a user actually feels, and the one that scales with the composed
+/// window the RLM builds. Decode is unaffected by the KV cache; this is the raw
+/// serial-generation speed of the model on this box.
+pub(crate) fn selftest_gen_bench(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaChatTemplate) {
+    let mut run = || -> Result<(), String> {
+        let gen_n: usize = std::env::var("JADE_GEN_TOKENS").ok().and_then(|s| s.parse().ok()).unwrap_or(128);
+        let filler = "This is routine filler text for the generation throughput baseline. ".repeat(800);
+        let all = model.str_to_token(&filler, AddBos::Never).map_err(|e| format!("tok: {e}"))?;
+        let sizes = [128usize, 1024, 4096, 8192];
+
+        // Decode the generation loop once (warm the single-token decode graph) so the
+        // first sized measurement isn't polluted by graph compilation.
+        ctx.clear_kv_cache();
+        prefill(ctx, &all[..64.min(all.len())], 0, 0, true)?;
+        let _ = gen_loop(model, ctx, 0, 64, 8)?;
+
+        eprintln!("jaded: [gen-bench] pure decode throughput, generating {gen_n} tokens per resident size");
+        eprintln!("jaded: [gen-bench] {:>10} {:>10} {:>12}", "resident", "decode_ms", "decode_tok/s");
+
+        for &csz in &sizes {
+            if all.len() < csz {
+                break;
+            }
+            // Prefill the resident context (UNTIMED) with logits on the last token.
+            ctx.clear_kv_cache();
+            prefill(ctx, &all[..csz], 0, 0, true)?;
+
+            // Time ONLY the serial generation of gen_n tokens (ignore EOG for clean timing).
+            let mut sampler = LlamaSampler::greedy();
+            let mut batch = LlamaBatch::new(1, 1);
+            let mut pos = csz as i32;
+            let t = std::time::Instant::now();
+            for _ in 0..gen_n {
+                let tok = sampler.sample(ctx, -1);
+                batch.clear();
+                batch.add(tok, pos, &[0], true).map_err(|e| format!("gen add: {e}"))?;
+                ctx.decode(&mut batch).map_err(|e| format!("gen decode: {e}"))?;
+                pos += 1;
+            }
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            let tok_s = gen_n as f64 / (ms / 1000.0);
+            eprintln!("jaded: [gen-bench] {csz:>10} {ms:>10.1} {tok_s:>12.1}");
+        }
+        ctx.clear_kv_cache();
+        Ok(())
+    };
+    if let Err(e) = run() {
+        eprintln!("jaded: [gen-bench] error: {e}");
+    }
+}
+
+/// Generation throughput PAST the context window (gated by `JADE_RLM_OVERWINDOW`; needs
+/// `JADE_KV_UNIFIED=1`). Holds a corpus FAR larger than the model's ctx window in RAM as
+/// blocks, composes a FIXED `k` of them into a bounded resident window, then times pure
+/// decode. The point: total corpus size does NOT touch resident KV or decode speed — RLM
+/// keeps the window bounded, so generation tok/s past the window ≈ the rate for the
+/// composed-window size and stays FLAT as the corpus grows (a standard model can't even
+/// hold a corpus larger than its window). Sweeps corpus = 2×/4×/8× the ctx window.
+pub(crate) fn selftest_rlm_overwindow(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaChatTemplate) {
+    let mut run = || -> Result<(), String> {
+        let gen_n: usize = std::env::var("JADE_GEN_TOKENS").ok().and_then(|s| s.parse().ok()).unwrap_or(128);
+        let k: usize = std::env::var("JADE_OW_BLOCKS").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
+        let n_ctx = ctx.n_ctx() as usize;
+
+        // One ~512-token block body, reused; measure its real token length.
+        let block_text = format!("routine operational detail with no special codes or secrets {}",
+            "and more routine detail ".repeat(150));
+        let btok = model.str_to_token(&block_text, AddBos::Never).map_err(|e| format!("tok: {e}"))?.len();
+
+        // Warm the single-token decode graph so the first measurement is clean.
+        // (next_pos MUST equal the prefilled length — no position gap.)
+        ctx.clear_kv_cache();
+        let warm = model.str_to_token("Warm up the decode graph for the bench.", AddBos::Always)
+            .map_err(|e| format!("tok: {e}"))?;
+        prefill(ctx, &warm, 0, 0, true)?;
+        let _ = gen_loop(model, ctx, 0, warm.len() as i32, 8)?;
+
+        let prefix = model.str_to_token("You are given several notes. Use them to answer the question.\n\n", AddBos::Always)
+            .map_err(|e| format!("tok prefix: {e}"))?;
+        let qtoks = model.str_to_token("\nQuestion: What is the secret access code?\nAnswer: ", AddBos::Never)
+            .map_err(|e| format!("tok q: {e}"))?;
+
+        eprintln!("jaded: [overwindow] ctx window = {n_ctx} tokens; composing k={k} blocks (~{btok} tok each), generating {gen_n}");
+        eprintln!("jaded: [overwindow] {:>12} {:>9} {:>9} {:>9} {:>10} {:>12}",
+            "corpus_tok", "blocks", "x_window", "resident", "decode_ms", "decode_tok/s");
+
+        for mult in [2usize, 4, 8] {
+            let corpus = mult * n_ctx;
+            let n_blocks = (corpus / btok.max(1)).max(k);
+            // Corpus held in RAM as blocks (only k ever touch the GPU).
+            let texts: Vec<String> = (0..n_blocks).map(|i| format!("Section {i}. {block_text}")).collect();
+            let store = BlockStore::from_texts(model, &texts)?;
+            let total: usize = store.blocks.iter().map(|b| b.ids.len()).sum();
+
+            // Compose k evenly-spaced blocks into one bounded window (untimed).
+            ctx.clear_kv_cache();
+            prefill(ctx, &prefix, 0, 0, false)?;
+            let mut off = prefix.len() as i32;
+            let mut cache = KvBlockCache::new(0);
+            let stride = (n_blocks / k).max(1);
+            for j in 0..k {
+                let bi = (j * stride).min(n_blocks - 1);
+                off += materialize_block(ctx, &mut cache, bi, &store.blocks[bi].ids, off, (j + 1) as i32)?;
+            }
+            prefill(ctx, &qtoks, off, 0, true)?;
+            let resident = off as usize + qtoks.len();
+
+            // Time ONLY the serial decode (EOG ignored for clean timing).
+            let mut sampler = LlamaSampler::greedy();
+            let mut batch = LlamaBatch::new(1, 1);
+            let mut pos = resident as i32;
+            let t = std::time::Instant::now();
+            for _ in 0..gen_n {
+                let tok = sampler.sample(ctx, -1);
+                batch.clear();
+                batch.add(tok, pos, &[0], true).map_err(|e| format!("gen add: {e}"))?;
+                ctx.decode(&mut batch).map_err(|e| format!("gen decode: {e}"))?;
+                pos += 1;
+            }
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            let tok_s = gen_n as f64 / (ms / 1000.0);
+            eprintln!("jaded: [overwindow] {total:>12} {n_blocks:>9} {mult:>8}x {resident:>9} {ms:>10.1} {tok_s:>12.1}");
+        }
+        ctx.clear_kv_cache();
+        eprintln!("jaded: [overwindow] resident window stays bounded → decode tok/s flat vs corpus size (standard model: cannot run past {n_ctx}).");
+        Ok(())
+    };
+    if let Err(e) = run() {
+        eprintln!("jaded: [overwindow] error: {e}");
+    }
+}
+
 /// End-to-end COLD-vs-WARM compose bench (gated by `JADE_COMPOSE_CACHE`; needs
 /// `JADE_KV_UNIFIED=1`). Answers the same needle question twice over one block store +
 /// KV cache: first COLD (retrieved blocks re-prefilled and cached), then WARM (those
@@ -642,6 +894,67 @@ pub(crate) fn selftest_compose_cache(model: &LlamaModel, ctx: &mut LlamaContext,
     if !same {
         eprintln!("jaded: [compose-cache]   COLD: {:?}", cold_ans.trim());
         eprintln!("jaded: [compose-cache]   WARM: {:?}", warm_ans.trim());
+    }
+}
+
+/// Blended RAG-RLM eval (gated by `JADE_BLENDED`; needs `JADE_KV_UNIFIED=1`). Builds a
+/// haystack with the needle block plus lexical DISTRACTOR blocks (that echo the query's
+/// words but hold no answer), then runs the plain pipeline (retrieve→compose) and the
+/// blended pipeline (retrieve N→rerank→compose top-k) on the same store. Prints each
+/// pipeline's selection, the needle hit, latency, and the rerank scores (needle/distractor
+/// tagged) — so we can see whether the cross-encoder rerank reorders what lexical recall
+/// got wrong.
+pub(crate) fn selftest_blended(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaChatTemplate) {
+    let needle = "XQ-42";
+    let n_sections: usize = std::env::var("JADE_RLM_DEMO_SECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(40);
+    let n_cand: usize = std::env::var("JADE_BLEND_N").ok().and_then(|s| s.parse().ok()).unwrap_or(12);
+    let k: usize = std::env::var("JADE_BLEND_K").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
+    let filler = "This section documents routine operational details. ".repeat(20);
+    let needle_at = n_sections / 2;
+    let distractors = [n_sections / 4, (3 * n_sections) / 4, n_sections / 3];
+    let mut texts: Vec<String> = Vec::new();
+    for i in 0..n_sections {
+        if i == needle_at {
+            texts.push(format!("Section {i}: Access Credentials. The secret access code is {needle}. Rotate it quarterly. {filler}"));
+        } else if distractors.contains(&i) {
+            texts.push(format!("Section {i}: Policy. This section discusses the secret access code policy and what a secret access code is in general, but lists no actual code. {filler}"));
+        } else {
+            texts.push(format!("Section {i}: Misc. {filler}"));
+        }
+    }
+    let store = match BlockStore::from_texts(model, &texts) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("jaded: [blended] build error: {e}"); return; }
+    };
+    let question = "What is the secret access code?";
+    eprintln!("jaded: [blended] {} blocks (needle @ {needle_at}, distractors {distractors:?}); N={n_cand} k={k}", store.blocks.len());
+
+    // PLAIN: retrieve top-k → compose.
+    let mut cache = KvBlockCache::new(2 * 1024 * 1024 * 1024);
+    let t = std::time::Instant::now();
+    match compose_and_answer(model, ctx, &store, &mut cache, question, k, 0.0) {
+        Ok((ans, sel)) => {
+            let ms = t.elapsed().as_millis();
+            eprintln!("jaded: [blended] PLAIN   sel={sel:?} needle={} ({ms}ms)", ans.contains(needle));
+        }
+        Err(e) => { eprintln!("jaded: [blended] plain error: {e}"); return; }
+    }
+
+    // BLENDED: retrieve N → rerank → compose top-k.
+    let mut cache_b = KvBlockCache::new(2 * 1024 * 1024 * 1024);
+    let t = std::time::Instant::now();
+    match blended_compose_and_answer(model, ctx, &store, &mut cache_b, question, n_cand, k, 0.0) {
+        Ok((ans, sel, scored)) => {
+            let ms = t.elapsed().as_millis();
+            eprintln!("jaded: [blended] BLENDED sel={sel:?} needle={} ({ms}ms)", ans.contains(needle));
+            eprintln!("jaded: [blended] rerank scores (top 8, higher=more relevant):");
+            for (bi, s) in scored.iter().take(8) {
+                let tag = if *bi == needle_at { " <- NEEDLE" }
+                    else if distractors.contains(bi) { " <- distractor" } else { "" };
+                eprintln!("jaded: [blended]   block {bi:>3}  score {s:>9.4}{tag}");
+            }
+        }
+        Err(e) => { eprintln!("jaded: [blended] blended error: {e}"); }
     }
 }
 
