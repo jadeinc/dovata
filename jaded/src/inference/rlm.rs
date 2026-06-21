@@ -1,19 +1,23 @@
 //! Recursive Language Model: reason over a context far larger than the model
-//! window / VRAM. The full context lives in CPU RAM ([`ContextStore`]); only the
+//! window / VRAM. The full context lives in CPU RAM ([`StoredContext`]); only the
 //! blocks a query retrieves are ever tokenized and put on the GPU.
 //!
 //! The engine is tensor-level **KV-cache composition** (see [`super::compose`]): per
 //! query, retrieve the top-k blocks, splice their precomputed KV into one attention
 //! window, and answer in a single decode — no per-branch re-prompting, no agentic
 //! decision calls. (The earlier agentic PICK→fan-out→COMBINE engine was removed once
-//! composition proved both faster and simpler.) This module owns the socket dispatch
-//! ([`handle_rlm`]) and the upload context handles.
+//! composition proved both faster and simpler.) An uploaded context is tokenized into
+//! blocks ONCE and carries a host-RAM [`KvBlockCache`](super::compose::KvBlockCache),
+//! so after the first query touches a block its KV is RESTORED (cheap host→device
+//! copy) rather than re-prefilled — ~50× cheaper per block on the A10G. This module
+//! owns the socket dispatch ([`handle_rlm`]) and the upload context handles.
 //!
 //! It also hosts a self-test for the continuous-batching engine ([`selftest_rlm`],
 //! gated by `JADE_RLM_SELFTEST`). That engine ([`super::concurrency`]) is retained as
 //! general infrastructure for concurrent / mass prompting, independent of RLM.
 
 use super::build_formatted_prompt;
+use super::compose::{compose_and_answer, BlockStore, KvBlockCache};
 use super::concurrency::{run_concurrent, SubInfer};
 use jade_protocol::{Frame, InferenceRequest};
 use jaded::control::DecodeControl;
@@ -27,28 +31,6 @@ use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
-
-/// A large context uploaded by a program and held in CPU RAM as its block bodies.
-/// The KV-composition engine builds blocks from these; only the blocks a query
-/// retrieves are ever tokenized onto the GPU.
-#[derive(Clone)]
-pub(crate) struct ContextStore {
-    bodies: Vec<String>,
-}
-
-impl ContextStore {
-    /// Build from `[summary, body]` upload pairs (the wire format). Only the bodies
-    /// are retained — they are the corpus the composer retrieves over.
-    fn from_sections(sections: &[(String, String)]) -> Self {
-        ContextStore {
-            bodies: sections.iter().map(|(_, b)| b.clone()).collect(),
-        }
-    }
-    /// The block texts — the corpus the KV-composition engine builds blocks from.
-    pub(crate) fn bodies(&self) -> &[String] {
-        &self.bodies
-    }
-}
 
 /// Build one [`SubInfer`] from a plain prompt: apply the chat template, tokenize, and
 /// attach a fresh `DecodeControl` (+ optional grammar). Used by the continuous-batching
@@ -81,26 +63,40 @@ fn build_sub(
 
 // ── RLM over the socket: context handles + request dispatch ────────────────────
 
+/// A persistent uploaded context: its blocks tokenized ONCE plus a host-RAM KV cache,
+/// both reused across every query on the handle — so retrieved blocks are RESTORED
+/// (cheap) rather than re-prefilled after the first query that touches them.
+struct StoredContext {
+    blocks: BlockStore,
+    kv_cache: KvBlockCache,
+}
+
 /// Server-side context store: a program uploads a large context ONCE and gets a
 /// handle, then issues many cheap `rlm` queries against it (no re-sending the doc).
-static RLM_STORES: OnceLock<Mutex<HashMap<u64, ContextStore>>> = OnceLock::new();
+/// The daemon is single-threaded (connections are handled in series on one context),
+/// so holding this lock across a query's inference is uncontended.
+static RLM_STORES: OnceLock<Mutex<HashMap<u64, StoredContext>>> = OnceLock::new();
 static RLM_NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
-fn rlm_stores() -> &'static Mutex<HashMap<u64, ContextStore>> {
+fn rlm_stores() -> &'static Mutex<HashMap<u64, StoredContext>> {
     RLM_STORES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Store an uploaded context, returning its handle.
-fn store_context(store: ContextStore) -> u64 {
+fn store_context(sc: StoredContext) -> u64 {
     let h = RLM_NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-    rlm_stores().lock().unwrap().insert(h, store);
+    rlm_stores().lock().unwrap().insert(h, sc);
     h
 }
 
-/// Fetch a clone of a stored context (cloned so the lock isn't held during the
-/// long-running inference that follows).
-fn get_context(h: u64) -> Option<ContextStore> {
-    rlm_stores().lock().unwrap().get(&h).cloned()
+/// Host-RAM budget for a context's precomputed block KV (`JADE_KV_CACHE_MB`, default
+/// 2048). At ~27 KB/token this caps how much block KV is held resident for restore.
+fn kv_cache_cap_bytes() -> usize {
+    std::env::var("JADE_KV_CACHE_MB")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(2048)
+        .saturating_mul(1024 * 1024)
 }
 
 /// Parse a JSON array of `["summary","body"]` pairs into sections.
@@ -117,9 +113,10 @@ fn parse_sections(v: &serde_json::Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// Handle an `rlm` request: `prompt` is a JSON payload — an upload (store a context,
-/// reply with its handle) or a query (answer a question over a stored/inline context
-/// via the KV-composition engine, streamed as one Token frame then Done).
+/// Handle an `rlm` request: `prompt` is a JSON payload — an upload (tokenize the
+/// context into blocks, store it with a fresh KV cache, reply with its handle) or a
+/// query (answer a question over a stored/inline context via the KV-composition
+/// engine, streamed as one Token frame then Done).
 pub(crate) fn handle_rlm(
     req: &InferenceRequest,
     model: &LlamaModel,
@@ -135,50 +132,62 @@ pub(crate) fn handle_rlm(
         }
     };
 
-    // UPLOAD: store the context, return its handle.
+    // UPLOAD: tokenize into blocks, store with a KV cache, return the handle.
     if let Some(up) = payload.get("upload") {
         let sections = parse_sections(up);
         if sections.is_empty() {
             stream.write_all(&Frame::Error("rlm: upload had no [summary,body] sections".into()).encode())?;
             return Ok(());
         }
-        let h = store_context(ContextStore::from_sections(&sections));
-        eprintln!("jaded: [rlm] uploaded context handle={h} ({} sections)", sections.len());
+        let n = sections.len();
+        let bodies: Vec<String> = sections.into_iter().map(|(_, b)| b).collect();
+        let blocks = match BlockStore::from_texts(model, &bodies) {
+            Ok(b) => b,
+            Err(e) => {
+                stream.write_all(&Frame::Error(format!("rlm: upload tokenize failed: {e}")).encode())?;
+                return Ok(());
+            }
+        };
+        let cap = kv_cache_cap_bytes();
+        let h = store_context(StoredContext { blocks, kv_cache: KvBlockCache::new(cap) });
+        eprintln!("jaded: [rlm] uploaded context handle={h} ({n} sections, kv cache cap {} MB)", cap / (1024 * 1024));
         stream.write_all(&Frame::Json(format!("{{\"handle\":{h}}}")).encode())?;
         stream.write_all(&Frame::Done { tokens_used: 0 }.encode())?;
         return Ok(());
     }
 
-    // QUERY: resolve the context (by handle or inline), then compose-and-answer.
+    // QUERY: compose-and-answer over a stored handle (warm cache persists) or an
+    // inline one-shot context (ephemeral, no caching).
     let question = payload.get("question").and_then(|q| q.as_str()).unwrap_or("");
     // `max_spans` caps how many blocks the retriever composes into the window (the k).
-    let max_spans = payload.get("max_spans").and_then(|m| m.as_u64()).unwrap_or(4) as usize;
-    let store = if let Some(h) = payload.get("handle").and_then(|h| h.as_u64()) {
-        match get_context(h) {
-            Some(s) => s,
-            None => {
-                stream.write_all(&Frame::Error(format!("rlm: unknown context handle {h}")).encode())?;
-                return Ok(());
+    let k = payload.get("max_spans").and_then(|m| m.as_u64()).unwrap_or(4) as usize;
+    let result: Result<(String, Vec<usize>), String> =
+        if let Some(h) = payload.get("handle").and_then(|h| h.as_u64()) {
+            // Single-threaded daemon: holding the store lock across the inference is
+            // uncontended and lets the persistent KV cache mutate in place.
+            let mut map = rlm_stores().lock().unwrap();
+            match map.get_mut(&h) {
+                Some(sc) => compose_and_answer(model, ctx, &sc.blocks, &mut sc.kv_cache, question, k.max(1), 0.0),
+                None => Err(format!("unknown context handle {h}")),
             }
-        }
-    } else if let Some(secs) = payload.get("sections") {
-        ContextStore::from_sections(&parse_sections(secs))
-    } else {
-        stream.write_all(&Frame::Error("rlm: query needs a \"handle\" or inline \"sections\"".into()).encode())?;
-        return Ok(());
-    };
+        } else if let Some(secs) = payload.get("sections") {
+            let bodies: Vec<String> = parse_sections(secs).into_iter().map(|(_, b)| b).collect();
+            match BlockStore::from_texts(model, &bodies) {
+                Ok(bs) => {
+                    let mut cache = KvBlockCache::new(0); // one-shot inline: no caching
+                    compose_and_answer(model, ctx, &bs, &mut cache, question, k.max(1), 0.0)
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            stream.write_all(&Frame::Error("rlm: query needs a \"handle\" or inline \"sections\"".into()).encode())?;
+            return Ok(());
+        };
 
-    stream.write_all(&Frame::Meta { model: model_name.to_owned() }.encode())?;
-    // Tensor-level KV composition: retrieve top-k blocks → splice into one window →
-    // single decode. Needs the daemon's unified KV cache (on by default; set
-    // JADE_KV_UNIFIED=0 to disable, which makes this path unavailable).
-    let result = match super::compose::BlockStore::from_texts(model, store.bodies()) {
-        Ok(bs) => super::compose::compose_and_answer(model, ctx, &bs, question, max_spans.max(1), 0.0),
-        Err(e) => Err(e),
-    };
     match result {
         Ok((answer, picked)) => {
             eprintln!("jaded: [rlm] query answered (compose blocks {picked:?})");
+            stream.write_all(&Frame::Meta { model: model_name.to_owned() }.encode())?;
             stream.write_all(&Frame::Token(answer).encode())?;
             stream.write_all(&Frame::Done { tokens_used: 0 }.encode())?;
         }
@@ -281,31 +290,15 @@ pub(crate) fn selftest_rlm(model: &LlamaModel, ctx: &mut LlamaContext, tmpl: &Ll
 
 // ── Unit tests ──────────────────────────────────────────────────────────────
 //
-// These cover the PURE, model-free logic of this module: the upload `ContextStore`
-// bookkeeping and the upload payload parser. The compose engine itself needs a real
-// model and is exercised by `examples/rlm_client.rs` + the compose selftests on the
-// box. This whole module is behind the Linux-only `inference` feature, so these run
-// under `cargo test -p jaded --features inference` (not the macOS pure suite).
+// These cover the PURE, model-free logic of this module: the upload payload parser.
+// The compose engine itself needs a real model and is exercised by the compose
+// selftests + `examples/rlm_client.rs` on the box; its pure pieces (retrieval, KV
+// cache LRU) are unit-tested in `super::compose`. This whole module is behind the
+// Linux-only `inference` feature, so these run under `cargo test -p jaded --features
+// inference` (not the macOS pure suite).
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sample_sections() -> Vec<(String, String)> {
-        vec![
-            ("Intro".to_string(), "the intro body".to_string()),
-            ("Creds".to_string(), "the secret code is XQ-42".to_string()),
-        ]
-    }
-
-    #[test]
-    fn context_store_keeps_block_bodies() {
-        // Only bodies are retained (the corpus the composer retrieves over); the
-        // [summary, body] upload pairs' summaries are dropped.
-        let store = ContextStore::from_sections(&sample_sections());
-        assert_eq!(store.bodies().len(), 2);
-        assert_eq!(store.bodies()[0], "the intro body");
-        assert_eq!(store.bodies()[1], "the secret code is XQ-42");
-    }
 
     #[test]
     fn parse_sections_reads_summary_body_pairs() {

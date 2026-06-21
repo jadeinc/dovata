@@ -245,6 +245,16 @@ pub fn run(sock_path: String) {
         compose::selftest_compose_multi(&model, &mut ctx, &chat_template);
         return;
     }
+    // KV transfer-vs-recompute benchmark: GPU re-prefill vs CPU-RAM KV restore (PCIe).
+    if std::env::var("JADE_KV_BENCH").is_ok() {
+        compose::selftest_kv_bench(&model, &mut ctx, &chat_template);
+        return;
+    }
+    // End-to-end cold-vs-warm compose bench: KV-cache restore vs re-prefill per query.
+    if std::env::var("JADE_COMPOSE_CACHE").is_ok() {
+        compose::selftest_compose_cache(&model, &mut ctx, &chat_template);
+        return;
+    }
 
     let mut cache = PromptCache::new(cfg.cache_size);
     eprintln!("jaded: prompt cache size={}", cfg.cache_size);

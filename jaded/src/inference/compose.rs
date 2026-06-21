@@ -14,7 +14,7 @@
 //! Both are gated by env vars in `run` and reuse the loaded model/context.
 
 use super::build_formatted_prompt;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use llama_cpp_2::{
     context::LlamaContext,
     llama_batch::LlamaBatch,
@@ -261,26 +261,108 @@ impl BlockStore {
     }
 }
 
-/// Splice one precomputed block (ids) into `seq 0` of `ctx` at `[off, off+len)` using
-/// a scratch sequence: prefill in isolation, `seq_add` to the offset (RoPE-correct),
-/// same-stream `seq_cp` into seq 0. Requires a unified KV cache. Returns `len`.
-fn splice_block(ctx: &mut LlamaContext, ids: &[i32], off: i32, scratch: i32) -> Result<i32, String> {
-    let toks: Vec<LlamaToken> = ids.iter().map(|&x| LlamaToken(x)).collect();
-    let len = toks.len() as i32;
-    prefill(ctx, &toks, 0, scratch, false)?;
+/// Bounded LRU of precomputed block KV held in host RAM. Key = block index in its
+/// [`BlockStore`]; value = the block's serialized KV state (`state_seq_get_data`, ~27
+/// KB/token at q4_0). Restoring a block's KV is ~50× cheaper than re-prefilling it on
+/// the GPU (benchmarked on the A10G), at the cost of host RAM — so total bytes are
+/// capped and least-recently-used blocks are evicted; cold/evicted blocks fall back
+/// to re-prefill.
+pub(crate) struct KvBlockCache {
+    entries: HashMap<usize, Vec<u8>>,
+    order: VecDeque<usize>, // front = least-recently used, back = most-recently used
+    cap_bytes: usize,
+    cur_bytes: usize,
+}
+
+impl KvBlockCache {
+    /// A cache bounded to `cap_bytes` of block KV. `cap_bytes == 0` disables caching
+    /// (every block is re-prefilled), which is how the one-shot paths opt out.
+    pub(crate) fn new(cap_bytes: usize) -> Self {
+        KvBlockCache { entries: HashMap::new(), order: VecDeque::new(), cap_bytes, cur_bytes: 0 }
+    }
+
+    /// Bump `idx` to most-recently-used and return its KV bytes, or `None` on a miss.
+    fn get(&mut self, idx: usize) -> Option<&[u8]> {
+        if self.entries.contains_key(&idx) {
+            self.order.retain(|&x| x != idx);
+            self.order.push_back(idx);
+            self.entries.get(&idx).map(|v| v.as_slice())
+        } else {
+            None
+        }
+    }
+
+    /// Insert/replace a block's KV, evicting least-recently-used entries until the
+    /// total fits under `cap_bytes`. A block larger than the whole cap is not cached.
+    fn insert(&mut self, idx: usize, bytes: Vec<u8>) {
+        if let Some(old) = self.entries.remove(&idx) {
+            self.cur_bytes -= old.len();
+            self.order.retain(|&x| x != idx);
+        }
+        if bytes.len() > self.cap_bytes {
+            return;
+        }
+        while self.cur_bytes + bytes.len() > self.cap_bytes {
+            match self.order.pop_front() {
+                Some(victim) => {
+                    if let Some(v) = self.entries.remove(&victim) {
+                        self.cur_bytes -= v.len();
+                    }
+                }
+                None => break,
+            }
+        }
+        self.cur_bytes += bytes.len();
+        self.entries.insert(idx, bytes);
+        self.order.push_back(idx);
+    }
+
+    /// (entry count, total bytes) — for logging / tests.
+    pub(crate) fn stats(&self) -> (usize, usize) {
+        (self.entries.len(), self.cur_bytes)
+    }
+}
+
+/// Materialize block `idx` (token `ids`) into `seq 0` of `ctx` at `[off, off+len)`:
+/// RESTORE its KV from `cache` if present (a cheap host→device copy), else re-prefill
+/// it in isolation on a scratch seq and populate the cache. Then `seq_add` to the
+/// offset (RoPE-correct) + same-stream `seq_cp` into seq 0. Requires a unified KV
+/// cache. Returns `len`.
+fn materialize_block(
+    ctx: &mut LlamaContext,
+    cache: &mut KvBlockCache,
+    idx: usize,
+    ids: &[i32],
+    off: i32,
+    scratch: i32,
+) -> Result<i32, String> {
+    let len = ids.len() as i32;
+    // Restore precomputed KV when cached; otherwise prefill in isolation and cache it.
+    let restored = match cache.get(idx) {
+        Some(bytes) => load_seq(ctx, bytes, scratch),
+        None => false,
+    };
+    if !restored {
+        let toks: Vec<LlamaToken> = ids.iter().map(|&x| LlamaToken(x)).collect();
+        prefill(ctx, &toks, 0, scratch, false)?;
+        let bytes = save_seq(ctx, scratch);
+        cache.insert(idx, bytes);
+    }
     ctx.kv_cache_seq_add(scratch, Some(0), Some(len as u32), off).map_err(|e| format!("seq_add: {e}"))?;
     ctx.copy_kv_cache_seq(scratch, 0, Some(off as u32), Some((off + len) as u32)).map_err(|e| format!("seq_cp: {e}"))?;
     Ok(len)
 }
 
-/// Answer `question` over `store` by KV composition. Retrieve top-`k`, compose into
-/// one sequence, optionally CacheBlend-recompute the trailing `recompute_frac` of
-/// each block in-context, then a single decode. Returns (answer, selected indices).
-/// **Requires the context to be created with `kv_unified=true`.**
+/// Answer `question` over `store` by KV composition. Retrieve top-`k`, materialize
+/// each selected block's KV into one sequence (restoring from `cache` when warm, else
+/// re-prefilling and caching it), optionally CacheBlend-recompute the trailing
+/// `recompute_frac` of each block, then a single decode. Returns (answer, selected
+/// indices). **Requires the context to be created with `kv_unified=true`.**
 pub(crate) fn compose_and_answer(
     model: &LlamaModel,
     ctx: &mut LlamaContext,
     store: &BlockStore,
+    cache: &mut KvBlockCache,
     question: &str,
     k: usize,
     recompute_frac: f32,
@@ -306,7 +388,7 @@ pub(crate) fn compose_and_answer(
     let mut spans: Vec<(usize, i32, i32)> = Vec::new(); // (block_idx, start, len)
     for (j, &bi) in selected.iter().enumerate() {
         let start = off;
-        let len = splice_block(ctx, &store.blocks[bi].ids, off, (j + 1) as i32)?;
+        let len = materialize_block(ctx, cache, bi, &store.blocks[bi].ids, off, (j + 1) as i32)?;
         spans.push((bi, start, len));
         off += len;
     }
@@ -363,8 +445,9 @@ pub(crate) fn selftest_compose_demo(model: &LlamaModel, ctx: &mut LlamaContext, 
     };
     let question = "What is the secret access code?";
     eprintln!("jaded: [compose-demo] {} blocks, question: {question:?}", store.blocks.len());
+    let mut cache = KvBlockCache::new(0); // one-shot demo: caching disabled
     let t = std::time::Instant::now();
-    match compose_and_answer(model, ctx, &store, question, 4, 0.0) {
+    match compose_and_answer(model, ctx, &store, &mut cache, question, 4, 0.0) {
         Ok((ans, sel)) => {
             let ms = t.elapsed().as_millis();
             eprintln!("jaded: [compose-demo] selected {sel:?}");
@@ -394,8 +477,9 @@ pub(crate) fn selftest_compose_multi(model: &LlamaModel, ctx: &mut LlamaContext,
         Err(e) => { eprintln!("jaded: [compose-multi] build error: {e}"); return; }
     };
     let question = "What are the launch code and the abort code?";
+    let mut cache = KvBlockCache::new(0); // recompute test: caching disabled
     for &frac in &[0.0f32, 0.15] {
-        match compose_and_answer(model, ctx, &store, question, 4, frac) {
+        match compose_and_answer(model, ctx, &store, &mut cache, question, 4, frac) {
             Ok((ans, sel)) => {
                 let lc = ans.to_lowercase();
                 let both = lc.contains("alpha-9") && lc.contains("omega-3");
@@ -404,5 +488,215 @@ pub(crate) fn selftest_compose_multi(model: &LlamaModel, ctx: &mut LlamaContext,
             }
             Err(e) => eprintln!("jaded: [compose-multi] error (frac={frac}): {e}"),
         }
+    }
+}
+
+/// Transfer-vs-recompute benchmark (gated by `JADE_KV_BENCH`). For several block
+/// sizes, compares the two ways the compose engine could materialize a block's KV in
+/// the resident window:
+///   (a) RE-PREFILL — recompute the block's K/V from its token ids on the GPU (what
+///       `splice_block`/`compose_and_answer` do today: pure compute, no host traffic);
+///   (b) RESTORE    — copy the block's precomputed K/V from a CPU-RAM byte buffer back
+///       onto the device via `state_seq_set_data` (the Phase-A primitive: a host→device
+///       PCIe transfer, ~27 KB/token).
+/// Also reports the one-time `state_seq_get_data` (device→host) save cost and bytes/token.
+/// This decides whether caching block KV in host RAM beats recomputing it each query on
+/// this box. Each timing is the mean of `iters` runs after a warm-up. NOTE: restore
+/// reinstates KV at the block's SAVED positions — composing it at a new offset needs a
+/// follow-up `kv_cache_seq_add` (cheap, on-GPU); that is not part of this raw A/B.
+pub(crate) fn selftest_kv_bench(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaChatTemplate) {
+    let mut run = || -> Result<(), String> {
+        // One long filler tokenized once; each block size is a prefix of it, so both
+        // paths operate on byte-identical tokens.
+        let filler = "This is routine filler text for the kv cache transfer benchmark. ".repeat(500);
+        let all = model.str_to_token(&filler, AddBos::Never).map_err(|e| format!("tok: {e}"))?;
+        let sizes = [64usize, 128, 256, 512, 1024, 2048];
+        let iters = 5usize;
+
+        eprintln!("jaded: [kv-bench] re-prefill (GPU compute) vs CPU-RAM KV restore (PCIe), mean of {iters}");
+        eprintln!(
+            "jaded: [kv-bench] {:>6} {:>11} {:>11} {:>9} {:>8} {:>9} {:>11}",
+            "tokens", "prefill_ms", "restore_ms", "save_ms", "KB/tok", "save_MB", "restore_GB/s"
+        );
+
+        for &n in &sizes {
+            if all.len() < n {
+                break;
+            }
+            let block = &all[..n];
+
+            // Warm-up (first GPU op of a size pays one-time costs we don't want timed).
+            ctx.clear_kv_cache();
+            prefill(ctx, block, 0, 0, false)?;
+
+            // (a) RE-PREFILL: recompute the block's KV on seq 0 from token ids.
+            let mut prefill_ms = 0f64;
+            for _ in 0..iters {
+                ctx.clear_kv_cache();
+                let t = std::time::Instant::now();
+                prefill(ctx, block, 0, 0, false)?;
+                prefill_ms += t.elapsed().as_secs_f64() * 1000.0;
+            }
+            prefill_ms /= iters as f64;
+
+            // Save the block's KV once (device→host) into a CPU-RAM buffer.
+            ctx.clear_kv_cache();
+            prefill(ctx, block, 0, 0, false)?;
+            let t = std::time::Instant::now();
+            let bytes = save_seq(ctx, 0);
+            let save_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+            // (b) RESTORE: copy the saved KV back onto the device (host→device PCIe).
+            let mut restore_ms = 0f64;
+            for _ in 0..iters {
+                ctx.clear_kv_cache();
+                let t = std::time::Instant::now();
+                let ok = load_seq(ctx, &bytes, 0);
+                restore_ms += t.elapsed().as_secs_f64() * 1000.0;
+                if !ok {
+                    return Err("load_seq returned false".into());
+                }
+            }
+            restore_ms /= iters as f64;
+
+            let save_mb = bytes.len() as f64 / (1024.0 * 1024.0);
+            let kb_tok = bytes.len() as f64 / 1024.0 / n as f64;
+            let restore_gbs = (bytes.len() as f64 / 1e9) / (restore_ms / 1000.0);
+            eprintln!(
+                "jaded: [kv-bench] {n:>6} {prefill_ms:>11.3} {restore_ms:>11.3} {save_ms:>9.3} {kb_tok:>8.2} {save_mb:>9.3} {restore_gbs:>11.2}"
+            );
+        }
+        ctx.clear_kv_cache();
+        eprintln!("jaded: [kv-bench] restore wins where prefill_ms > restore_ms; that's the cache-KV-in-RAM crossover.");
+        Ok(())
+    };
+    if let Err(e) = run() {
+        eprintln!("jaded: [kv-bench] error: {e}");
+    }
+}
+
+/// End-to-end COLD-vs-WARM compose bench (gated by `JADE_COMPOSE_CACHE`; needs
+/// `JADE_KV_UNIFIED=1`). Answers the same needle question twice over one block store +
+/// KV cache: first COLD (retrieved blocks re-prefilled and cached), then WARM (those
+/// blocks restored from host RAM). Reports both end-to-end latencies and asserts the
+/// two answers are IDENTICAL — restoring block KV must reproduce the re-prefill
+/// composition exactly (greedy decode). That equality is the correctness check for the
+/// cache path; the latency delta is the per-query win caching buys.
+pub(crate) fn selftest_compose_cache(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaChatTemplate) {
+    let needle = "XQ-42";
+    let n_sections: usize = std::env::var("JADE_RLM_DEMO_SECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(40);
+    let topics = ["Introduction","Hardware","Boot","Networking","Filesystem","Processes","Logging","Power","Updates","Telemetry","Scheduling","Memory","Drivers","Crypto","Backups","Glossary"];
+    let filler = "This section documents routine operational details with no special codes or secrets. ".repeat(20);
+    let needle_at = n_sections / 2;
+    let mut texts: Vec<String> = Vec::new();
+    for i in 0..n_sections {
+        if i == needle_at {
+            texts.push(format!("Section {i}: Access Credentials. The secret access code is {needle}. Rotate it quarterly. {filler}"));
+        } else {
+            let t = topics[i % topics.len()];
+            texts.push(format!("Section {i}: {t}. This section describes {t}. {filler}"));
+        }
+    }
+    let store = match BlockStore::from_texts(model, &texts) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("jaded: [compose-cache] build error: {e}"); return; }
+    };
+    let mut cache = KvBlockCache::new(2 * 1024 * 1024 * 1024); // 2 GiB
+    let question = "What is the secret access code?";
+    eprintln!("jaded: [compose-cache] {} blocks, 2 GiB KV cache, question: {question:?}", store.blocks.len());
+
+    // WARMUP: a throwaway compose (its own cache) so the COLD timing below isn't
+    // polluted by one-time CUDA graph compilation on the first decode after load.
+    {
+        let mut warm_cache = KvBlockCache::new(0);
+        let _ = compose_and_answer(model, ctx, &store, &mut warm_cache, question, 4, 0.0);
+    }
+
+    // COLD: cache empty → retrieved blocks are re-prefilled on the GPU and saved.
+    let t = std::time::Instant::now();
+    let (cold_ans, cold_sel) = match compose_and_answer(model, ctx, &store, &mut cache, question, 4, 0.0) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("jaded: [compose-cache] cold error: {e}"); return; }
+    };
+    let cold_ms = t.elapsed().as_millis();
+    let (n_entries, bytes) = cache.stats();
+
+    // WARM: the same blocks are now restored from host RAM instead of recomputed.
+    let t = std::time::Instant::now();
+    let (warm_ans, _) = match compose_and_answer(model, ctx, &store, &mut cache, question, 4, 0.0) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("jaded: [compose-cache] warm error: {e}"); return; }
+    };
+    let warm_ms = t.elapsed().as_millis();
+
+    let same = cold_ans.trim() == warm_ans.trim();
+    eprintln!("jaded: [compose-cache] selected {cold_sel:?}; cache now {n_entries} blocks / {:.1} MB",
+        bytes as f64 / (1024.0 * 1024.0));
+    eprintln!("jaded: [compose-cache] COLD (re-prefill) {cold_ms}ms   WARM (restore) {warm_ms}ms   speedup {:.2}x",
+        cold_ms as f64 / warm_ms.max(1) as f64);
+    eprintln!("jaded: [compose-cache] prefill saved by caching: {}ms over {} composed block(s) (decode time is identical & unaffected)",
+        cold_ms.saturating_sub(warm_ms), cold_sel.len());
+    eprintln!("jaded: [compose-cache] answers identical (cold==warm): {same}");
+    eprintln!("jaded: [compose-cache] needle {needle} found: cold={} warm={}",
+        cold_ans.contains(needle), warm_ans.contains(needle));
+    if !same {
+        eprintln!("jaded: [compose-cache]   COLD: {:?}", cold_ans.trim());
+        eprintln!("jaded: [compose-cache]   WARM: {:?}", warm_ans.trim());
+    }
+}
+
+// ── Unit tests (pure: no model; run under `--features inference` on Linux) ──────
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kv_cache_evicts_least_recently_used() {
+        let mut c = KvBlockCache::new(10);
+        c.insert(0, vec![0u8; 4]);
+        c.insert(1, vec![0u8; 4]); // 8 bytes, both fit
+        assert_eq!(c.stats().0, 2);
+        assert!(c.get(0).is_some()); // touch 0 → block 1 becomes LRU
+        c.insert(2, vec![0u8; 4]); // 12 > 10 → evict the LRU (block 1)
+        assert!(c.get(1).is_none());
+        assert!(c.get(0).is_some());
+        assert!(c.get(2).is_some());
+    }
+
+    #[test]
+    fn kv_cache_zero_cap_disables_and_skips_oversized() {
+        let mut c = KvBlockCache::new(0); // disabled
+        c.insert(0, vec![0u8; 8]);
+        assert!(c.get(0).is_none());
+        assert_eq!(c.stats(), (0, 0));
+        let mut c2 = KvBlockCache::new(4);
+        c2.insert(0, vec![0u8; 8]); // a single block bigger than the cap is not cached
+        assert!(c2.get(0).is_none());
+    }
+
+    #[test]
+    fn retrieve_prefers_idf_token_overlap() {
+        let store = BlockStore {
+            blocks: vec![
+                Block { ids: vec![1, 2, 3], text: "a".into() },
+                Block { ids: vec![7, 8, 9], text: "b".into() },
+                Block { ids: vec![4, 5, 6], text: "c".into() },
+            ],
+        };
+        // query tokens live only in block 1 → it scores highest.
+        assert_eq!(store.retrieve(&[7, 8], 1), vec![1]);
+    }
+
+    #[test]
+    fn retrieve_falls_back_to_first_k_on_no_overlap() {
+        let store = BlockStore {
+            blocks: vec![
+                Block { ids: vec![1, 2], text: "a".into() },
+                Block { ids: vec![3, 4], text: "b".into() },
+                Block { ids: vec![5, 6], text: "c".into() },
+            ],
+        };
+        // nothing overlaps the query → fall back to the first k block indices.
+        assert_eq!(store.retrieve(&[99], 2), vec![0, 1]);
     }
 }
