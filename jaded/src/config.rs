@@ -16,6 +16,14 @@ pub const DEFAULT_N_UBATCH: u32 = 512;
 pub const DEFAULT_N_SEQ_MAX: u32 = 16;
 pub const DEFAULT_KV_TYPE: KvType = KvType::Q4_0;
 
+/// MoE expert-offload defaults. The driver is OFF unless `JADE_MOE_DRIVER` is
+/// truthy, so existing deployments are byte-for-byte unaffected. When on, the
+/// per-layer resident set is `pin + cache` experts in VRAM (see
+/// `docs/moe-expert-offload.md`); the rest are paged from host RAM on demand.
+/// The 16/48 default is the validated `phase2_latency` operating point.
+pub const DEFAULT_MOE_PIN: u32 = 16;
+pub const DEFAULT_MOE_CACHE: u32 = 48;
+
 /// KV-cache quantization type. Mirrors the subset of llama.cpp's `KvCacheType`
 /// the daemon supports; the binary maps this to the llama.cpp enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +78,22 @@ impl KvType {
     }
 }
 
+/// Index-driven MoE expert offload (Linux/`inference` only; parsed here so the
+/// rule checks stay pure and testable). When `enabled`, `pin` + `cache` experts
+/// per layer stay resident in VRAM and the rest are paged from host RAM, guided
+/// by the ranking at `order_path`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoeOffload {
+    pub enabled: bool,
+    /// H: pinned (never-evicted) experts per layer.
+    pub pin: u32,
+    /// C: LRU cache slots per layer.
+    pub cache: u32,
+    /// Path to the per-layer `expert_order` asset (hottest-first). Required when
+    /// `enabled` — the driver cannot choose what to pin without it.
+    pub order_path: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub model_path: String,
@@ -83,6 +107,12 @@ pub struct Config {
     pub kv_type_v: KvType,
     pub flash_attn: bool,
     pub cache_size: usize,
+    pub moe: MoeOffload,
+    /// Baseline whole-layer expert offload: move the first N layers' MoE expert
+    /// tensors to CPU via a buft override (stock llama.cpp `--n-cpu-moe`). 0 = off.
+    /// This is the dumb baseline the index-driven `moe` driver is measured against;
+    /// the two are mutually exclusive (validate() enforces).
+    pub cpu_moe_layers: u32,
 }
 
 impl Config {
@@ -120,7 +150,28 @@ impl Config {
             flash_attn: !matches!(get("JADE_FLASH_ATTN").as_deref(), Some("0") | Some("off") | Some("false")),
             // cache size parsed directly (usize, so it can't reuse parse_u32)
             cache_size: get("JADE_CACHE_SIZE").and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_CACHE_SIZE),
+            moe: MoeOffload {
+                // same falsey-spelling convention as flash_attn, but defaulting OFF:
+                // only the explicit truthy spellings enable the driver.
+                enabled: matches!(get("JADE_MOE_DRIVER").as_deref(), Some("1") | Some("on") | Some("true")),
+                pin: parse_u32("JADE_MOE_PIN", DEFAULT_MOE_PIN),
+                cache: parse_u32("JADE_MOE_CACHE", DEFAULT_MOE_CACHE),
+                // empty/unset path → None so validate() can demand it when enabled
+                order_path: get("JADE_MOE_ORDER_PATH").filter(|s| !s.is_empty()),
+            },
+            cpu_moe_layers: parse_u32("JADE_CPU_MOE_LAYERS", 0),
         }
+    }
+
+    /// Regex matching the MoE expert tensors of the first `cpu_moe_layers` layers,
+    /// for `LlamaModelParams::add_cpu_buft_override`. `None` when the baseline is
+    /// off. e.g. layers 0..2 → `blk\.(0|1)\.ffn_(up|down|gate)_exps`.
+    pub fn cpu_moe_pattern(&self) -> Option<String> {
+        if self.cpu_moe_layers == 0 {
+            return None;
+        }
+        let layers = (0..self.cpu_moe_layers).map(|i| i.to_string()).collect::<Vec<_>>().join("|");
+        Some(format!(r"blk\.({layers})\.ffn_(up|down|gate)_exps"))
     }
 
     /// Reject configurations llama.cpp cannot run: a quantized V cache requires
@@ -137,6 +188,34 @@ impl Config {
                  is disabled. Either set JADE_KV_TYPE_V=f16 or remove JADE_FLASH_ATTN=off.",
                 self.kv_type_v
             ));
+        }
+        // The baseline (whole-layer) and the index-driven driver both place expert
+        // tensors; running both would double-assign the same tensors.
+        if self.moe.enabled && self.cpu_moe_layers > 0 {
+            return Err(
+                "JADE_MOE_DRIVER and JADE_CPU_MOE_LAYERS are mutually exclusive — the \
+                 index-driven driver and the stock baseline both place expert tensors."
+                    .to_owned(),
+            );
+        }
+        // MoE offload rules (only checked when the driver is enabled):
+        if self.moe.enabled {
+            // can't pin/cache experts without knowing which are hot
+            if self.moe.order_path.is_none() {
+                return Err(
+                    "JADE_MOE_DRIVER is on but JADE_MOE_ORDER_PATH is unset — the driver \
+                     needs the per-layer expert_order asset to choose what to pin."
+                        .to_owned(),
+                );
+            }
+            // a resident set of zero experts is a misconfiguration, not "offload everything"
+            if self.moe.pin == 0 && self.moe.cache == 0 {
+                return Err(
+                    "JADE_MOE_DRIVER is on but JADE_MOE_PIN and JADE_MOE_CACHE are both 0 — \
+                     nothing would be resident in VRAM."
+                        .to_owned(),
+                );
+            }
         }
         // every other combination is legal
         Ok(())
@@ -220,5 +299,78 @@ mod tests {
     fn f16_v_without_flash_attn_is_ok() {
         let c = cfg(&[("JADE_KV_TYPE_V", "f16"), ("JADE_FLASH_ATTN", "off")]);
         assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn moe_off_by_default() {
+        let c = cfg(&[]);
+        assert!(!c.moe.enabled);
+        assert_eq!(c.moe.pin, DEFAULT_MOE_PIN);
+        assert_eq!(c.moe.cache, DEFAULT_MOE_CACHE);
+        assert_eq!(c.moe.order_path, None);
+        assert!(c.validate().is_ok()); // disabled driver never blocks boot
+    }
+
+    #[test]
+    fn moe_enabled_by_truthy_spellings() {
+        for v in ["1", "on", "true"] {
+            assert!(cfg(&[("JADE_MOE_DRIVER", v)]).moe.enabled, "{v} should enable");
+        }
+        for v in ["0", "off", "false", "yes"] {
+            assert!(!cfg(&[("JADE_MOE_DRIVER", v)]).moe.enabled, "{v} should not enable");
+        }
+    }
+
+    #[test]
+    fn moe_pin_cache_overrides() {
+        let c = cfg(&[("JADE_MOE_PIN", "8"), ("JADE_MOE_CACHE", "56")]);
+        assert_eq!(c.moe.pin, 8);
+        assert_eq!(c.moe.cache, 56);
+    }
+
+    #[test]
+    fn moe_enabled_requires_order_path() {
+        let c = cfg(&[("JADE_MOE_DRIVER", "on")]);
+        assert!(c.validate().is_err(), "enabled without order path must be rejected");
+        let c = cfg(&[("JADE_MOE_DRIVER", "on"), ("JADE_MOE_ORDER_PATH", "/x/order.json")]);
+        assert_eq!(c.moe.order_path.as_deref(), Some("/x/order.json"));
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn moe_enabled_rejects_empty_resident_set() {
+        let c = cfg(&[
+            ("JADE_MOE_DRIVER", "on"),
+            ("JADE_MOE_ORDER_PATH", "/x/order.json"),
+            ("JADE_MOE_PIN", "0"),
+            ("JADE_MOE_CACHE", "0"),
+        ]);
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn cpu_moe_baseline_pattern() {
+        assert_eq!(cfg(&[]).cpu_moe_layers, 0);
+        assert_eq!(cfg(&[]).cpu_moe_pattern(), None);
+        let c = cfg(&[("JADE_CPU_MOE_LAYERS", "3")]);
+        assert_eq!(c.cpu_moe_layers, 3);
+        assert_eq!(c.cpu_moe_pattern().as_deref(), Some(r"blk\.(0|1|2)\.ffn_(up|down|gate)_exps"));
+    }
+
+    #[test]
+    fn baseline_and_driver_mutually_exclusive() {
+        let c = cfg(&[
+            ("JADE_MOE_DRIVER", "on"),
+            ("JADE_MOE_ORDER_PATH", "/x.json"),
+            ("JADE_CPU_MOE_LAYERS", "4"),
+        ]);
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn moe_empty_order_path_is_none() {
+        // an explicitly empty string must read as unset, not as a valid path
+        let c = cfg(&[("JADE_MOE_ORDER_PATH", "")]);
+        assert_eq!(c.moe.order_path, None);
     }
 }

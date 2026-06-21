@@ -45,6 +45,29 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::Instant;
 
+/// FFI to the index-driven MoE expert-offload driver. `moe_driver_init` is a C
+/// symbol compiled into libllama (the `llama-cpp/moe-driver` lib); it mirrors
+/// `moe_driver_config` in `moe_driver.h` and `MoeOffload` in `config.rs`. The
+/// `build_moe_ffn` seam (also in libllama) calls the rest of the driver on decode.
+#[repr(C)]
+struct MoeDriverConfig {
+    enabled: bool,
+    pin: i32,
+    cache: i32,
+    order_path: *const std::os::raw::c_char,
+}
+
+extern "C" {
+    /// Returns 0 on success; non-zero leaves the driver inactive (stock path).
+    fn moe_driver_init(
+        cfg: *const MoeDriverConfig,
+        n_layers: i32,
+        n_experts: i32,
+        n_expert_used: i32,
+        expert_order_flat: *const i32,
+    ) -> i32;
+}
+
 /// Daemon-wide cumulative generated-token counter (served by `stats_only`).
 static GLOBAL_TOKENS: AtomicU64 = AtomicU64::new(0);
 
@@ -172,9 +195,43 @@ pub fn run(sock_path: String) {
         std::process::exit(1);
     });
 
-    let model_params = LlamaModelParams::default()
-        .with_n_gpu_layers(cfg.gpu_layers)
-        .with_use_mlock(true);
+    // Pinned because a buft override stores a self-referential pointer into the
+    // params (see LlamaModelParams::add_cpu_buft_override).
+    let mut model_params = Box::pin(
+        LlamaModelParams::default()
+            .with_n_gpu_layers(cfg.gpu_layers)
+            .with_use_mlock(true),
+    );
+    // Baseline whole-layer expert offload (stock `--n-cpu-moe`): move the first N
+    // layers' expert tensors to CPU. This is the dumb offload the index-driven
+    // moe driver is benchmarked against; config.validate() guarantees it isn't
+    // combined with JADE_MOE_DRIVER.
+    //
+    // CRITICAL: add_cpu_buft_override stores a raw pointer into this CString's
+    // bytes; llama.cpp reads it (std::regex) at load time. The CString MUST
+    // outlive load_from_file, so bind it in this scope (not inside the `if`).
+    // Index-driven MoE driver: keep ALL expert layers in host RAM (the driver's
+    // page source) via the stock buft override; the driver allocates the small
+    // GPU resident cache and pages experts in. add_cpu_moe_override uses a static
+    // pattern literal, so no CString lifetime concern. Mutually exclusive with
+    // the JADE_CPU_MOE_LAYERS baseline (enforced by Config::validate).
+    if cfg.moe.enabled {
+        model_params.as_mut().add_cpu_moe_override();
+        eprintln!("jaded: MoE driver — all expert layers -> host RAM (page source)");
+    }
+    let _cpu_moe_pattern: Option<std::ffi::CString> = match cfg.cpu_moe_pattern() {
+        Some(pattern) => {
+            let cpattern =
+                std::ffi::CString::new(pattern).expect("cpu-moe pattern has no interior NUL");
+            model_params.as_mut().add_cpu_buft_override(&cpattern);
+            eprintln!(
+                "jaded: baseline cpu-moe offload — first {} layers' experts -> CPU",
+                cfg.cpu_moe_layers
+            );
+            Some(cpattern)
+        }
+        None => None,
+    };
     let model = LlamaModel::load_from_file(&backend, &cfg.model_path, &model_params)
         .unwrap_or_else(|e| {
             eprintln!("jaded: failed to load model from {}: {e}", cfg.model_path);
@@ -191,6 +248,49 @@ pub fn run(sock_path: String) {
             .to_owned()
     });
     eprintln!("jaded: model name: {model_name}");
+
+    // Activate the index-driven MoE driver (the expert tensors are now host-
+    // resident from the override above). moe_driver_init lives in libllama (the
+    // moe-driver lib compiled into it); it sets up the per-layer residency policy
+    // and marks the driver active so the build_moe_ffn seam engages on decode.
+    // The resident GPU cache is allocated lazily on the first decode.
+    if cfg.moe.enabled {
+        let order_path = cfg.moe.order_path.as_deref().unwrap_or_default();
+        match jaded::moe::ExpertOrder::load(order_path) {
+            Ok(order) => {
+                let mc = MoeDriverConfig {
+                    enabled: true,
+                    pin: cfg.moe.pin as i32,
+                    cache: cfg.moe.cache as i32,
+                    order_path: std::ptr::null(),
+                };
+                // n_expert_used is a loose validation hint (the driver reads the
+                // real top-k from the tensor shape at decode); Qwen3-30B-A3B = 8.
+                let rc = unsafe {
+                    moe_driver_init(
+                        &mc,
+                        order.n_layers as i32,
+                        order.n_experts as i32,
+                        8,
+                        order.flat().as_ptr(),
+                    )
+                };
+                if rc == 0 {
+                    eprintln!(
+                        "jaded: MoE driver ACTIVE — pin={} cache={} ({}/{} resident/layer, {} layers)",
+                        cfg.moe.pin,
+                        cfg.moe.cache,
+                        cfg.moe.pin + cfg.moe.cache,
+                        order.n_experts,
+                        order.n_layers
+                    );
+                } else {
+                    eprintln!("jaded: MoE driver init failed (rc={rc}) — running stock path");
+                }
+            }
+            Err(e) => eprintln!("jaded: MoE order load failed ({e}) — running stock path"),
+        }
+    }
 
     let chat_template = model.chat_template(None).unwrap_or_else(|e| {
         eprintln!("jaded: WARNING — could not read chat template from GGUF: {e}");
