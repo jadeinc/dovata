@@ -29,15 +29,18 @@ IMATRIX_CHUNKS=100
 # quantize with the EXACT llama.cpp commit that crate vendors, so the convert
 # script, imatrix, quantize, and GGUF writer are identical to jaded's.
 #
-# Provenance of this commit (re-derive when bumping the crate):
-#   1. jaded/Cargo.lock pins llama-cpp-sys-2 = 0.1.146
-#   2. utilityai/llama-cpp-rs tag 0.1.146 (commit 4afdaf0) submodule
-#      llama-cpp-sys-2/llama.cpp -> ggml-org/llama.cpp @ e21cdc11
-#   3. ggml-org/llama.cpp e21cdc11 is dated 2026-04-13
-# If you bump llama-cpp-sys-2 in Cargo.lock, re-trace step 2 and update this.
-# This may MATCH OR EXCEED jaded's pin; matching exactly is the safest.
+# Provenance of this commit (re-derive when bumping the engine):
+#   jaded no longer pulls llama-cpp-sys-2 from crates.io — it vendors
+#   utilityai/llama-cpp-rs 0.1.150 in-tree (llama-cpp/: ffi/ = sys crate,
+#   api/ = safe wrapper) with the ffi/llama.cpp submodule repointed to OUR fork
+#   joericks1998/llama.cpp, pinned at commit 9e3b928 (dated 2026-06-07 — the
+#   exact upstream commit 0.1.150's safe wrappers target). The daemon thus links
+#   llama.cpp @ 9e3b928. Keep this in sync with that submodule's pinned commit.
+# We quantize from ggml-org @ the same SHA (identical source there; our fork is a
+# clean ancestor at this commit) because ggml-org retains the quantize/imatrix
+# tools we may later strip from the daemon fork.
 LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp
-LLAMA_CPP_COMMIT=e21cdc11a0461d8b0cbd28cc356d993bf6be7282
+LLAMA_CPP_COMMIT=9e3b928fd8c9d14dbf15a8768b9fdd7e5c721d66
 
 # --- GPU offload ------------------------------------------------------------
 # CUDA compute arch the imatrix/quantize tools are built for (A10G=86, A100=80,

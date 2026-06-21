@@ -1,22 +1,40 @@
 //! llama.cpp + io_uring inference backend (Linux, `--features inference`).
 //!
-//! Owns the model/context, the Unix-socket server loop, prefill with KV-cache
-//! prefix reuse, and the per-token generation loop. The fragile control logic
-//! (anchors, stop-anchor buffering, JSON depth tracking) lives in the platform-
-//! independent [`jaded::control::DecodeControl`]; configuration in
-//! [`jaded::config::Config`]; the response cache in [`jaded::cache::PromptCache`].
+//! This file is the backend ROOT: it owns the model/context lifecycle, the
+//! Unix-socket server loop, the async io_uring token writer, and request
+//! dispatch. The actual decode engines live in focused submodules:
+//!
+//! * [`kv`]          — KV-cache optimizations: cache-type mapping, multi-turn
+//!                     prefix reuse, and shared-prefix prefill+copy.
+//! * [`standard`]    — single-shot inference (one sequence, constrained decode).
+//! * [`concurrency`] — the continuous-batching engine (N sequences, one decode
+//!                     per tick) over the pure [`jaded::sched::Scheduler`].
+//! * [`compose`]     — Recursive Language Model engine: tensor-level KV-cache
+//!                     composition (retrieve → splice block KV → one decode).
+//! * [`rlm`]         — RLM socket dispatch: context-handle upload + query routing
+//!                     onto the [`compose`] engine.
+//! * [`bench`]       — env-gated developer self-tests and benchmarks (not a request
+//!                     path); [`bench::dispatch`] runs one and exits if requested.
+//!
+//! The platform-independent logic (anchors/stop/grammar, config, response cache,
+//! scheduler) lives in the `jaded` library and is unit-tested on any platform;
+//! everything here is llama.cpp-bound and Linux-only.
+
+mod kv;
+mod standard;
+mod concurrency;
+mod rlm;
+mod compose;
+mod bench;
 
 use io_uring::{opcode, types, IoUring};
 use jade_protocol::{Frame, InferenceRequest};
 use jaded::cache::PromptCache;
 use jaded::config::{Config, KvType};
-use jaded::control::DecodeControl;
 use llama_cpp_2::{
-    context::{params::{KvCacheType, LlamaContextParams}, LlamaContext},
+    context::{params::LlamaContextParams, LlamaContext},
     llama_backend::LlamaBackend,
-    llama_batch::LlamaBatch,
     model::{params::LlamaModelParams, AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel},
-    sampling::LlamaSampler,
     token::LlamaToken,
 };
 use std::io::{Read, Write};
@@ -27,6 +45,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::Instant;
 
+/// Daemon-wide cumulative generated-token counter (served by `stats_only`).
 static GLOBAL_TOKENS: AtomicU64 = AtomicU64::new(0);
 
 /// Process start, set once at the top of [`run`]. Backs `Health::uptime_secs`.
@@ -34,19 +53,19 @@ static START: OnceLock<Instant> = OnceLock::new();
 
 const QUEUE_DEPTH: u32 = 128;
 
-/// Map our pure [`KvType`] onto llama.cpp's `KvCacheType`.
-fn kv_cache_type(t: KvType) -> KvCacheType {
-    match t {
-        KvType::F16 => KvCacheType::F16,
-        KvType::BF16 => KvCacheType::BF16,
-        KvType::F32 => KvCacheType::F32,
-        KvType::Q8_0 => KvCacheType::Q8_0,
-        KvType::Q5_1 => KvCacheType::Q5_1,
-        KvType::Q5_0 => KvCacheType::Q5_0,
-        KvType::Q4_1 => KvCacheType::Q4_1,
-        KvType::Q4_0 => KvCacheType::Q4_0,
-    }
-}
+// ── Over-context routing constants ─────────────────────────────────────────────
+//
+// A request whose formatted prompt leaves fewer than NATIVE_GEN_HEADROOM tokens of
+// window is treated as "over context" and answered by the blended KV-composition
+// engine instead of native full-context inference (which would have no room to
+// generate, or not fit at all). Native handles everything that fits — highest fidelity.
+const NATIVE_GEN_HEADROOM: u32 = 512;
+/// Fallback RLM frontier = this × the native window, when no profile/env limit is set.
+const RLM_FRONTIER_WINDOW_MULT: u32 = 8;
+/// Defaults for the over-context blended pipeline (overridable via env): retrieve
+/// `RLM_DEFAULT_N` candidates, rerank, compose the top `RLM_DEFAULT_K`.
+const RLM_DEFAULT_N: usize = 12;
+const RLM_DEFAULT_K: usize = 4;
 
 // ── Async token writer (io_uring) ─────────────────────────────────────────────
 //
@@ -77,9 +96,13 @@ impl IoUringWriter {
 
     fn write(&mut self, data: Vec<u8>) -> std::io::Result<()> {
         // Drain one completion before pushing when the ring is full.
+        // (back-pressure: never queue more than QUEUE_DEPTH outstanding writes.)
         if self.in_flight >= QUEUE_DEPTH as usize {
             self.reap(1)?;
         }
+        // take ownership of the bytes and keep them alive in self.buffers — the
+        // kernel will read from this exact heap allocation asynchronously, so it
+        // must NOT move or free until the completion is reaped.
         self.buffers.push(data);
         let buf = self.buffers.last().unwrap();
         let op = opcode::Write::new(types::Fd(self.fd), buf.as_ptr(), buf.len() as u32)
@@ -94,20 +117,27 @@ impl IoUringWriter {
     }
 
     fn reap(&mut self, min: usize) -> std::io::Result<()> {
+        // block until at least `min` writes have completed, then process every
+        // completion that's ready.
         self.ring.submit_and_wait(min)?;
         for cqe in self.ring.completion() {
+            // a negative result is a kernel errno for that write — surface it.
             if cqe.result() < 0 {
                 return Err(std::io::Error::from_raw_os_error(-cqe.result()));
             }
+            // one fewer write outstanding
             self.in_flight -= 1;
         }
         Ok(())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
+        // wait for ALL outstanding writes to land so the client has every token...
         if self.in_flight > 0 {
             self.reap(self.in_flight)?;
         }
+        // ...only now is it safe to drop the buffers (kernel is done with them).
+        // MUST be called before sending the Done frame.
         self.buffers.clear();
         Ok(())
     }
@@ -175,18 +205,43 @@ pub fn run(sock_path: String) {
         llama_cpp_sys_2::LLAMA_FLASH_ATTN_TYPE_DISABLED
     };
 
-    let ctx_params = LlamaContextParams::default()
+    let mut ctx_params = LlamaContextParams::default()
         .with_n_ctx(Some(NonZeroU32::new(cfg.ctx_size).unwrap()))
         .with_n_batch(cfg.n_batch)
         .with_n_ubatch(cfg.n_ubatch)
-        .with_type_k(kv_cache_type(cfg.kv_type_k))
-        .with_type_v(kv_cache_type(cfg.kv_type_v))
+        // Reserve room for N concurrent sequences (RLM fan-out / parallel serving);
+        // the shared KV cache is partitioned across them by sequence id.
+        .with_n_seq_max(cfg.n_seq_max)
+        .with_type_k(kv::kv_cache_type(cfg.kv_type_k))
+        .with_type_v(kv::kv_cache_type(cfg.kv_type_v))
         .with_flash_attention_policy(flash_attn_policy);
+    // A unified KV buffer puts all sequences in one stream, so cross-sequence seq_cp
+    // becomes a cheap metadata-only op (no `is_full` block) — exactly what multi-block
+    // KV composition needs. The RLM engine is composition, so unified is ON by default;
+    // set JADE_KV_UNIFIED=0/off/false to opt out (e.g. to A/B the standard path).
+    // Disabling it makes the `rlm` request path abort at compose time.
+    let kv_unified = match std::env::var("JADE_KV_UNIFIED") {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false"),
+        Err(_) => true,
+    };
+    if kv_unified {
+        ctx_params = ctx_params.with_kv_unified(true);
+        eprintln!("jaded: kv_unified enabled (default; set JADE_KV_UNIFIED=0 to disable)");
+    } else {
+        eprintln!("jaded: kv_unified DISABLED — the rlm (compose) request path is unavailable");
+    }
     let mut ctx = model.new_context(&backend, ctx_params).unwrap_or_else(|e| {
         eprintln!("jaded: context init failed: {e}");
         std::process::exit(1);
     });
     eprintln!("jaded: context ready (ctx_size={})", cfg.ctx_size);
+
+    // Developer self-tests / benchmarks: if a JADE_* selftest var is set, run that one
+    // routine against the just-loaded model and exit WITHOUT serving (see `bench`). The
+    // normal daemon path below is untouched when no such var is set.
+    if bench::dispatch(&model, &mut ctx, &chat_template) {
+        return;
+    }
 
     let mut cache = PromptCache::new(cfg.cache_size);
     eprintln!("jaded: prompt cache size={}", cfg.cache_size);
@@ -204,15 +259,42 @@ pub fn run(sock_path: String) {
     // the entire conversation history on every turn.
     let mut kv_tokens: Vec<LlamaToken> = Vec::new();
 
+    // The RLM efficient frontier (max corpus tokens) for the over-context path,
+    // resolved once: the active model's profile, else env, else a multiple of the
+    // window. A request whose corpus exceeds this is rejected (see `answer_over_context`).
+    let rlm_max = rlm_max_context(&model_name, cfg.ctx_size);
+    eprintln!("jaded: rlm frontier (max corpus tokens) = {rlm_max}");
+
     eprintln!("jaded: listening on {sock_path}");
-    listen(&listener, &model, &mut ctx, &mut cache, &chat_template, &mut kv_tokens, &model_name);
+    listen(&listener, &model, &mut ctx, &mut cache, &chat_template, &mut kv_tokens, &model_name, rlm_max);
 }
 
-fn listen(listener: &UnixListener, model: &LlamaModel, ctx: &mut LlamaContext, cache: &mut PromptCache, tmpl: &LlamaChatTemplate, kv_tokens: &mut Vec<LlamaToken>, model_name: &str) {
+/// The RLM efficient-frontier limit (max corpus tokens) for the active model: env
+/// `JADE_RLM_MAX_CONTEXT` (operator override) if set, else the model profile's
+/// `rlm_max_context`, else [`RLM_FRONTIER_WINDOW_MULT`]× the native window. This is the
+/// limit beyond which the over-context path rejects a request rather than answer with
+/// degraded accuracy.
+fn rlm_max_context(model_name: &str, ctx_size: u32) -> u32 {
+    // operator override wins (e.g. to A/B the limit or test the reject path)
+    if let Some(n) = std::env::var("JADE_RLM_MAX_CONTEXT").ok().and_then(|v| v.trim().parse::<u32>().ok()) {
+        if n > 0 {
+            return n;
+        }
+    }
+    if let Some(p) = jade_model_profile::Registry::builtin().select(model_name) {
+        if let Some(m) = p.limits.rlm_max_context() {
+            return m;
+        }
+    }
+    ctx_size.saturating_mul(RLM_FRONTIER_WINDOW_MULT)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn listen(listener: &UnixListener, model: &LlamaModel, ctx: &mut LlamaContext, cache: &mut PromptCache, tmpl: &LlamaChatTemplate, kv_tokens: &mut Vec<LlamaToken>, model_name: &str, rlm_max: u32) {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                if let Err(e) = handle_connection(&mut stream, model, ctx, cache, tmpl, kv_tokens, model_name) {
+                if let Err(e) = handle_connection(&mut stream, model, ctx, cache, tmpl, kv_tokens, model_name, rlm_max) {
                     eprintln!("jaded: connection error: {e}");
                 }
             }
@@ -221,6 +303,7 @@ fn listen(listener: &UnixListener, model: &LlamaModel, ctx: &mut LlamaContext, c
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_connection(
     stream: &mut UnixStream,
     model: &LlamaModel,
@@ -229,21 +312,30 @@ fn handle_connection(
     tmpl: &LlamaChatTemplate,
     kv_tokens: &mut Vec<LlamaToken>,
     model_name: &str,
+    rlm_max: u32,
 ) -> std::io::Result<()> {
-    let mut buf: Vec<u8> = Vec::new();
-    let mut tmp = [0u8; 4096];
-    let mut request_count: u64 = 0;
+    let mut buf: Vec<u8> = Vec::new();      // accumulates raw bytes off the socket
+    let mut tmp = [0u8; 4096];              // scratch read buffer
+    let mut request_count: u64 = 0;        // just for the close-log line
 
+    // outer loop: one pass per request. A single client connection sends many
+    // requests back-to-back over its lifetime, processed strictly in order.
     loop {
+        // inner loop: keep reading from the socket until `buf` holds at least one
+        // complete request frame ([4-byte len][JSON]), then return it.
         let req = loop {
             match InferenceRequest::decode(&buf) {
                 Ok(req) => {
+                    // a full frame decoded — consume its bytes from the front of
+                    // buf (4 length bytes + the JSON payload) and hand it back.
                     let payload_len =
                         u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
                     buf.drain(..4 + payload_len);
                     break req;
                 }
                 Err(jade_protocol::RequestDecodeError::Incomplete) => {
+                    // not enough bytes yet — read more. n == 0 means EOF (client
+                    // hung up cleanly), so this connection is done.
                     let n = stream.read(&mut tmp)?;
                     if n == 0 {
                         eprintln!("jaded: connection closed after {request_count} requests");
@@ -252,6 +344,7 @@ fn handle_connection(
                     buf.extend_from_slice(&tmp[..n]);
                 }
                 Err(e) => {
+                    // garbage on the wire — we can't resync, so drop the connection.
                     eprintln!("jaded: malformed request: {e}");
                     return Ok(());
                 }
@@ -303,31 +396,70 @@ fn handle_connection(
             continue;
         }
 
+        // RLM mode: explicit, pre-chunked / context-handle decomposition over a large
+        // context. Separate path from single-shot inference (now blended-backed).
+        if req.rlm {
+            rlm::handle_rlm(&req, model, ctx, stream, model_name)?;
+            continue;
+        }
+
+        // Over-context routing: tokenize the formatted prompt up front (cheap vs.
+        // inference) to decide the path. A prompt that won't fit the native window
+        // with room to generate is answered by the blended KV-composition engine;
+        // everything that fits falls through to native full-context inference below.
+        match build_formatted_prompt(&req.prompt, model, tmpl)
+            .and_then(|f| model.str_to_token(&f, AddBos::Always).map_err(|e| format!("tokenize failed: {e}")))
+        {
+            Ok(toks) if toks.len() as u32 + NATIVE_GEN_HEADROOM > ctx.n_ctx() => {
+                eprintln!(
+                    "jaded: over-context ({} prompt tokens, window {}) → blended RLM compose",
+                    toks.len(), ctx.n_ctx()
+                );
+                answer_over_context(&req, model, ctx, stream, model_name, rlm_max)?;
+                continue;
+            }
+            Ok(_) => {} // fits → native path below
+            Err(e) => {
+                stream.write_all(&Frame::Error(e).encode())?;
+                continue;
+            }
+        }
+
         eprintln!(
             "jaded: request — model={} max_tokens={} prompt_len={} trust={}",
             req.model, req.max_tokens, req.prompt.len(), req.trust
         );
 
+        // first frame of every real response is Meta (the serving model name),
+        // sent before any tokens so the client knows what answered.
         stream.write_all(&Frame::Meta { model: model_name.to_owned() }.encode())?;
 
+        // token frames go out through the async io_uring writer (overlaps the next
+        // token's compute with the kernel draining this token's bytes).
         let mut writer = IoUringWriter::new(stream.as_raw_fd())?;
 
+        // response cache: identical request → replay the stored text as one token
+        // frame and skip the model entirely.
         let cache_key = PromptCache::key(&req);
         if let Some((cached_text, tokens_used)) = cache.get(cache_key) {
             eprintln!("jaded: cache hit (key={cache_key:016x})");
             writer.write(Frame::Token(cached_text.clone()).encode())?;
-            writer.flush()?;
+            writer.flush()?; // flush before Done so the client sees the bytes
             GLOBAL_TOKENS.fetch_add(*tokens_used, Ordering::Relaxed);
             stream.write_all(&Frame::Done { tokens_used: *tokens_used }.encode())?;
             continue;
         }
 
+        // cache miss: actually run the model. The closure fires once per generated
+        // token — we both stream it to the client AND accumulate it so we can cache
+        // the full response afterward.
         let mut response_buf = String::new();
-        let result = infer_streaming(&req, model, ctx, tmpl, kv_tokens, |token| {
+        let result = standard::infer_streaming(&req, model, ctx, tmpl, kv_tokens, |token| {
             response_buf.push_str(token);
             writer.write(Frame::Token(token.to_owned()).encode()).ok();
         });
 
+        // make sure every streamed token byte has landed before the Done/Error frame
         writer.flush()?;
 
         match result {
@@ -352,7 +484,70 @@ fn handle_connection(
     }
 }
 
-fn build_formatted_prompt(
+/// Answer an over-context request with the blended KV-composition engine. The prompt
+/// is split into a retrievable corpus + a question (`jaded::route`), chunked into
+/// blocks, and — if the corpus is within the model's RLM frontier (`rlm_max`) — answered
+/// by retrieve→rerank→compose→single-decode. A corpus beyond the frontier is rejected
+/// with an `Error` frame (the documented limit) rather than answered with degraded
+/// accuracy. Emits `Meta` → `Token`(answer) → `Done`, mirroring the explicit `rlm` path.
+fn answer_over_context(
+    req: &InferenceRequest,
+    model: &LlamaModel,
+    ctx: &mut LlamaContext,
+    stream: &mut UnixStream,
+    model_name: &str,
+    rlm_max: u32,
+) -> std::io::Result<()> {
+    // Split prompt → (corpus blocks, question) and tokenize the corpus into a store.
+    let input = jaded::route::derive_rlm_input(&req.prompt, jaded::route::DEFAULT_CHUNK_CHARS);
+    let store = match compose::BlockStore::from_texts(model, &input.corpus) {
+        Ok(s) => s,
+        Err(e) => {
+            stream.write_all(&Frame::Error(format!("over-context chunking failed: {e}")).encode())?;
+            return Ok(());
+        }
+    };
+    let corpus_tokens: usize = store.blocks.iter().map(|b| b.ids.len()).sum();
+
+    // Frontier gate: reject a corpus larger than this model's measured RLM limit so
+    // we never silently answer past the point accuracy is known to hold.
+    if corpus_tokens as u32 > rlm_max {
+        let msg = format!(
+            "context corpus ({corpus_tokens} tokens) exceeds this model's RLM limit \
+             ({rlm_max} tokens); reduce the context (see the model profile's limits.rlm_max_context)"
+        );
+        eprintln!("jaded: [over-context] REJECT — {msg}");
+        stream.write_all(&Frame::Error(msg).encode())?;
+        return Ok(());
+    }
+
+    // Defaults overridable via env, mirroring the bench knobs.
+    let n_cand = std::env::var("JADE_RLM_N").ok().and_then(|v| v.parse().ok()).unwrap_or(RLM_DEFAULT_N);
+    let k = std::env::var("JADE_RLM_K").ok().and_then(|v| v.parse().ok()).unwrap_or(RLM_DEFAULT_K);
+
+    // One-shot request → ephemeral (cap-0) KV cache; PICK→rerank→COMBINE→one decode.
+    let mut kv = compose::KvBlockCache::new(0);
+    match compose::blended_compose_and_answer(model, ctx, &store, &mut kv, &input.question, n_cand, k.max(1)) {
+        Ok((answer, picked, _scored)) => {
+            eprintln!(
+                "jaded: [over-context] {} blocks ({corpus_tokens} tok) → composed {picked:?}",
+                store.blocks.len()
+            );
+            stream.write_all(&Frame::Meta { model: model_name.to_owned() }.encode())?;
+            stream.write_all(&Frame::Token(answer).encode())?;
+            stream.write_all(&Frame::Done { tokens_used: 0 }.encode())?;
+        }
+        Err(e) => {
+            stream.write_all(&Frame::Error(format!("over-context compose: {e}")).encode())?;
+        }
+    }
+    Ok(())
+}
+
+/// Render a request prompt into the model's chat format. A `_jade_protocol`
+/// messages object becomes a multi-turn chat; anything else is a single user turn.
+/// Shared by the standard path, `count_only`, and the RLM sub-call builder.
+pub(crate) fn build_formatted_prompt(
     prompt_str: &str,
     model: &LlamaModel,
     tmpl: &LlamaChatTemplate,
@@ -375,149 +570,4 @@ fn build_formatted_prompt(
         .map_err(|e| format!("chat message error: {e}"))?;
     model.apply_chat_template(tmpl, &[msg], true)
         .map_err(|e| format!("chat template error: {e}"))
-}
-
-fn infer_streaming(
-    req: &InferenceRequest,
-    model: &LlamaModel,
-    ctx: &mut LlamaContext,
-    tmpl: &LlamaChatTemplate,
-    kv_tokens: &mut Vec<LlamaToken>,
-    mut on_token: impl FnMut(&str),
-) -> Result<u64, String> {
-    let mut decoder = encoding_rs::UTF_8.new_decoder_without_bom_handling();
-
-    let prompt = build_formatted_prompt(&req.prompt, model, tmpl)?;
-
-    let tokens = model
-        .str_to_token(&prompt, AddBos::Always)
-        .map_err(|e| format!("tokenization failed: {e}"))?;
-
-    let n_prompt = tokens.len();
-    let ctx_size = ctx.n_ctx();
-    if n_prompt >= ctx_size as usize {
-        return Err(format!("prompt ({n_prompt} tokens) exceeds context size ({ctx_size})"));
-    }
-
-    // Find how many leading tokens the new prompt shares with the current KV cache.
-    // We can skip re-prefilling the shared prefix and only process the new suffix,
-    // which is the main cost driver for multi-turn chat (system prompt + history grows
-    // by one turn per message but was being fully re-prefilled every time).
-    let prefix_len = tokens.iter()
-        .zip(kv_tokens.iter())
-        .take_while(|(a, b)| a == b)
-        .count()
-        // Never reuse the very last cached token — it was the generation seed for
-        // the previous response and its logits are stale.
-        .saturating_sub(1)
-        .min(n_prompt.saturating_sub(1));
-
-    if prefix_len > 0 {
-        // Evict only the suffix beyond the shared prefix.
-        ctx.clear_kv_cache_seq(Some(0), Some(prefix_len as u32), None)
-            .map_err(|e| format!("kv_cache_seq clear failed: {e}"))?;
-        kv_tokens.truncate(prefix_len);
-        eprintln!("jaded: kv prefix reuse {prefix_len}/{} tokens ({} new)",
-            n_prompt, n_prompt - prefix_len);
-    } else {
-        ctx.clear_kv_cache();
-        kv_tokens.clear();
-    }
-
-    // Chunked prefill: process only the new suffix tokens at their absolute positions.
-    let n_batch = ctx.n_batch() as usize;
-    let last = n_prompt - 1;
-    let mut pos = prefix_len;
-    while pos < n_prompt {
-        let chunk_end = (pos + n_batch).min(n_prompt);
-        let mut batch = LlamaBatch::new(chunk_end - pos, 1);
-        for i in pos..chunk_end {
-            batch.add(tokens[i], i as i32, &[0], i == last)
-                .map_err(|e| format!("batch add failed: {e}"))?;
-        }
-        ctx.decode(&mut batch).map_err(|e| format!("prefill failed at chunk {pos}..{chunk_end}: {e}"))?;
-        pos = chunk_end;
-    }
-
-    // Record the prompt tokens in kv_tokens (suffix appended to retained prefix).
-    kv_tokens.extend_from_slice(&tokens[prefix_len..]);
-
-    // Free sampler used for unconstrained tokens (and all tokens once grammar is retired).
-    let mut free_sampler = LlamaSampler::chain_simple(vec![
-        LlamaSampler::temp(0.6),
-        LlamaSampler::min_p(0.05, 1),
-        LlamaSampler::dist(0),
-    ]);
-
-    // Grammar sampler (constrained decoding). Kept allocated until after the
-    // generation loop — freeing a grammar sampler while the context is active
-    // crashes llama.cpp.
-    let mut anchor_sampler: Option<LlamaSampler> = if let Some(ref gbnf) = req.grammar {
-        match LlamaSampler::grammar(model, gbnf, "root") {
-            Ok(g) => Some(LlamaSampler::chain_simple(vec![
-                LlamaSampler::temp(0.6),
-                g,
-                LlamaSampler::min_p(0.05, 1),
-                LlamaSampler::dist(0),
-            ])),
-            Err(e) => return Err(format!("GBNF grammar error: {e:?}")),
-        }
-    } else {
-        None
-    };
-
-    // All anchor / stop-anchor / depth-tracking decisions live in this pure state
-    // machine (see jaded::control). The engine only asks it which sampler to use
-    // and what text to emit.
-    let mut control = DecodeControl::new(req);
-
-    let max_new = (ctx_size as usize).saturating_sub(n_prompt).min(req.max_tokens as usize);
-    let mut n_gen = 0usize;
-    let mut gen_batch = LlamaBatch::new(1, 1);
-
-    loop {
-        // LlamaSampler::sample() already accepts the token internally
-        // (llama_sampler_sample calls llama_sampler_accept at the end). Do NOT
-        // call sampler.accept() again — double-accepting empties the grammar
-        // stacks and causes an abort on the next sample.
-        let token = if control.use_grammar() {
-            let gsamp = anchor_sampler.as_mut().unwrap();
-            let t = gsamp.sample(&ctx, -1);
-            control.notice_grammar_sampled();
-            t
-        } else {
-            free_sampler.sample(&ctx, -1)
-        };
-
-        if model.is_eog_token(token) || n_gen >= max_new {
-            break;
-        }
-
-        let piece = model.token_to_piece(token, &mut decoder, true, None)
-            .map_err(|e| format!("token to str failed: {e}"))?;
-        n_gen += 1;
-
-        if let Some(text) = control.on_piece(&piece) {
-            on_token(&text);
-        }
-
-        kv_tokens.push(token);
-
-        gen_batch.clear();
-        let gen_pos = (n_prompt + n_gen - 1) as i32;
-        gen_batch.add(token, gen_pos, &[0], true)
-            .map_err(|e| format!("batch add failed: {e}"))?;
-        ctx.decode(&mut gen_batch).map_err(|e| format!("decode step failed: {e}"))?;
-    }
-
-    // Flush anything buffered for stop-anchor prefix detection that never
-    // completed (EOG, max_new, or depth-tracker retirement): it is real output.
-    if let Some(tail) = control.finish() {
-        on_token(&tail);
-    }
-
-    // Keep the grammar sampler alive until here (see allocation comment above).
-    drop(anchor_sampler);
-
-    Ok((n_prompt + n_gen) as u64)
 }

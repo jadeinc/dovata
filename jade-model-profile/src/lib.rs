@@ -44,6 +44,10 @@ pub struct ModelProfile {
     /// surfaced as structured events instead of raw content.
     #[serde(default, rename = "span")]
     pub spans: Vec<Span>,
+    /// Context-length limits for this model: the native attention window and the
+    /// measured RLM (KV-composition) efficient frontier. Absent → both unset.
+    #[serde(default)]
+    pub limits: Limits,
 }
 
 /// Delimiters + parsing convention for a tool call the model emits.
@@ -82,6 +86,37 @@ pub struct Span {
     pub close: String,
 }
 
+/// Context-length limits for a model. Both fields are token counts; `0` means
+/// "unset" (the daemon falls back to its env/config default).
+///
+/// * `context_window` — the native attention window the daemon serves below which
+///   a prompt is answered with full-context inference (highest fidelity).
+/// * `rlm_max_context` — the **efficient frontier** of the blended KV-composition
+///   (RLM+RAG) engine: the largest corpus, in tokens, over which it answers
+///   reliably (measured with the RULER-style frontier harness). A request whose
+///   corpus exceeds this is rejected rather than answered with degraded accuracy.
+///   This is documented here so Jade programmers know each model's usable limit.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Limits {
+    #[serde(default)]
+    pub context_window: u32,
+    #[serde(default)]
+    pub rlm_max_context: u32,
+}
+
+impl Limits {
+    /// The RLM efficient frontier in tokens, or `None` when unset (`0`).
+    pub fn rlm_max_context(&self) -> Option<u32> {
+        (self.rlm_max_context > 0).then_some(self.rlm_max_context)
+    }
+
+    /// Whether a corpus of `corpus_tokens` is within this model's RLM frontier.
+    /// `true` when the limit is unset (enforcement deferred to the daemon default).
+    pub fn rlm_corpus_allowed(&self, corpus_tokens: u32) -> bool {
+        self.rlm_max_context().map_or(true, |max| corpus_tokens <= max)
+    }
+}
+
 fn default_name_field() -> String {
     "tool_name".to_owned()
 }
@@ -89,6 +124,9 @@ fn default_name_field() -> String {
 impl ModelProfile {
     /// Parse and validate a profile from TOML.
     pub fn from_toml(s: &str) -> Result<Self, ProfileError> {
+        // two steps: deserialize the TOML into the struct, then run our own
+        // semantic checks (serde only guarantees the shape, not that delimiters
+        // are non-empty).
         let p: ModelProfile = toml::from_str(s).map_err(|e| ProfileError::Parse(e.to_string()))?;
         p.validate()?;
         Ok(p)
@@ -96,16 +134,27 @@ impl ModelProfile {
 
     /// Reject structurally-valid-but-meaningless profiles (empty delimiters).
     pub fn validate(&self) -> Result<(), ProfileError> {
+        // a tool call needs both an opening AND closing delimiter to be parseable
         if self.tool_call.open.is_empty() || self.tool_call.close.is_empty() {
             return Err(ProfileError::Invalid("tool_call.open/close must be non-empty"));
         }
+        // a result needs a role to render back into the conversation
         if self.tool_result.role.is_empty() {
             return Err(ProfileError::Invalid("tool_result.role must be non-empty"));
         }
+        // each optional span likewise needs a label and both delimiters
         for s in &self.spans {
             if s.open.is_empty() || s.close.is_empty() || s.tag.is_empty() {
                 return Err(ProfileError::Invalid("span tag/open/close must be non-empty"));
             }
+        }
+        // when both context limits are set, the RLM frontier must be at least the
+        // native window — RLM only ever serves prompts that DON'T fit natively.
+        if self.limits.context_window > 0
+            && self.limits.rlm_max_context > 0
+            && self.limits.rlm_max_context < self.limits.context_window
+        {
+            return Err(ProfileError::Invalid("limits.rlm_max_context must be >= limits.context_window"));
         }
         Ok(())
     }
@@ -113,12 +162,15 @@ impl ModelProfile {
     /// Whether this profile applies to `model_name` (any `match` glob matches,
     /// or the exact `model` name matches).
     pub fn matches(&self, model_name: &str) -> bool {
+        // exact name match is the cheap path; otherwise try each glob pattern
         self.model == model_name
             || self.match_patterns.iter().any(|pat| glob_match(pat, model_name))
     }
 
     /// Render a raw tool result into the form the model expects in its next turn.
     pub fn wrap_tool_result(&self, content: &str) -> String {
+        // sandwich the raw result between the model's configured prefix/suffix
+        // (e.g. <tool_response>\n … \n</tool_response> for Qwen3)
         format!("{}{}{}", self.tool_result.wrap_prefix, content, self.tool_result.wrap_suffix)
     }
 }
@@ -154,6 +206,8 @@ impl Registry {
 
     /// The first profile matching `model_name`, if any.
     pub fn select(&self, model_name: &str) -> Option<&ModelProfile> {
+        // first match wins; since push() inserts at the front, user-added profiles
+        // are checked before builtins.
         self.profiles.iter().find(|p| p.matches(model_name))
     }
 }
@@ -161,28 +215,41 @@ impl Registry {
 /// `*`-glob match (no other metacharacters). ASCII byte comparison — model names
 /// are ASCII identifiers.
 fn glob_match(pattern: &str, text: &str) -> bool {
+    // classic linear-time wildcard match with backtracking. We walk the text once;
+    // when a `*` is in play we remember where it was so we can "give it one more
+    // character" if the rest of the pattern fails to line up.
     let (p, t) = (pattern.as_bytes(), text.as_bytes());
-    let (mut pi, mut ti) = (0usize, 0usize);
+    let (mut pi, mut ti) = (0usize, 0usize); // cursors into pattern and text
+    // `star` = pattern index of the most recent '*'; `mark` = the text index we'd
+    // resume from after letting that '*' absorb one more char.
     let (mut star, mut mark) = (None, 0usize);
     while ti < t.len() {
         if pi < p.len() && (p[pi] == t[ti]) {
+            // literal characters match — advance both cursors
             pi += 1;
             ti += 1;
         } else if pi < p.len() && p[pi] == b'*' {
+            // hit a '*': record it and tentatively let it match zero chars (don't
+            // advance the text yet), moving past the '*' in the pattern.
             star = Some(pi);
             mark = ti;
             pi += 1;
         } else if let Some(sp) = star {
+            // mismatch, but there's a '*' to fall back on: rewind the pattern to
+            // just after that '*' and let it swallow one more text char.
             pi = sp + 1;
             mark += 1;
             ti = mark;
         } else {
+            // mismatch with no '*' to back off to → not a match
             return false;
         }
     }
+    // text exhausted: any trailing '*'s in the pattern match the empty string
     while pi < p.len() && p[pi] == b'*' {
         pi += 1;
     }
+    // it's a match only if we also consumed the entire pattern
     pi == p.len()
 }
 
@@ -302,6 +369,58 @@ mod tests {
                 args: r#"{"tool_name":"get_weather","city":"SF"}"#.into(),
             },
         );
+    }
+
+    #[test]
+    fn limits_parse_and_gate_corpus() {
+        let p = ModelProfile::from_toml(
+            r#"
+            schema_version = 1
+            model = "m"
+            [tool_call]
+            open = "<tool>"
+            close = "</tool>"
+            [tool_result]
+            role = "tool"
+            [limits]
+            context_window = 32768
+            rlm_max_context = 262144
+        "#,
+        )
+        .unwrap();
+        assert_eq!(p.limits.context_window, 32768);
+        assert_eq!(p.limits.rlm_max_context(), Some(262144));
+        assert!(p.limits.rlm_corpus_allowed(262144));
+        assert!(!p.limits.rlm_corpus_allowed(262145));
+    }
+
+    #[test]
+    fn limits_absent_defaults_to_unset_and_allows_everything() {
+        let reg = Registry::builtin();
+        let p = reg.select("Qwen3-Coder-30B").unwrap();
+        // The bundled profile may or may not set limits; an unset limit allows any corpus.
+        if p.limits.rlm_max_context().is_none() {
+            assert!(p.limits.rlm_corpus_allowed(u32::MAX));
+        }
+    }
+
+    #[test]
+    fn validate_rejects_rlm_frontier_below_window() {
+        let r = ModelProfile::from_toml(
+            r#"
+            schema_version = 1
+            model = "m"
+            [tool_call]
+            open = "<tool>"
+            close = "</tool>"
+            [tool_result]
+            role = "tool"
+            [limits]
+            context_window = 32768
+            rlm_max_context = 16384
+        "#,
+        );
+        assert!(r.is_err());
     }
 
     #[test]

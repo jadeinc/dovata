@@ -66,25 +66,34 @@ impl ToolStreamParser {
     /// Feed one token's text; returns any complete events it produced.
     pub fn push_token(&mut self, tok: &str) -> Vec<Event> {
         let mut out = Vec::new();
+        // pass-through mode: no span detection, every non-empty token is content.
         if !self.enabled {
             if !tok.is_empty() {
                 out.push(Event::Content(tok.to_owned()));
             }
             return out;
         }
+        // accumulate; a delimiter may straddle token boundaries, so we always work
+        // against the whole buffer.
         self.buf.push_str(tok);
+        // we may flip between content/tool states several times within one token
+        // (e.g. "<tool>{…}</tool>more"), so loop until no more progress is possible.
         loop {
             if !self.in_tool {
+                // STATE: outside a tool span. Look for the opening delimiter.
                 if let Some(p) = self.buf.find(&self.open) {
+                    // text before the open marker is real content
                     if p > 0 {
                         out.push(Event::Content(self.buf[..p].to_owned()));
                     }
+                    // consume up to and including the open marker; switch to in-tool
                     self.buf = self.buf[p + self.open.len()..].to_owned();
                     self.in_tool = true;
-                    continue;
+                    continue; // re-scan the remainder for the close marker
                 }
                 // Open marker not present: emit the safe prefix, hold back the
                 // longest suffix that could still grow into `open`.
+                // (same split-token trick as the daemon's stop-anchor buffering.)
                 let keep = held_suffix_len(&self.buf, &self.open);
                 let emit_len = self.buf.len() - keep;
                 if emit_len > 0 {
@@ -93,12 +102,15 @@ impl ToolStreamParser {
                 }
                 break;
             } else {
+                // STATE: inside a tool span. Look for the closing delimiter.
                 if let Some(p) = self.buf.find(&self.close) {
+                    // everything before the close marker is the tool-call JSON body
                     let ev = self.parse_tool_call(&self.buf[..p]);
                     out.push(ev);
+                    // consume through the close marker; back to content state
                     self.buf = self.buf[p + self.close.len()..].to_owned();
                     self.in_tool = false;
-                    continue;
+                    continue; // there may be more content/tools after this
                 }
                 // Inside a tool span but the close marker hasn't arrived — keep
                 // buffering (a partial JSON body is not a usable event).
@@ -116,13 +128,18 @@ impl ToolStreamParser {
         if !self.enabled {
             return out;
         }
+        // take whatever is still buffered (held content tail, or an unterminated
+        // tool body). std::mem::take leaves self.buf empty.
         let tail = std::mem::take(&mut self.buf);
         if self.in_tool {
+            // we were mid-span at end of stream — the daemon should have closed it,
+            // but parse what we have rather than silently dropping the JSON.
             if !tail.trim().is_empty() {
                 let ev = self.parse_tool_call(&tail);
                 out.push(ev);
             }
         } else if !tail.is_empty() {
+            // a held partial-open-marker that never completed was real content
             out.push(Event::Content(tail));
         }
         out
@@ -130,6 +147,9 @@ impl ToolStreamParser {
 
     fn parse_tool_call(&self, json: &str) -> Event {
         let trimmed = json.trim();
+        // try to lift the tool name out of the JSON via the profile's name_field.
+        // Any failure (bad JSON, missing/non-string field) leaves the name empty —
+        // we still return the raw args so the caller isn't left with nothing.
         let name = serde_json::from_str::<serde_json::Value>(trimmed)
             .ok()
             .and_then(|v| v.get(&self.name_field).and_then(|n| n.as_str()).map(str::to_owned))
@@ -140,6 +160,9 @@ impl ToolStreamParser {
 
 /// Longest suffix of `buf` that is a prefix of `pat` (0 when none).
 fn held_suffix_len(buf: &str, pat: &str) -> usize {
+    // scan start positions left→right; the first suffix that is a prefix of `pat`
+    // is the longest one (e.g. buf="a<too", pat="<tool>" → returns 4 for "<too").
+    // That tail must be held back in case the next token completes the delimiter.
     for (start, _) in buf.char_indices() {
         let suffix = &buf[start..];
         if pat.starts_with(suffix) {

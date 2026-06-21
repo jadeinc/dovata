@@ -63,12 +63,18 @@ pub struct DecodeControl {
 
 impl DecodeControl {
     pub fn new(req: &InferenceRequest) -> Self {
-        let has_grammar = req.grammar.is_some();
-        let anchor = req.anchor.clone();
+        // three request fields decide the whole mode of operation:
+        let has_grammar = req.grammar.is_some(); // is decoding constrained at all?
+        let anchor = req.anchor.clone();         // optional "start enforcing here" marker
         let has_anchor = anchor.is_some();
         // A full-primitive grammar (covers the whole output) must never have its
         // grammar retired by depth tracking — guard via this heuristic. Only
         // meaningful when there is no start anchor.
+        //
+        // We can't introspect the grammar properly, so we sniff the GBNF text:
+        // an int/float grammar mentions `[0-9]`, a bool grammar mentions `"true"`.
+        // If either shows up AND there's no start anchor, treat it as a primitive
+        // that should stay constrained for every token.
         let anchor_is_full_grammar = anchor.is_none()
             && req
                 .grammar
@@ -76,6 +82,8 @@ impl DecodeControl {
                 .map(|g| g.contains("[0-9]") || g.contains("\"true\""))
                 .unwrap_or(false);
         DecodeControl {
+            // if there's no start anchor, enforcement is "triggered" from token 1;
+            // otherwise we wait until we actually see the anchor string.
             anchor_triggered: anchor.is_none(),
             anchor,
             stop_anchor: req.stop_anchor.clone(),
@@ -85,9 +93,16 @@ impl DecodeControl {
             emitted_so_far: String::new(),
             stop_pending: String::new(),
             anchor_is_full_grammar,
+            // the grammar sampler starts "active" whenever a grammar was supplied;
+            // for anchor-span grammars it gets retired after the first token.
             anchor_active: has_grammar,
             // Depth tracking only when a start anchor gates an anchor-span grammar.
+            // (No anchor → either no grammar or a full-primitive grammar, neither
+            // of which we retire by watching JSON braces.)
             do_depth_track: has_grammar && !anchor_is_full_grammar && has_anchor,
+            // JSON brace-counting state, all zeroed — only used once depth tracking
+            // is on. depth = open-but-not-closed braces/brackets; in_string +
+            // escape let us ignore braces that appear inside string literals.
             json_depth: 0,
             json_in_string: false,
             json_escape: false,
@@ -96,6 +111,8 @@ impl DecodeControl {
 
     /// Whether the next token should be sampled with the grammar sampler.
     pub fn use_grammar(&self) -> bool {
+        // need BOTH: the grammar hasn't been retired yet (anchor_active), AND we've
+        // reached the point where enforcement begins (anchor_triggered).
         self.anchor_active && self.anchor_triggered
     }
 
@@ -103,6 +120,9 @@ impl DecodeControl {
     /// mode the grammar enforces only the first token, then is retired (the depth
     /// tracker takes over). Full-primitive grammars keep running.
     pub fn notice_grammar_sampled(&mut self) {
+        // anchor-span case: the grammar's only job was to force the opening token
+        // (e.g. the `{`); now hand off to the depth tracker and stop sampling with
+        // the grammar. Full-primitive grammars (no anchor) skip this and keep going.
         if !self.anchor_is_full_grammar && self.anchor.is_some() {
             self.anchor_active = false;
         }
@@ -112,12 +132,17 @@ impl DecodeControl {
     /// to forward to the client, and updates internal state (anchor triggering,
     /// grammar retirement, depth tracking).
     pub fn on_piece(&mut self, piece: &str) -> Option<String> {
+        // keep a running copy of everything decoded — we only need it to find the
+        // anchor substring (which may straddle a token boundary).
         self.emitted_so_far.push_str(piece);
 
         // Start-anchor detection: enable grammar enforcement once it appears.
+        // (Only relevant while we're still waiting for the anchor.)
         if !self.anchor_triggered {
             if let Some(a) = self.anchor.clone() {
+                // has the full anchor string shown up yet in the output so far?
                 if self.emitted_so_far.contains(&a) {
+                    // yes — from now on the grammar is allowed to enforce.
                     self.anchor_triggered = true;
                     // Guard: if the token that completed the anchor already opened
                     // the JSON body, retire the grammar now so it doesn't force a
@@ -137,25 +162,41 @@ impl DecodeControl {
             }
         }
 
+        // figure out what (if anything) of this piece is safe to send the client,
+        // holding back any partial stop-anchor (see process_stop_anchor).
         let mut emit = self.process_stop_anchor(piece);
 
         // Depth tracking: retire grammar when the top-level JSON span closes.
         // Only after the anchor has triggered — preamble braces must not count.
         if self.do_depth_track && self.anchor_triggered {
+            // hand-rolled JSON scanner over this piece's characters. We only care
+            // about depth (so we know when the top-level object/array closes) and
+            // about not miscounting braces that live inside string literals.
             for ch in piece.chars() {
+                // previous char was a backslash inside a string → this char is
+                // escaped, so skip it (don't let \" flip our in-string state).
                 if self.json_escape {
                     self.json_escape = false;
                     continue;
                 }
                 match ch {
+                    // start of an escape sequence, but only meaningful in a string
                     '\\' if self.json_in_string => self.json_escape = true,
+                    // an unescaped quote toggles whether we're inside a string
                     '"' => self.json_in_string = !self.json_in_string,
+                    // an opening brace/bracket OUTSIDE a string deepens the nesting
                     '{' | '[' if !self.json_in_string => self.json_depth += 1,
+                    // a closing brace/bracket OUTSIDE a string un-nests one level
                     '}' | ']' if !self.json_in_string => {
+                        // saturating decrement (never go below zero)
                         if self.json_depth > 0 {
                             self.json_depth -= 1;
                         }
+                        // back to depth 0 → the top-level JSON value just closed.
                         if self.json_depth == 0 {
+                            // the constrained span is done: stop using the grammar
+                            // and stop depth tracking. Everything after this point
+                            // is free generation.
                             self.anchor_active = false;
                             self.do_depth_track = false;
                             // Make the span boundary observable: the model frequently
@@ -191,6 +232,7 @@ impl DecodeControl {
     /// (part of) the stop anchor — prevents split-token leaks where e.g. `</`
     /// and `tool>` arrive in separate tokens. Returns the confirmed-safe text.
     fn process_stop_anchor(&mut self, piece: &str) -> Option<String> {
+        // no stop anchor configured → nothing to buffer, pass the piece straight on.
         let stop = match self.stop_anchor.clone() {
             None => return Some(piece.to_owned()),
             Some(s) => s,
@@ -199,9 +241,12 @@ impl DecodeControl {
             // Grammar already retired — emit immediately, no buffering needed.
             return Some(piece.to_owned());
         }
+        // append to the pending buffer; we scan the WHOLE buffer (not just this
+        // piece) so a stop anchor split across tokens (`</` + `tool>`) is caught.
         self.stop_pending.push_str(piece);
         if let Some(stop_pos) = self.stop_pending.find(&stop) {
             // Stop anchor complete — retire grammar.
+            // (stop_pos = where the anchor starts; after_pos = just past it.)
             let after_pos = stop_pos + stop.len();
             let emit = if self.keep_anchors {
                 if self.boundary_emitted {
@@ -227,8 +272,15 @@ impl DecodeControl {
             self.do_depth_track = false;
             emit
         } else {
+            // The full anchor isn't here yet — but the TAIL of the buffer might be
+            // the BEGINNING of it (e.g. buffer ends in "</" and stop is "</tool>").
+            // We must hold that tail back in case the next token completes the
+            // anchor, while still releasing everything before it.
+            //
             // Keep the longest suffix that is a strict prefix of `stop`; emit the rest.
             let mut keep = 0usize;
+            // walk start positions from left to right; the first suffix that is a
+            // prefix of `stop` is the LONGEST such suffix, so we stop there.
             for (start, _) in self.stop_pending.char_indices() {
                 let suffix = &self.stop_pending[start..];
                 if stop.starts_with(suffix) {
@@ -236,12 +288,15 @@ impl DecodeControl {
                     break;
                 }
             }
+            // everything except that held-back tail is safe to emit now
             let emit_len = self.stop_pending.len() - keep;
             if emit_len > 0 {
+                // split: emit the safe prefix, retain the maybe-anchor tail
                 let emit = self.stop_pending[..emit_len].to_owned();
                 self.stop_pending = self.stop_pending[emit_len..].to_owned();
                 Some(emit)
             } else {
+                // the entire buffer is a possible anchor prefix — hold it all back
                 None
             }
         }
@@ -250,6 +305,9 @@ impl DecodeControl {
     /// Flush any buffered tail after generation ends (an incomplete stop anchor
     /// that never completed is real output: EOG / max_tokens / depth-close).
     pub fn finish(self) -> Option<String> {
+        // anything still held in the buffer at end-of-generation was a suspected
+        // stop-anchor prefix that never completed (the model hit EOG/max_tokens or
+        // the depth tracker ended the span). It was real output after all — flush it.
         if self.stop_pending.is_empty() {
             None
         } else {
@@ -275,6 +333,7 @@ mod tests {
             health_only: false,
             keep_anchors: false,
             trust: 0,
+            rlm: false,
         }
     }
 

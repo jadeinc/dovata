@@ -46,6 +46,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # llama.cpp is now a vendored git submodule (llama-cpp/ffi/llama.cpp
+          # → our fork @ pinned commit), not a bundled
+          # crates.io copy. The CUDA build compiles it from source, so it must be
+          # checked out here or the build hits an empty directory.
+          submodules: recursive
 
       # CUDA toolkit (~3.5GB installed) + the llama.cpp cmake build can exhaust
       # the runner's ~14GB of free space. Reclaim space from preinstalled SDKs.
