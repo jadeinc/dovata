@@ -5,7 +5,9 @@
 //!   2. QUERY by handle                            → receive the answer,
 //!   3. QUERY inline (sections in the request)      → receive the answer,
 //! and checks the needle appears in both answers. Proves a program can drive the
-//! in-process RLM purely over the socket (no model code in the client).
+//! in-process RLM purely over the socket (no model code in the client). The daemon
+//! answers via the tensor-level KV-composition engine (retrieve → splice → single
+//! decode); it needs the unified KV cache, which is on by default.
 //!
 //! Run on the box AFTER starting the daemon:
 //!   JADE_SOCK=$HOME/.jade/llm.sock cargo run --example rlm_client -p jaded
@@ -93,28 +95,22 @@ fn main() {
     println!("upload -> {json}");
     let handle: u64 = json.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().expect("handle");
 
-    // 2. QUERY by handle
+    // 2. QUERY by handle — retrieve → compose → single decode (max_spans = the top-k
+    //    blocks the retriever splices into the window).
     let (ans1, _) = rlm(&sock, format!(
         "{{\"handle\":{handle},\"question\":\"{question}\",\"max_spans\":4}}"
     )).expect("query by handle");
     println!("query(handle={handle}) ANSWER: {:?}", ans1.trim());
     println!("  needle found: {}", ans1.contains(needle));
 
-    // 3. QUERY inline (sections in the request itself)
+    // 3. QUERY inline (sections in the request itself, no pre-upload).
     let (ans2, _) = rlm(&sock, format!(
         "{{\"sections\":{sections_json},\"question\":\"{question}\",\"max_spans\":4}}"
     )).expect("inline query");
     println!("query(inline) ANSWER: {:?}", ans2.trim());
     println!("  needle found: {}", ans2.contains(needle));
 
-    // 4. COMPOSE query — tensor-level KV-composition engine (daemon needs JADE_KV_UNIFIED=1).
-    let (ans3, _) = rlm(&sock, format!(
-        "{{\"compose\":true,\"handle\":{handle},\"question\":\"{question}\",\"max_spans\":4}}"
-    )).expect("compose query");
-    println!("query(compose, handle={handle}) ANSWER: {:?}", ans3.trim());
-    println!("  needle found: {}", ans3.contains(needle));
-
-    let ok = ans1.contains(needle) && ans2.contains(needle) && ans3.contains(needle);
+    let ok = ans1.contains(needle) && ans2.contains(needle);
     println!("RLM SOCKET TEST: {}", if ok { "PASS" } else { "FAIL" });
     std::process::exit(if ok { 0 } else { 1 });
 }

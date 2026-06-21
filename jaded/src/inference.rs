@@ -43,10 +43,6 @@ use std::time::Instant;
 /// Daemon-wide cumulative generated-token counter (served by `stats_only`).
 static GLOBAL_TOKENS: AtomicU64 = AtomicU64::new(0);
 
-/// Per-sequence KV budget in tokens (`ctx_size / n_seq_max`), set at startup. The
-/// RLM router (`rlm::run_rlm`) uses it to decide when a context fits one sequence.
-pub(crate) static MAX_SEQ_TOKENS: AtomicU64 = AtomicU64::new(0);
-
 /// Process start, set once at the top of [`run`]. Backs `Health::uptime_secs`.
 static START: OnceLock<Instant> = OnceLock::new();
 
@@ -200,12 +196,21 @@ pub fn run(sock_path: String) {
         .with_type_k(kv::kv_cache_type(cfg.kv_type_k))
         .with_type_v(kv::kv_cache_type(cfg.kv_type_v))
         .with_flash_attention_policy(flash_attn_policy);
-    // KV-composition spike: a unified KV buffer puts all sequences in one stream, so
-    // cross-sequence seq_cp becomes a cheap metadata-only op (no `is_full` block) —
-    // the cheap path for multi-block composition. Opt-in so the default is unchanged.
-    if std::env::var("JADE_KV_UNIFIED").is_ok() {
+    // A unified KV buffer puts all sequences in one stream, so cross-sequence seq_cp
+    // becomes a cheap metadata-only op (no `is_full` block) — the path multi-block KV
+    // composition needs. Since composition is now the default RLM engine, unified is
+    // ON by default; set JADE_KV_UNIFIED=0/off/false to opt out (e.g. to A/B the
+    // standard path). Disabling it makes the default (compose) RLM path abort, so the
+    // legacy agentic engine must be selected explicitly (`"compose": false`).
+    let kv_unified = match std::env::var("JADE_KV_UNIFIED") {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false"),
+        Err(_) => true,
+    };
+    if kv_unified {
         ctx_params = ctx_params.with_kv_unified(true);
-        eprintln!("jaded: kv_unified enabled (composition spike)");
+        eprintln!("jaded: kv_unified enabled (default; set JADE_KV_UNIFIED=0 to disable)");
+    } else {
+        eprintln!("jaded: kv_unified DISABLED — default (compose) RLM path unavailable");
     }
     let mut ctx = model.new_context(&backend, ctx_params).unwrap_or_else(|e| {
         eprintln!("jaded: context init failed: {e}");
@@ -213,25 +218,11 @@ pub fn run(sock_path: String) {
     });
     eprintln!("jaded: context ready (ctx_size={})", cfg.ctx_size);
 
-    // Per-sequence KV budget (ctx_size / n_seq_max) — the RLM router consults it to
-    // decide when a context fits one sequence (answer directly) vs needs recursion.
-    MAX_SEQ_TOKENS.store((cfg.ctx_size / cfg.n_seq_max.max(1)) as u64, Ordering::Relaxed);
-
-    // RLM concurrent-engine self-test: set JADE_RLM_SELFTEST=1 to run a batch of
+    // Continuous-batching engine self-test: set JADE_RLM_SELFTEST=1 to run a batch of
     // sub-inferences through the multi-sequence scheduler against the just-loaded
     // model, print outputs + timing, and exit. The normal daemon path is untouched.
     if std::env::var("JADE_RLM_SELFTEST").is_ok() {
         rlm::selftest_rlm(&model, &mut ctx, &chat_template);
-        return;
-    }
-    // End-to-end RLM demo (needle-in-haystack over a large RAM-held document).
-    if std::env::var("JADE_RLM_DEMO").is_ok() {
-        rlm::selftest_rlm_demo(&model, &mut ctx, &chat_template);
-        return;
-    }
-    // Latency A/B: standard single-shot vs RLM on a doc that fits the window.
-    if std::env::var("JADE_RLM_COMPARE").is_ok() {
-        rlm::selftest_rlm_compare(&model, &mut ctx, &chat_template);
         return;
     }
     // KV-composition Phase A: state-seq KV save/restore round-trip.
@@ -382,7 +373,7 @@ fn handle_connection(
         // RLM mode: in-process recursive decomposition over a large (possibly
         // pre-uploaded) context. Separate path from single-shot inference.
         if req.rlm {
-            rlm::handle_rlm(&req, model, ctx, tmpl, stream, model_name)?;
+            rlm::handle_rlm(&req, model, ctx, stream, model_name)?;
             continue;
         }
 

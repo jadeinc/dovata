@@ -6,9 +6,10 @@
 //! * [`reuse_prefix`]    — multi-turn prefix reuse: keep the leading tokens a new
 //!                         prompt shares with what's already resident, evict the
 //!                         rest (the standard single-shot path's main speedup).
-//! * [`common_prefix_len`] + [`prefill_shared`] — shared-prefix fan-out: prefill a
+//! * [`common_prefix_len`] + [`prefill_shared`] — shared-prefix batching: prefill a
 //!                         common prefix ONCE and copy its KV into N sequences, so
-//!                         each only prefills its unique suffix (the RLM fan-out).
+//!                         each only prefills its unique suffix (concurrent / mass
+//!                         prompting).
 
 use jaded::config::KvType;
 use llama_cpp_2::{
@@ -68,8 +69,11 @@ pub(crate) fn reuse_prefix(
     Ok(prefix_len)
 }
 
-/// Longest common leading token prefix across all sequences (0 if empty). Used to
-/// find the shared portion of a set of fan-out prompts for [`prefill_shared`].
+/// Longest common leading token prefix across all sequences (0 if empty). Finds the
+/// shared portion of a set of prompts to hand to [`prefill_shared`] for shared-prefix
+/// mass prompting. Retained as batching infrastructure: it has no in-tree caller since
+/// the agentic RLM fan-out (its previous user) was removed in favor of KV composition.
+#[allow(dead_code)]
 pub(crate) fn common_prefix_len(seqs: &[Vec<LlamaToken>]) -> usize {
     let first = match seqs.first() {
         Some(f) => f,
