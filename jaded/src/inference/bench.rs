@@ -674,9 +674,27 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
         .ok()
         .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
         .unwrap_or_else(|| vec![0.5, 1.0, 2.0, 4.0, 8.0]);
-    let (n_cand, k) = (12usize, 4usize);
+    // Compose budget — tunable so a sweep can exploit a large native window. k =
+    // retrieved blocks composed into the window; N = candidates retrieved before the
+    // rerank. Defaults 4/12 preserve the historical 32k-window measurement. Clamp
+    // N≥k≥1 so the composed set is well-defined. At n_ctx=262144 with ~500-tok blocks,
+    // k can climb into the hundreds (k=128 ≈ 64k tok composed, still ≪ window) — the
+    // lever that pushes the hard-task frontier far past today's 8×.
+    let k: usize = std::env::var("JADE_FRONTIER_K").ok().and_then(|s| s.parse().ok()).unwrap_or(4).max(1);
+    let n_cand: usize = std::env::var("JADE_FRONTIER_N").ok().and_then(|s| s.parse().ok()).unwrap_or(12).max(k);
     let tau = 0.85f64;
-    let tasks = ["niah_single", "niah_multikey", "vt", "qa"];
+    // Task subset selector — restrict the sweep to a comma-separated subset (e.g.
+    // JADE_FRONTIER_TASKS=niah_single to cheaply bracket the easy-case ceiling, or the
+    // hard set niah_multikey,vt,qa to find the limiting frontier). Default = all four.
+    const ALL_TASKS: [&str; 4] = ["niah_single", "niah_multikey", "vt", "qa"];
+    let tasks: Vec<&str> = match std::env::var("JADE_FRONTIER_TASKS") {
+        Ok(s) => {
+            let sl = s.to_lowercase();
+            let want: Vec<&str> = sl.split(',').map(|x| x.trim()).filter(|x| !x.is_empty()).collect();
+            ALL_TASKS.into_iter().filter(|t| want.contains(t)).collect()
+        }
+        Err(_) => ALL_TASKS.to_vec(),
+    };
 
     // measure the filler block's real token length (corpus sizing + reporting).
     let block_tok = model
@@ -699,7 +717,7 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
     // (task, corpus_tok, blended_accuracy) records for the frontier computation.
     let mut records: Vec<(&str, usize, f64)> = Vec::new();
 
-    for task in tasks {
+    for &task in &tasks {
         for &mult in &mults {
             let target = (mult * n_ctx as f64) as usize;
             let n_blocks = (target / block_tok).max(k + 4);
@@ -748,7 +766,7 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
     eprintln!("jaded: [frontier] ── effective RLM length per task (largest corpus with blended ≥ {tau}) ──");
     let smallest_corpus = records.iter().map(|(_, tok, _)| *tok).min().unwrap_or(0);
     let mut overall = usize::MAX;
-    for task in tasks {
+    for &task in &tasks {
         let rows = records.iter().filter(|(t, _, _)| *t == task);
         // a capability gap fails even at the smallest corpus size (where it fits the window).
         let passes_small = rows.clone().any(|(_, tok, acc)| *tok == smallest_corpus && *acc >= tau);
