@@ -14,7 +14,7 @@ pub mod trust {
     pub const TAINTED: u8 = 1;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InferenceRequest {
     pub prompt: String,
     pub model: String,
@@ -55,6 +55,16 @@ pub struct InferenceRequest {
     /// Absent from JSON defaults to TRUSTED for backward compatibility with old clients.
     #[serde(default)]
     pub trust: u8,
+    /// RLM mode. When true, `prompt` carries a JSON payload instead of text:
+    ///   - upload:  `{"upload":[["summary","body"],...]}` → daemon stores the context
+    ///     and replies with a `Json` frame `{"handle":N}` then `Done`.
+    ///   - query:   `{"handle":N,"question":"...","max_spans":K}` or inline
+    ///     `{"sections":[["summary","body"],...],"question":"...","max_spans":K}`
+    ///     → answered by in-process recursive decomposition (PICK→fan-out→COMBINE),
+    ///     streamed as `Token` frames then `Done`.
+    /// Default false → ordinary single-shot inference (path unchanged).
+    #[serde(default)]
+    pub rlm: bool,
 }
 
 impl InferenceRequest {
@@ -123,6 +133,7 @@ mod tests {
             health_only: false,
             keep_anchors: false,
             trust: trust::TRUSTED,
+            rlm: false,
         }
     }
 
@@ -140,6 +151,7 @@ mod tests {
             health_only: false,
             keep_anchors: false,
             trust: trust::TRUSTED,
+            rlm: false,
         };
         let decoded = InferenceRequest::decode(&r.encode().unwrap()).unwrap();
         assert_eq!(decoded.prompt, r.prompt);
@@ -162,6 +174,7 @@ mod tests {
             health_only: false,
             keep_anchors: false,
             trust: trust::TRUSTED,
+            rlm: false,
         };
         let decoded = InferenceRequest::decode(&r.encode().unwrap()).unwrap();
         assert_eq!(decoded.grammar, Some(grammar));
@@ -182,6 +195,7 @@ mod tests {
             health_only: false,
             keep_anchors: false,
             trust: trust::TRUSTED,
+            rlm: false,
         };
         let decoded = InferenceRequest::decode(&r.encode().unwrap()).unwrap();
         assert_eq!(decoded.grammar, Some(grammar));
@@ -203,6 +217,7 @@ mod tests {
             health_only: false,
             keep_anchors: false,
             trust: trust::TRUSTED,
+            rlm: false,
         };
         let decoded = InferenceRequest::decode(&r.encode().unwrap()).unwrap();
         assert_eq!(decoded.anchor, Some("<tool>".into()));

@@ -333,6 +333,7 @@ mod tests {
             health_only: false,
             keep_anchors: false,
             trust: 0,
+            rlm: false,
         }
     }
 

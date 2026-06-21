@@ -39,6 +39,7 @@ fn count_only(sock: &str, prompt: &str) -> std::io::Result<u64> {
         health_only: false,
         keep_anchors: false,
         trust: 0,
+        rlm: false,
     };
     s.write_all(&req.encode().expect("encode"))?;
     read_done_tokens(&mut s)
@@ -81,6 +82,7 @@ fn run_once(sock: &str, prompt: &str, max_tokens: u32) -> std::io::Result<Sample
         health_only: false,
         keep_anchors: false,
         trust: 0,
+        rlm: false,
     };
     let bytes = req.encode().expect("encode");
 

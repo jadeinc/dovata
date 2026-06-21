@@ -11,6 +11,9 @@ pub const DEFAULT_GPU_LAYERS: u32 = 999;
 pub const DEFAULT_CACHE_SIZE: usize = 256;
 pub const DEFAULT_N_BATCH: u32 = 2048;
 pub const DEFAULT_N_UBATCH: u32 = 512;
+/// Max concurrent sequences the context can hold (RLM fan-out / parallel serving).
+/// The shared KV cache (`ctx_size` cells) is partitioned across these at runtime.
+pub const DEFAULT_N_SEQ_MAX: u32 = 16;
 pub const DEFAULT_KV_TYPE: KvType = KvType::Q4_0;
 
 /// KV-cache quantization type. Mirrors the subset of llama.cpp's `KvCacheType`
@@ -74,6 +77,8 @@ pub struct Config {
     pub gpu_layers: u32,
     pub n_batch: u32,
     pub n_ubatch: u32,
+    /// Max concurrent sequences (continuous-batching fan-out). See [`DEFAULT_N_SEQ_MAX`].
+    pub n_seq_max: u32,
     pub kv_type_k: KvType,
     pub kv_type_v: KvType,
     pub flash_attn: bool,
@@ -104,6 +109,7 @@ impl Config {
             gpu_layers: parse_u32("JADE_GPU_LAYERS", DEFAULT_GPU_LAYERS),
             n_batch: parse_u32("JADE_N_BATCH", DEFAULT_N_BATCH),
             n_ubatch: parse_u32("JADE_N_UBATCH", DEFAULT_N_UBATCH),
+            n_seq_max: parse_u32("JADE_N_SEQ_MAX", DEFAULT_N_SEQ_MAX),
             // KV types: if the var is set, parse it (unknown → Q8_0); if unset,
             // use the default type. .map(..).unwrap_or(..) keeps "unset" distinct
             // from "set but unknown".
@@ -175,6 +181,12 @@ mod tests {
     fn unparseable_numbers_fall_back_to_default() {
         let c = cfg(&[("JADE_CTX_SIZE", "not-a-number")]);
         assert_eq!(c.ctx_size, DEFAULT_CTX_SIZE);
+    }
+
+    #[test]
+    fn n_seq_max_default_and_override() {
+        assert_eq!(cfg(&[]).n_seq_max, DEFAULT_N_SEQ_MAX);
+        assert_eq!(cfg(&[("JADE_N_SEQ_MAX", "32")]).n_seq_max, 32);
     }
 
     #[test]

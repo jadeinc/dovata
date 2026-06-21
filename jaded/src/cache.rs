@@ -127,6 +127,7 @@ mod tests {
             health_only: false,
             keep_anchors: false,
             trust: 0,
+            rlm: false,
         };
         let same = base.clone();
         assert_eq!(PromptCache::key(&base), PromptCache::key(&same));
