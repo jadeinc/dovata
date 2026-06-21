@@ -35,13 +35,30 @@ wrap_suffix = "\n</tool_response>"
 # `rlm_max_context` is the efficient frontier of the blended KV-composition (RLM+RAG)
 # engine — the largest corpus it answers reliably; a request exceeding it is rejected
 # rather than answered with degraded accuracy. Programmers read this to know the
-# model's usable limit. Measured 2026-06-21 with the RULER-style frontier harness
-# (JADE_FRONTIER) on the A10G: blended single-needle / multi-hop / distractor-QA all hold
-# ≥0.85 accuracy out to 8× the window (262 144 tok = the largest size tested; no length
-# break was found below that). Multi-key disambiguation is a known capability gap
-# (length-independent), tracked separately. So the frontier is the validated 8× ceiling.
-context_window = 32768
-rlm_max_context = 262144
+# model's usable limit.
+#
+# context_window = 262144: the native window the MoE expert-offload engine serves on
+# a 24 GiB card (3090). The full experts live in host RAM with a pinned + dynamically
+# cached resident set in VRAM, leaving room for a 256k KV cache (q4_0). Requires the
+# driver enabled at runtime — JADE_MOE_DRIVER=1 and JADE_CTX_SIZE=262144 — which is
+# the standard deployment; see docs/moe-expert-offload.md §2. (Without the driver the
+# daemon serves only JADE_CTX_SIZE's worth, default 32768.) NOTE: routing keys off the
+# live runtime ctx size, not this value — this field is the documented contract.
+#
+# rlm_max_context = 2097152: 8× the 256k native window. The 8× corpus-to-window
+# multiplier was MEASURED 2026-06-21 with the RULER-style JADE_FRONTIER harness on the
+# A10G at the 32k native window (single-needle / multi-hop / distractor-QA all ≥0.85
+# accuracy out to 262 144 tok = 8× 32 768, the largest size tested). We carry the
+# multiplier to the 256k window because it is a property of the blended composition
+# engine (retrieve → rerank → compose-to-fit), and MoE expert-offload — the mechanism
+# that enlarges the native window — is EXACT (it pages identical expert weights
+# host↔VRAM with no quantization or approximation) and leaves the RLM engine untouched,
+# so the ratio holds. This is a reasoned extrapolation, NOT a fresh 256k measurement:
+# re-run JADE_FRONTIER at the 256k window to confirm/tighten, and tune at runtime via
+# JADE_RLM_MAX_CONTEXT without a rebuild. Multi-key disambiguation remains a known,
+# length-independent capability gap, tracked separately.
+context_window = 262144
+rlm_max_context = 2097152
 
 # Additional special-token spans the model may stream that the client should
 # surface as structured events rather than raw content. Qwen3-Coder does not emit
