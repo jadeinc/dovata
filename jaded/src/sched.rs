@@ -141,7 +141,14 @@ impl Scheduler {
         control: DecodeControl,
         max_new: usize,
     ) -> bool {
-        let reserve = prompt.len() + max_new;
+        // Reserve worst-case KV: any pre-resident prefix (base_pos, e.g. a
+        // shared-prefix copied in) + the suffix this seq prefills + its generation.
+        // A sequence with no tokens to prefill can never produce logits (nothing to
+        // sample from) — reject it rather than underflow the prefill bookkeeping.
+        if prompt.is_empty() {
+            return false;
+        }
+        let reserve = base_pos.max(0) as usize + prompt.len() + max_new;
         // Admission control: never accept KV we can't hold. (A single sequence
         // larger than the whole budget is always rejected — caller must shrink it.)
         if self.kv_reserved + reserve > self.kv_budget {
@@ -426,6 +433,14 @@ mod tests {
     }
 
     // ── max_new caps generated tokens ───────────────────────────────────────────
+
+    #[test]
+    fn admit_rejects_empty_prompt() {
+        // A seq with no tokens to prefill can't produce logits — must be refused.
+        let mut s = Scheduler::new(8, 100);
+        assert!(!s.admit(0, vec![], 0, ctrl(), 8));
+        assert!(s.is_idle());
+    }
 
     #[test]
     fn max_new_one_emits_exactly_one_token() {
