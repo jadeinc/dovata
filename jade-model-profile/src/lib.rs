@@ -48,6 +48,11 @@ pub struct ModelProfile {
     /// measured RLM (KV-composition) efficient frontier. Absent → both unset.
     #[serde(default)]
     pub limits: Limits,
+    /// How a chat (system + turns) is rendered into the model's flat prompt
+    /// string. Absent → ChatML (the [`ChatTemplate`] default), so existing
+    /// profiles and unknown models keep working.
+    #[serde(default)]
+    pub chat_template: ChatTemplate,
 }
 
 /// Delimiters + parsing convention for a tool call the model emits.
@@ -114,6 +119,70 @@ impl Limits {
     /// `true` when the limit is unset (enforcement deferred to the daemon default).
     pub fn rlm_corpus_allowed(&self, corpus_tokens: u32) -> bool {
         self.rlm_max_context().map_or(true, |max| corpus_tokens <= max)
+    }
+}
+
+/// How a chat (a system prompt + role/content turns) is rendered into the flat
+/// prompt string the model is tokenized from. This used to be llama.cpp's
+/// `apply_chat_template`; the vendored fork moved templating out of the engine, so
+/// it lives here as model data instead. The strings are the model's literal
+/// special-token markers — they are tokenized downstream with `parse_special`, so
+/// e.g. `<|im_start|>` becomes a single special token, not raw characters.
+///
+/// The default is **ChatML** (Qwen/OpenAI style), byte-identical to llama.cpp's
+/// `LLM_CHAT_TEMPLATE_CHATML`, so a profile with no `[chat_template]` block — or no
+/// profile at all — still formats correctly.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ChatTemplate {
+    /// Emitted before each turn's role, e.g. `<|im_start|>`.
+    pub message_prefix: String,
+    /// Between role and content, e.g. `"\n"`.
+    pub role_content_sep: String,
+    /// Emitted after each turn's content, e.g. `<|im_end|>\n`.
+    pub message_suffix: String,
+    /// Appended once at the end to elicit the assistant's reply, e.g.
+    /// `<|im_start|>assistant\n`.
+    pub generation_prompt: String,
+    /// Optional leading marker prepended once (a BOS-like prefix). Empty for ChatML.
+    pub bos: String,
+}
+
+impl Default for ChatTemplate {
+    fn default() -> Self {
+        // ChatML — matches llama.cpp's LLM_CHAT_TEMPLATE_CHATML exactly:
+        //   per turn:  <|im_start|>{role}\n{content}<|im_end|>\n
+        //   then:      <|im_start|>assistant\n   (the generation prompt)
+        ChatTemplate {
+            message_prefix: "<|im_start|>".to_owned(),
+            role_content_sep: "\n".to_owned(),
+            message_suffix: "<|im_end|>\n".to_owned(),
+            generation_prompt: "<|im_start|>assistant\n".to_owned(),
+            bos: String::new(),
+        }
+    }
+}
+
+impl ChatTemplate {
+    /// Render `turns` (each `(role, content)`) into the model's prompt string. When
+    /// `add_generation_prompt` is set, the trailing assistant cue is appended so the
+    /// model continues as the assistant. Pure string assembly — no tokenizer needed.
+    pub fn render<'a, I>(&self, turns: I, add_generation_prompt: bool) -> String
+    where
+        I: IntoIterator<Item = (&'a str, &'a str)>,
+    {
+        let mut out = self.bos.clone();
+        for (role, content) in turns {
+            out.push_str(&self.message_prefix);
+            out.push_str(role);
+            out.push_str(&self.role_content_sep);
+            out.push_str(content);
+            out.push_str(&self.message_suffix);
+        }
+        if add_generation_prompt {
+            out.push_str(&self.generation_prompt);
+        }
+        out
     }
 }
 
@@ -298,6 +367,84 @@ mod tests {
         let reg = Registry::builtin();
         let p = reg.select("Qwen3-Coder-30B").unwrap();
         assert_eq!(p.wrap_tool_result("26C"), "<tool_response>\n26C\n</tool_response>");
+    }
+
+    // ── Chat template rendering ───────────────────────────────────────────────
+
+    // The default MUST be byte-identical to llama.cpp's LLM_CHAT_TEMPLATE_CHATML,
+    // because the daemon used to format via apply_chat_template(chatml) and we must
+    // not change the prompt the model sees.
+    #[test]
+    fn default_chat_template_is_chatml_byte_identical() {
+        let t = ChatTemplate::default();
+        let out = t.render(
+            [("system", "You are Omar"), ("user", "hi"), ("assistant", "hello"), ("user", "bye")],
+            true,
+        );
+        assert_eq!(
+            out,
+            "<|im_start|>system\nYou are Omar<|im_end|>\n\
+             <|im_start|>user\nhi<|im_end|>\n\
+             <|im_start|>assistant\nhello<|im_end|>\n\
+             <|im_start|>user\nbye<|im_end|>\n\
+             <|im_start|>assistant\n"
+        );
+    }
+
+    #[test]
+    fn render_without_generation_prompt_omits_assistant_cue() {
+        let t = ChatTemplate::default();
+        let out = t.render([("user", "hi")], false);
+        assert_eq!(out, "<|im_start|>user\nhi<|im_end|>\n");
+    }
+
+    #[test]
+    fn qwen_profile_chat_template_renders_chatml() {
+        let reg = Registry::builtin();
+        let p = reg.select("Qwen3-Coder-30B").unwrap();
+        let out = p.chat_template.render([("user", "ping")], true);
+        assert_eq!(out, "<|im_start|>user\nping<|im_end|>\n<|im_start|>assistant\n");
+    }
+
+    // A profile with no [chat_template] block falls back to the ChatML default.
+    #[test]
+    fn absent_chat_template_block_defaults_to_chatml() {
+        let toml = r#"
+            schema_version = 1
+            model = "X"
+            [tool_call]
+            open = "<t>"
+            close = "</t>"
+            [tool_result]
+            role = "tool"
+        "#;
+        let p = ModelProfile::from_toml(toml).unwrap();
+        assert_eq!(p.chat_template.message_prefix, "<|im_start|>");
+        assert_eq!(p.chat_template.render([("user", "q")], true),
+            "<|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n");
+    }
+
+    // A partial [chat_template] block fills missing fields from the ChatML default.
+    #[test]
+    fn partial_chat_template_block_fills_defaults() {
+        let toml = r#"
+            schema_version = 1
+            model = "Y"
+            [tool_call]
+            open = "<t>"
+            close = "</t>"
+            [tool_result]
+            role = "tool"
+            [chat_template]
+            generation_prompt = "ASSISTANT: "
+        "#;
+        let p = ModelProfile::from_toml(toml).unwrap();
+        // overridden field
+        assert_eq!(p.chat_template.generation_prompt, "ASSISTANT: ");
+        // defaulted fields
+        assert_eq!(p.chat_template.message_prefix, "<|im_start|>");
+        assert_eq!(p.chat_template.render([("user", "q")], true),
+            "<|im_start|>user\nq<|im_end|>\nASSISTANT: ");
     }
 
     #[test]

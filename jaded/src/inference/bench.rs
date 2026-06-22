@@ -19,6 +19,7 @@ use super::compose::{
     prefill, save_seq, BlockStore, KvBlockCache,
 };
 use super::concurrency::{run_concurrent, SubInfer};
+use jade_model_profile::ChatTemplate;
 use jade_protocol::InferenceRequest;
 use jaded::control::DecodeControl;
 use llama_cpp_2::{
@@ -72,9 +73,9 @@ fn feed_token(ctx: &mut LlamaContext, tok: LlamaToken, pos: i32, seq: i32) -> Re
 /// KV state save → restore round-trip (`JADE_KV_ROUNDTRIP`). Prefill a block, save it,
 /// generate a reference continuation; then clear, restore the block, generate again —
 /// the two continuations must be byte-identical (greedy) iff the KV round-tripped.
-fn selftest_kv_roundtrip(model: &LlamaModel, ctx: &mut LlamaContext, tmpl: &LlamaChatTemplate) {
+fn selftest_kv_roundtrip(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaChatTemplate) {
     let mut run = || -> Result<(), String> {
-        let prompt = build_formatted_prompt("In one sentence, what is the capital of France?", model, tmpl)?;
+        let prompt = build_formatted_prompt("In one sentence, what is the capital of France?", &ChatTemplate::default())?;
         let toks = model.str_to_token(&prompt, AddBos::Always).map_err(|e| format!("tok: {e}"))?;
         if toks.len() < 2 {
             return Err("prompt too short".into());
@@ -789,12 +790,12 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
 /// attach a fresh `DecodeControl` (+ optional grammar). Used by [`selftest_rlm`].
 fn build_sub(
     model: &LlamaModel,
-    tmpl: &LlamaChatTemplate,
+    _tmpl: &LlamaChatTemplate,
     prompt: &str,
     grammar: Option<&str>,
     max_new: usize,
 ) -> Result<SubInfer, String> {
-    let formatted = build_formatted_prompt(prompt, model, tmpl)?;
+    let formatted = build_formatted_prompt(prompt, &ChatTemplate::default())?;
     let tokens = model
         .str_to_token(&formatted, AddBos::Always)
         .map_err(|e| format!("tokenize failed: {e}"))?;

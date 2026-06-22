@@ -29,6 +29,21 @@ role = "tool"
 wrap_prefix = "<tool_response>\n"
 wrap_suffix = "\n</tool_response>"
 
+[chat_template]
+# How a chat (system + role/content turns) is rendered into the flat prompt the
+# model is tokenized from. Qwen3-Coder uses ChatML. The daemon assembles, per turn,
+#   message_prefix + role + role_content_sep + content + message_suffix
+# then appends generation_prompt to elicit the assistant's reply. These markers are
+# tokenized with parse_special, so each becomes a single special token. (This block
+# is the ChatML default, stated explicitly so swapping models shows the pattern.)
+# llama.cpp used to do this via apply_chat_template; the vendored fork moved
+# templating out of the engine, so it lives here as model data.
+message_prefix = "<|im_start|>"
+role_content_sep = "\n"
+message_suffix = "<|im_end|>\n"
+generation_prompt = "<|im_start|>assistant\n"
+bos = ""
+
 [limits]
 # Context-length limits, in tokens. `context_window` is the native attention window
 # the daemon serves (a prompt that fits is answered with full-context inference).

@@ -30,11 +30,12 @@ mod bench;
 use io_uring::{opcode, types, IoUring};
 use jade_protocol::{Frame, InferenceRequest};
 use jaded::cache::PromptCache;
+use jade_model_profile::ChatTemplate;
 use jaded::config::{Config, KvType};
 use llama_cpp_2::{
     context::{params::LlamaContextParams, LlamaContext},
     llama_backend::LlamaBackend,
-    model::{params::LlamaModelParams, AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel},
+    model::{params::LlamaModelParams, AddBos, LlamaChatTemplate, LlamaModel},
     token::LlamaToken,
 };
 use std::io::{Read, Write};
@@ -365,8 +366,22 @@ pub fn run(sock_path: String) {
     let rlm_max = rlm_max_context(&model_name, cfg.ctx_size);
     eprintln!("jaded: rlm frontier (max corpus tokens) = {rlm_max}");
 
+    // Prompt formatting is profile-driven (llama.cpp's apply_chat_template was removed
+    // in the vendored fork). Resolve the active model's chat template once.
+    let chat_tmpl = resolve_chat_template(&model_name);
+
     eprintln!("jaded: listening on {sock_path}");
-    listen(&listener, &model, &mut ctx, &mut cache, &chat_template, &mut kv_tokens, &model_name, rlm_max);
+    listen(&listener, &model, &mut ctx, &mut cache, &chat_tmpl, &mut kv_tokens, &model_name, rlm_max);
+}
+
+/// The chat template for the active model: the matching profile's `[chat_template]`
+/// block, else the ChatML default. The vendored llama.cpp fork removed
+/// `apply_chat_template`, so formatting is profile data now (see `prompt::format_prompt`).
+fn resolve_chat_template(model_name: &str) -> ChatTemplate {
+    jade_model_profile::Registry::builtin()
+        .select(model_name)
+        .map(|p| p.chat_template.clone())
+        .unwrap_or_default()
 }
 
 /// The RLM efficient-frontier limit (max corpus tokens) for the active model: env
@@ -390,7 +405,7 @@ fn rlm_max_context(model_name: &str, ctx_size: u32) -> u32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn listen(listener: &UnixListener, model: &LlamaModel, ctx: &mut LlamaContext, cache: &mut PromptCache, tmpl: &LlamaChatTemplate, kv_tokens: &mut Vec<LlamaToken>, model_name: &str, rlm_max: u32) {
+fn listen(listener: &UnixListener, model: &LlamaModel, ctx: &mut LlamaContext, cache: &mut PromptCache, tmpl: &ChatTemplate, kv_tokens: &mut Vec<LlamaToken>, model_name: &str, rlm_max: u32) {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
@@ -409,7 +424,7 @@ fn handle_connection(
     model: &LlamaModel,
     ctx: &mut LlamaContext,
     cache: &mut PromptCache,
-    tmpl: &LlamaChatTemplate,
+    tmpl: &ChatTemplate,
     kv_tokens: &mut Vec<LlamaToken>,
     model_name: &str,
     rlm_max: u32,
@@ -478,7 +493,7 @@ fn handle_connection(
         }
 
         if req.count_only {
-            let formatted = match build_formatted_prompt(&req.prompt, model, tmpl) {
+            let formatted = match build_formatted_prompt(&req.prompt, tmpl) {
                 Ok(s) => s,
                 Err(e) => {
                     stream.write_all(&Frame::Error(e).encode())?;
@@ -507,7 +522,7 @@ fn handle_connection(
         // inference) to decide the path. A prompt that won't fit the native window
         // with room to generate is answered by the blended KV-composition engine;
         // everything that fits falls through to native full-context inference below.
-        match build_formatted_prompt(&req.prompt, model, tmpl)
+        match build_formatted_prompt(&req.prompt, tmpl)
             .and_then(|f| model.str_to_token(&f, AddBos::Always).map_err(|e| format!("tokenize failed: {e}")))
         {
             Ok(toks) if toks.len() as u32 + NATIVE_GEN_HEADROOM > ctx.n_ctx() => {
@@ -647,27 +662,14 @@ fn answer_over_context(
 /// Render a request prompt into the model's chat format. A `_jade_protocol`
 /// messages object becomes a multi-turn chat; anything else is a single user turn.
 /// Shared by the standard path, `count_only`, and the RLM sub-call builder.
+///
+/// Formatting is profile-driven via the model's [`ChatTemplate`] — the vendored
+/// llama.cpp fork removed `apply_chat_template`. The real work is the pure, tested
+/// `prompt::format_prompt`; this stays `Result` so the call sites are unchanged
+/// (rendering itself is now infallible).
 pub(crate) fn build_formatted_prompt(
     prompt_str: &str,
-    model: &LlamaModel,
-    tmpl: &LlamaChatTemplate,
+    tmpl: &ChatTemplate,
 ) -> Result<String, String> {
-    if let Some((system, messages)) = jaded::prompt::extract_jade_protocol(prompt_str) {
-        let mut chat: Vec<LlamaChatMessage> = Vec::new();
-        if !system.is_empty() {
-            chat.push(LlamaChatMessage::new("system".to_owned(), system)
-                .map_err(|e| format!("chat message error: {e}"))?);
-        }
-        for msg in messages {
-            chat.push(LlamaChatMessage::new(msg.role, msg.content)
-                .map_err(|e| format!("chat message error: {e}"))?);
-        }
-        return model.apply_chat_template(tmpl, &chat, true)
-            .map_err(|e| format!("chat template error: {e}"));
-    }
-    // Single-turn: wrap as a user message and apply the model's template.
-    let msg = LlamaChatMessage::new("user".to_owned(), prompt_str.to_owned())
-        .map_err(|e| format!("chat message error: {e}"))?;
-    model.apply_chat_template(tmpl, &[msg], true)
-        .map_err(|e| format!("chat template error: {e}"))
+    Ok(jaded::prompt::format_prompt(prompt_str, tmpl))
 }
