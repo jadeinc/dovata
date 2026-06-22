@@ -19,6 +19,7 @@ use super::compose::{
     prefill, save_seq, BlockStore, KvBlockCache,
 };
 use super::concurrency::{run_concurrent, SubInfer};
+use jade_model_profile::ChatTemplate;
 use jade_protocol::InferenceRequest;
 use jaded::control::DecodeControl;
 use llama_cpp_2::{
@@ -72,9 +73,9 @@ fn feed_token(ctx: &mut LlamaContext, tok: LlamaToken, pos: i32, seq: i32) -> Re
 /// KV state save → restore round-trip (`JADE_KV_ROUNDTRIP`). Prefill a block, save it,
 /// generate a reference continuation; then clear, restore the block, generate again —
 /// the two continuations must be byte-identical (greedy) iff the KV round-tripped.
-fn selftest_kv_roundtrip(model: &LlamaModel, ctx: &mut LlamaContext, tmpl: &LlamaChatTemplate) {
+fn selftest_kv_roundtrip(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaChatTemplate) {
     let mut run = || -> Result<(), String> {
-        let prompt = build_formatted_prompt("In one sentence, what is the capital of France?", model, tmpl)?;
+        let prompt = build_formatted_prompt("In one sentence, what is the capital of France?", &ChatTemplate::default())?;
         let toks = model.str_to_token(&prompt, AddBos::Always).map_err(|e| format!("tok: {e}"))?;
         if toks.len() < 2 {
             return Err("prompt too short".into());
@@ -674,9 +675,27 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
         .ok()
         .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
         .unwrap_or_else(|| vec![0.5, 1.0, 2.0, 4.0, 8.0]);
-    let (n_cand, k) = (12usize, 4usize);
+    // Compose budget — tunable so a sweep can exploit a large native window. k =
+    // retrieved blocks composed into the window; N = candidates retrieved before the
+    // rerank. Defaults 4/12 preserve the historical 32k-window measurement. Clamp
+    // N≥k≥1 so the composed set is well-defined. At n_ctx=262144 with ~500-tok blocks,
+    // k can climb into the hundreds (k=128 ≈ 64k tok composed, still ≪ window) — the
+    // lever that pushes the hard-task frontier far past today's 8×.
+    let k: usize = std::env::var("JADE_FRONTIER_K").ok().and_then(|s| s.parse().ok()).unwrap_or(4).max(1);
+    let n_cand: usize = std::env::var("JADE_FRONTIER_N").ok().and_then(|s| s.parse().ok()).unwrap_or(12).max(k);
     let tau = 0.85f64;
-    let tasks = ["niah_single", "niah_multikey", "vt", "qa"];
+    // Task subset selector — restrict the sweep to a comma-separated subset (e.g.
+    // JADE_FRONTIER_TASKS=niah_single to cheaply bracket the easy-case ceiling, or the
+    // hard set niah_multikey,vt,qa to find the limiting frontier). Default = all four.
+    const ALL_TASKS: [&str; 4] = ["niah_single", "niah_multikey", "vt", "qa"];
+    let tasks: Vec<&str> = match std::env::var("JADE_FRONTIER_TASKS") {
+        Ok(s) => {
+            let sl = s.to_lowercase();
+            let want: Vec<&str> = sl.split(',').map(|x| x.trim()).filter(|x| !x.is_empty()).collect();
+            ALL_TASKS.into_iter().filter(|t| want.contains(t)).collect()
+        }
+        Err(_) => ALL_TASKS.to_vec(),
+    };
 
     // measure the filler block's real token length (corpus sizing + reporting).
     let block_tok = model
@@ -699,7 +718,7 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
     // (task, corpus_tok, blended_accuracy) records for the frontier computation.
     let mut records: Vec<(&str, usize, f64)> = Vec::new();
 
-    for task in tasks {
+    for &task in &tasks {
         for &mult in &mults {
             let target = (mult * n_ctx as f64) as usize;
             let n_blocks = (target / block_tok).max(k + 4);
@@ -748,7 +767,7 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
     eprintln!("jaded: [frontier] ── effective RLM length per task (largest corpus with blended ≥ {tau}) ──");
     let smallest_corpus = records.iter().map(|(_, tok, _)| *tok).min().unwrap_or(0);
     let mut overall = usize::MAX;
-    for task in tasks {
+    for &task in &tasks {
         let rows = records.iter().filter(|(t, _, _)| *t == task);
         // a capability gap fails even at the smallest corpus size (where it fits the window).
         let passes_small = rows.clone().any(|(_, tok, acc)| *tok == smallest_corpus && *acc >= tau);
@@ -771,12 +790,12 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
 /// attach a fresh `DecodeControl` (+ optional grammar). Used by [`selftest_rlm`].
 fn build_sub(
     model: &LlamaModel,
-    tmpl: &LlamaChatTemplate,
+    _tmpl: &LlamaChatTemplate,
     prompt: &str,
     grammar: Option<&str>,
     max_new: usize,
 ) -> Result<SubInfer, String> {
-    let formatted = build_formatted_prompt(prompt, model, tmpl)?;
+    let formatted = build_formatted_prompt(prompt, &ChatTemplate::default())?;
     let tokens = model
         .str_to_token(&formatted, AddBos::Always)
         .map_err(|e| format!("tokenize failed: {e}"))?;

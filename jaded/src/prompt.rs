@@ -3,12 +3,39 @@
 /// Separated from inference.rs so it can be compiled and tested on all
 /// platforms (inference.rs is Linux + --features inference only).
 
+use jade_model_profile::ChatTemplate;
 use serde_json::Value;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct JadeMessage {
     pub role: String,
     pub content: String,
+}
+
+/// Render a request prompt into the model's chat format using the model profile's
+/// chat template. A `_jade_protocol` messages object becomes a multi-turn chat
+/// (system turn first when present); anything else is wrapped as a single user
+/// turn. The trailing generation prompt is always appended so the model continues
+/// as the assistant.
+///
+/// This replaces the daemon's former call into llama.cpp's `apply_chat_template`,
+/// which the vendored fork removed — the template now lives in the profile as data
+/// ([`ChatTemplate`]). Pure (no model/tokenizer), so it is unit-tested here.
+pub fn format_prompt(prompt_str: &str, tmpl: &ChatTemplate) -> String {
+    match extract_jade_protocol(prompt_str) {
+        Some((system, messages)) => {
+            let mut turns: Vec<(&str, &str)> = Vec::with_capacity(messages.len() + 1);
+            if !system.is_empty() {
+                turns.push(("system", system.as_str()));
+            }
+            for m in &messages {
+                turns.push((m.role.as_str(), m.content.as_str()));
+            }
+            tmpl.render(turns, true)
+        }
+        // Not the messages protocol → a single user turn.
+        None => tmpl.render([("user", prompt_str)], true),
+    }
 }
 
 /// Parse a jade messages protocol payload into (system_prompt, messages).
@@ -208,6 +235,57 @@ mod tests {
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[2].role, "user");
         assert_eq!(msgs[2].content, "And 3+3?");
+    }
+
+    // ── Prompt formatting (chat template) ─────────────────────────────────────
+
+    #[test]
+    fn format_plain_prompt_is_single_user_turn() {
+        let t = ChatTemplate::default();
+        assert_eq!(
+            format_prompt("What is 2+2?", &t),
+            "<|im_start|>user\nWhat is 2+2?<|im_end|>\n<|im_start|>assistant\n"
+        );
+    }
+
+    #[test]
+    fn format_messages_with_system_renders_full_chatml() {
+        let json = proto("You are Omar", &[("user", "hi"), ("assistant", "hey"), ("user", "bye")]);
+        let t = ChatTemplate::default();
+        assert_eq!(
+            format_prompt(&json, &t),
+            "<|im_start|>system\nYou are Omar<|im_end|>\n\
+             <|im_start|>user\nhi<|im_end|>\n\
+             <|im_start|>assistant\nhey<|im_end|>\n\
+             <|im_start|>user\nbye<|im_end|>\n\
+             <|im_start|>assistant\n"
+        );
+    }
+
+    #[test]
+    fn format_empty_system_omits_system_turn() {
+        let json = proto("", &[("user", "hi")]);
+        let t = ChatTemplate::default();
+        assert_eq!(
+            format_prompt(&json, &t),
+            "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"
+        );
+    }
+
+    // The tool role must render as `<|im_start|>tool` with the <tool_response>
+    // wrapper intact — the load-bearing Qwen3 behavior the protocol depends on.
+    #[test]
+    fn format_tool_turn_uses_tool_role_and_wrapper() {
+        let json = proto("", &[
+            ("user", "weather?"),
+            ("assistant", r#"<tool_call>{"tool_name":"get_weather"}</tool_call>"#),
+            ("tool", "26C sunny"),
+        ]);
+        let t = ChatTemplate::default();
+        let out = format_prompt(&json, &t);
+        assert!(out.contains("<|im_start|>tool\n<tool_response>\n26C sunny\n</tool_response><|im_end|>\n"),
+            "got: {out}");
+        assert!(out.ends_with("<|im_start|>assistant\n"));
     }
 
     // ── Stop anchor stripping ─────────────────────────────────────────────────

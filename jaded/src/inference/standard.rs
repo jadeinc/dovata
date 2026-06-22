@@ -4,12 +4,13 @@
 
 use super::build_formatted_prompt;
 use super::kv;
+use jade_model_profile::ChatTemplate;
 use jade_protocol::InferenceRequest;
 use jaded::control::DecodeControl;
 use llama_cpp_2::{
     context::LlamaContext,
     llama_batch::LlamaBatch,
-    model::{AddBos, LlamaChatTemplate, LlamaModel},
+    model::{AddBos, LlamaModel},
     sampling::LlamaSampler,
     token::LlamaToken,
 };
@@ -20,13 +21,13 @@ pub(crate) fn infer_streaming(
     req: &InferenceRequest,
     model: &LlamaModel,
     ctx: &mut LlamaContext,
-    tmpl: &LlamaChatTemplate,
+    tmpl: &ChatTemplate,
     kv_tokens: &mut Vec<LlamaToken>,
     mut on_token: impl FnMut(&str),
 ) -> Result<u64, String> {
     let mut decoder = encoding_rs::UTF_8.new_decoder_without_bom_handling();
 
-    let prompt = build_formatted_prompt(&req.prompt, model, tmpl)?;
+    let prompt = build_formatted_prompt(&req.prompt, tmpl)?;
 
     let tokens = model
         .str_to_token(&prompt, AddBos::Always)
