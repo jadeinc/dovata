@@ -1,5 +1,5 @@
 // 06 — Multi-turn conversation via the jade messages protocol.
-// Exercises the daemon's `_jade_protocol: "messages"` path: it parses the
+// Exercises the daemon's `_ovata_infer_protocol: "messages"` path: it parses the
 // system + message history and renders it through the model's GGUF chat
 // template. A correct answer means prior turns were threaded into the prompt
 // (the basis for KV-prefix reuse across turns). Bare consecutive `?p` derefs do
@@ -11,7 +11,7 @@ let ok = false
 let detail = ""
 try {
     let convo = json.stringify({
-        "_jade_protocol": "messages",
+        "_ovata_infer_protocol": "messages",
         "system": "You are a helpful assistant. Answer concisely.",
         "messages": [
             {"role": "user", "content": "Remember this codeword for later: ORCHID."},

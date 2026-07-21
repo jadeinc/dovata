@@ -5,7 +5,7 @@
 //! of running the model. This is a *response* cache, distinct from the KV-cache
 //! prefix reuse done during prefill.
 
-use jade_protocol::InferenceRequest;
+use ovata_infer_protocol::InferenceRequest;
 use std::collections::{HashMap, VecDeque};
 
 pub struct PromptCache {

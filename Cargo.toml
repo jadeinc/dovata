@@ -1,6 +1,9 @@
 [workspace]
 members = [
-    "jade-protocol",
+    # The wire protocol lives in its own public repo (git submodule) so the Jade
+    # language, which is public, can depend on it too — a public repo cannot take
+    # a git dependency on this private one. Both sides build the same definition.
+    "ovata-infer-protocol",
     "jade-model-profile",
     "jaded",
 ]

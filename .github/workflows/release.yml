@@ -112,7 +112,7 @@ jobs:
       # we never cut a release from a broken library/protocol.
       - name: Test pure crates
         run: |
-          cargo test -p jade-protocol
+          cargo test -p ovata-infer-protocol
           cargo test -p jaded --lib
 
       - name: Build jaded (--features cuda)

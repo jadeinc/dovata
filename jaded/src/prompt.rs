@@ -1,19 +1,18 @@
-/// Pure protocol-parsing logic for the jade messages wire format.
+/// Prompt rendering for the messages wire format.
+///
+/// The envelope itself — its marker key, parsing, and building — belongs to
+/// `ovata-infer-protocol`, which the language repo also depends on, so both sides
+/// share one definition. What stays here is the part that is *not* wire contract:
+/// turning parsed turns into a specific model's chat text.
 ///
 /// Separated from inference.rs so it can be compiled and tested on all
 /// platforms (inference.rs is Linux + --features inference only).
 
 use jade_model_profile::ChatTemplate;
-use serde_json::Value;
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct JadeMessage {
-    pub role: String,
-    pub content: String,
-}
+use ovata_infer_protocol::envelope::{self, Message};
 
 /// Render a request prompt into the model's chat format using the model profile's
-/// chat template. A `_jade_protocol` messages object becomes a multi-turn chat
+/// chat template. A `_ovata_infer_protocol` messages object becomes a multi-turn chat
 /// (system turn first when present); anything else is wrapped as a single user
 /// turn. The trailing generation prompt is always appended so the model continues
 /// as the assistant.
@@ -22,7 +21,7 @@ pub struct JadeMessage {
 /// which the vendored fork removed — the template now lives in the profile as data
 /// ([`ChatTemplate`]). Pure (no model/tokenizer), so it is unit-tested here.
 pub fn format_prompt(prompt_str: &str, tmpl: &ChatTemplate) -> String {
-    match extract_jade_protocol(prompt_str) {
+    match extract_envelope(prompt_str) {
         Some((system, messages)) => {
             let mut turns: Vec<(&str, &str)> = Vec::with_capacity(messages.len() + 1);
             if !system.is_empty() {
@@ -38,58 +37,40 @@ pub fn format_prompt(prompt_str: &str, tmpl: &ChatTemplate) -> String {
     }
 }
 
-/// Parse a jade messages protocol payload into (system_prompt, messages).
+/// Parse a messages envelope into (system_prompt, messages), normalized for the
+/// model's chat template.
 ///
-/// Returns `None` if the string is not in jade protocol format (i.e. it is a
-/// plain single-turn prompt that should be wrapped as a user message).
+/// Returns `None` if the string is not an envelope (i.e. it is a plain single-turn
+/// prompt that should be wrapped as a user message).
 ///
-/// Tool role handling: `role == "tool"` is passed through unchanged. The
-/// content is wrapped in `<tool_response>` tags because Qwen3's embedded
-/// Jinja2 template passes `message.content` verbatim inside
-/// `<|im_start|>tool\n{content}\n<|im_end|>`.
-pub fn extract_jade_protocol(prompt_str: &str) -> Option<(String, Vec<JadeMessage>)> {
-    // fast reject: the protocol is always a JSON object, so if it doesn't even
-    // start with '{' it's a plain prompt — skip the parse entirely.
-    if !prompt_str.starts_with('{') {
-        return None;
-    }
-    // try to parse as JSON; if it isn't valid JSON, treat it as a plain prompt
-    // (the `?` turns the None from .ok() into an early return).
-    let v: Value = serde_json::from_str(prompt_str).ok()?;
-    // it's JSON, but is it OUR protocol? Require the marker field. Any other JSON
-    // (e.g. a user who happened to send a JSON string) falls through to None.
-    if v.get("_jade_protocol").and_then(|p| p.as_str()) != Some("messages") {
-        return None;
-    }
-    // system prompt is optional — default to empty string if absent/not a string
-    let system = v.get("system")
-        .and_then(|s| s.as_str())
-        .unwrap_or("")
-        .to_owned();
-    // the messages array is required; bail (None) if it's missing or not an array
-    let raw_msgs = v.get("messages").and_then(|m| m.as_array())?;
-    // walk the raw JSON turns and normalize each into a JadeMessage
-    let mut messages = Vec::with_capacity(raw_msgs.len());
-    for msg in raw_msgs {
-        // pull role/content, defaulting to a user turn with empty text if a field
-        // is missing or the wrong type — we never want a malformed turn to abort
-        // the whole request.
-        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-        let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-        // special case: a `tool` result. We KEEP the role as "tool" (do NOT remap
-        // to "user") and wrap the body in <tool_response>…</tool_response>. This
-        // is load-bearing for Qwen3 — its chat template only links a tool result
-        // to the preceding tool call when it sees the tool role + this wrapper.
-        let (final_role, final_content) = if role == "tool" {
-            (role.to_owned(), format!("<tool_response>\n{content}\n</tool_response>"))
-        } else {
-            // every other role (user/assistant/system) passes through untouched
-            (role.to_owned(), content.to_owned())
-        };
-        messages.push(JadeMessage { role: final_role, content: final_content });
-    }
-    // hand back the system prompt and the normalized turn list
-    Some((system, messages))
+/// The wire-level parse is [`envelope::parse`]; the normalization on top of it is
+/// this function's reason to exist. Tool role handling: `role == "tool"` is passed
+/// through unchanged, but the content is wrapped in `<tool_response>` tags because
+/// Qwen3's embedded Jinja2 template passes `message.content` verbatim inside
+/// `<|im_start|>tool\n{content}\n<|im_end|>`. That wrapper is model-specific, which
+/// is why it lives here rather than in the shared protocol crate.
+pub fn extract_envelope(prompt_str: &str) -> Option<(String, Vec<Message>)> {
+    let env = envelope::parse(prompt_str)?;
+
+    let messages = env
+        .messages
+        .into_iter()
+        .map(|m| {
+            // special case: a `tool` result. We KEEP the role as "tool" (do NOT remap
+            // to "user") and wrap the body in <tool_response>…</tool_response>. This
+            // is load-bearing for Qwen3 — its chat template only links a tool result
+            // to the preceding tool call when it sees the tool role + this wrapper.
+            if m.role == "tool" {
+                let content = format!("<tool_response>\n{}\n</tool_response>", m.content);
+                Message { role: m.role, content }
+            } else {
+                // every other role (user/assistant/system) passes through untouched
+                m
+            }
+        })
+        .collect();
+
+    Some((env.system, messages))
 }
 
 /// Strip a stop-anchor string from a response buffer in-place.
@@ -107,35 +88,33 @@ pub fn strip_stop_anchor(buf: &mut String, stop: &str) {
 mod tests {
     use super::*;
 
+    /// Build test envelopes through the shared builder rather than hand-writing the
+    /// JSON — a literal here would reintroduce the second spelling of the marker key
+    /// that moving the envelope into the protocol crate was meant to eliminate.
     fn proto(system: &str, messages: &[(&str, &str)]) -> String {
-        let msgs: Vec<Value> = messages
+        let msgs: Vec<Message> = messages
             .iter()
-            .map(|(r, c)| serde_json::json!({"role": r, "content": c}))
+            .map(|(r, c)| Message { role: (*r).to_owned(), content: (*c).to_owned() })
             .collect();
-        serde_json::json!({
-            "_jade_protocol": "messages",
-            "system": system,
-            "messages": msgs,
-        })
-        .to_string()
+        envelope::build(system, &msgs).to_string()
     }
 
     // ── Protocol detection ────────────────────────────────────────────────────
 
     #[test]
     fn plain_text_is_not_protocol() {
-        assert!(extract_jade_protocol("Hello, what's the weather?").is_none());
+        assert!(extract_envelope("Hello, what's the weather?").is_none());
     }
 
     #[test]
     fn json_without_protocol_field_is_not_protocol() {
-        assert!(extract_jade_protocol(r#"{"role":"user","content":"hi"}"#).is_none());
+        assert!(extract_envelope(r#"{"role":"user","content":"hi"}"#).is_none());
     }
 
     #[test]
-    fn jade_protocol_detected() {
+    fn envelope_detected() {
         let json = proto("sys", &[("user", "hi")]);
-        assert!(extract_jade_protocol(&json).is_some());
+        assert!(extract_envelope(&json).is_some());
     }
 
     // ── System field ──────────────────────────────────────────────────────────
@@ -143,14 +122,14 @@ mod tests {
     #[test]
     fn system_prompt_extracted() {
         let json = proto("You are Omar", &[("user", "hi")]);
-        let (sys, _) = extract_jade_protocol(&json).unwrap();
+        let (sys, _) = extract_envelope(&json).unwrap();
         assert_eq!(sys, "You are Omar");
     }
 
     #[test]
     fn empty_system_is_ok() {
         let json = proto("", &[("user", "hi")]);
-        let (sys, _) = extract_jade_protocol(&json).unwrap();
+        let (sys, _) = extract_envelope(&json).unwrap();
         assert_eq!(sys, "");
     }
 
@@ -159,7 +138,7 @@ mod tests {
     #[test]
     fn user_role_preserved() {
         let json = proto("", &[("user", "Hello")]);
-        let (_, msgs) = extract_jade_protocol(&json).unwrap();
+        let (_, msgs) = extract_envelope(&json).unwrap();
         assert_eq!(msgs[0].role, "user");
         assert_eq!(msgs[0].content, "Hello");
     }
@@ -167,7 +146,7 @@ mod tests {
     #[test]
     fn assistant_role_preserved() {
         let json = proto("", &[("user", "ping"), ("assistant", "pong")]);
-        let (_, msgs) = extract_jade_protocol(&json).unwrap();
+        let (_, msgs) = extract_envelope(&json).unwrap();
         assert_eq!(msgs[1].role, "assistant");
         assert_eq!(msgs[1].content, "pong");
     }
@@ -181,7 +160,7 @@ mod tests {
             ("assistant", r#"<tool>{"tool_name":"get_weather","city":"SF"}</tool>"#),
             ("tool", "SF: 26°C and sunny"),
         ]);
-        let (_, msgs) = extract_jade_protocol(&json).unwrap();
+        let (_, msgs) = extract_envelope(&json).unwrap();
         assert_eq!(
             msgs[2].role, "tool",
             "tool response must use role='tool', not 'user' — Qwen3 only \
@@ -193,7 +172,7 @@ mod tests {
     #[test]
     fn tool_content_wrapped_in_tool_response_tags() {
         let json = proto("", &[("tool", "SF: 26°C and sunny")]);
-        let (_, msgs) = extract_jade_protocol(&json).unwrap();
+        let (_, msgs) = extract_envelope(&json).unwrap();
         assert_eq!(
             msgs[0].content,
             "<tool_response>\nSF: 26°C and sunny\n</tool_response>"
@@ -210,10 +189,10 @@ mod tests {
                 ("tool", "Temperature: 26°C, Condition: Sunny"),
             ],
         );
-        let (sys, msgs) = extract_jade_protocol(&json).unwrap();
+        let (sys, msgs) = extract_envelope(&json).unwrap();
         assert_eq!(sys, "You are an assistant with tools");
         assert_eq!(msgs.len(), 3);
-        assert_eq!(msgs[0], JadeMessage { role: "user".into(), content: "What's the weather in SF?".into() });
+        assert_eq!(msgs[0], Message { role: "user".into(), content: "What's the weather in SF?".into() });
         assert_eq!(msgs[1].role, "assistant");
         assert!(msgs[1].content.contains("<tool>"));
         assert_eq!(msgs[2].role, "tool");
@@ -231,7 +210,7 @@ mod tests {
             ("assistant", "4"),
             ("user", "And 3+3?"),
         ]);
-        let (_, msgs) = extract_jade_protocol(&json).unwrap();
+        let (_, msgs) = extract_envelope(&json).unwrap();
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[2].role, "user");
         assert_eq!(msgs[2].content, "And 3+3?");
@@ -323,7 +302,7 @@ mod tests {
     // Mirrors the logic in programs/lib/tools.jde parse_tag(). Tests verify that
     // jade-tree's stop anchor and depth-tracker produce inputs that parse correctly.
 
-    fn parse_tag(response: &str) -> Option<Value> {
+    fn parse_tag(response: &str) -> Option<serde_json::Value> {
         if !response.contains("<tool>") {
             return None;
         }

@@ -8,14 +8,14 @@
 //! engine tokenizes the blocks), so it builds and unit-tests on any platform.
 //!
 //! Split policy:
-//! * **messages envelope** (`_jade_protocol: "messages"`): the question is the LAST
+//! * **messages envelope** (`_ovata_infer_protocol: "messages"`): the question is the LAST
 //!   `user` turn; the corpus is the system prompt + every other turn's content,
 //!   concatenated and chunked. This is the realistic shape — a large context (system
 //!   / prior turns / pasted document) followed by the user's actual ask.
 //! * **plain string**: the corpus is the whole string chunked; the question is the
 //!   trailing paragraph (a question typically trails the document it's about).
 
-use crate::prompt::extract_jade_protocol;
+use crate::prompt::extract_envelope;
 
 /// Default chunk size in characters (~512 tokens at ~4 chars/token). The block size
 /// is the main retrieval-recall knob; the daemon passes this to [`derive_rlm_input`].
@@ -33,7 +33,7 @@ pub struct RlmInput {
 /// Derive `(corpus blocks, question)` from a protocol prompt, chunking the corpus to
 /// ~`target_chars` per block. See the module docs for the messages vs plain-string split.
 pub fn derive_rlm_input(prompt_str: &str, target_chars: usize) -> RlmInput {
-    match extract_jade_protocol(prompt_str) {
+    match extract_envelope(prompt_str) {
         Some((system, messages)) => {
             // Question = the last `user` turn (search from the end). Everything else
             // — system prompt + all other turns — becomes the retrievable corpus.
@@ -196,13 +196,17 @@ fn hard_split(s: &str, budget: usize) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// Built through the shared builder, not hand-written JSON — see the note on
+    /// the matching helper in `prompt.rs`.
     fn proto(system: &str, messages: &[(&str, &str)]) -> String {
-        let msgs: Vec<serde_json::Value> = messages
+        let msgs: Vec<ovata_infer_protocol::Message> = messages
             .iter()
-            .map(|(r, c)| serde_json::json!({"role": r, "content": c}))
+            .map(|(r, c)| ovata_infer_protocol::Message {
+                role: (*r).to_owned(),
+                content: (*c).to_owned(),
+            })
             .collect();
-        serde_json::json!({"_jade_protocol": "messages", "system": system, "messages": msgs})
-            .to_string()
+        ovata_infer_protocol::envelope::build(system, &msgs).to_string()
     }
 
     #[test]

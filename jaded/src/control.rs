@@ -25,7 +25,7 @@
 //!   retires it the instant the top-level JSON object/array closes — so the model
 //!   emits the `stop_anchor` (e.g. `</tool>`) and EOG without grammar overhead.
 
-use jade_protocol::InferenceRequest;
+use ovata_infer_protocol::InferenceRequest;
 
 #[derive(Debug, Clone)]
 pub struct DecodeControl {

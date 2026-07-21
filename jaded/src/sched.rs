@@ -302,7 +302,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jade_protocol::InferenceRequest;
+    use ovata_infer_protocol::InferenceRequest;
 
     fn req(grammar: Option<&str>, anchor: Option<&str>, stop: Option<&str>) -> InferenceRequest {
         InferenceRequest {

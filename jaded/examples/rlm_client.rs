@@ -12,7 +12,7 @@
 //! Run on the box AFTER starting the daemon:
 //!   JADE_SOCK=$HOME/.jade/llm.sock cargo run --example rlm_client -p jaded
 
-use jade_protocol::{Frame, InferenceRequest};
+use ovata_infer_protocol::{Frame, InferenceRequest};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 
@@ -43,7 +43,7 @@ fn read_response(s: &mut UnixStream) -> std::io::Result<(String, Option<String>)
                 Ok((_, c)) => {
                     buf.drain(..c); // Meta, etc.
                 }
-                Err(jade_protocol::FrameError::Incomplete) => break,
+                Err(ovata_infer_protocol::FrameError::Incomplete) => break,
                 Err(e) => return Err(std::io::Error::other(format!("frame decode: {e}"))),
             }
         }

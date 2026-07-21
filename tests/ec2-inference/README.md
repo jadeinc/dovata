@@ -25,7 +25,7 @@ FAIL and the program's last output line is shown as the diagnostic.
 | `03_struct.jde`       | JSON object grammar (explicit GBNF) → parseable object           |
 | `04_collections.jde`  | JSON array grammar (explicit GBNF) → non-empty parsed array      |
 | `05_grammar.jde`      | explicit user GBNF via `Grammar.new`, enforced from token 1      |
-| `06_multiturn.jde`    | `_jade_protocol: messages` history threading (basis of KV reuse) |
+| `06_multiturn.jde`    | `_ovata_infer_protocol: messages` history threading (basis of KV reuse) |
 | `07_tool_anchor.jde`  | anchored grammar: deferred enforcement, depth retire, stop-strip |
 | `08_latency.jde`      | coarse end-to-end latency / throughput probe (Phase 0 bench)     |
 

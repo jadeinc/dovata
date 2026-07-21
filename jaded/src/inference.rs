@@ -28,7 +28,7 @@ mod compose;
 mod bench;
 
 use io_uring::{opcode, types, IoUring};
-use jade_protocol::{Frame, InferenceRequest};
+use ovata_infer_protocol::{Frame, InferenceRequest};
 use jaded::cache::PromptCache;
 use jade_model_profile::ChatTemplate;
 use jaded::config::{Config, KvType};
@@ -448,7 +448,7 @@ fn handle_connection(
                     buf.drain(..4 + payload_len);
                     break req;
                 }
-                Err(jade_protocol::RequestDecodeError::Incomplete) => {
+                Err(ovata_infer_protocol::RequestDecodeError::Incomplete) => {
                     // not enough bytes yet — read more. n == 0 means EOF (client
                     // hung up cleanly), so this connection is done.
                     let n = stream.read(&mut tmp)?;
@@ -473,12 +473,12 @@ fn handle_connection(
         // jaded only records the trust level for observability.
 
         if req.health_only {
-            let health = jade_protocol::Health {
+            let health = ovata_infer_protocol::Health {
                 status: "ok".to_owned(),
                 model: model_name.to_owned(),
                 model_loaded: true, // we only serve once the model is loaded
                 uptime_secs: START.get().map(|s| s.elapsed().as_secs()).unwrap_or(0),
-                protocol_version: jade_protocol::PROTOCOL_VERSION,
+                protocol_version: ovata_infer_protocol::PROTOCOL_VERSION,
             };
             let json = serde_json::to_string(&health).unwrap_or_else(|_| "{}".to_owned());
             stream.write_all(&Frame::Json(json).encode())?;
@@ -659,7 +659,7 @@ fn answer_over_context(
     Ok(())
 }
 
-/// Render a request prompt into the model's chat format. A `_jade_protocol`
+/// Render a request prompt into the model's chat format. A `_ovata_infer_protocol`
 /// messages object becomes a multi-turn chat; anything else is a single user turn.
 /// Shared by the standard path, `count_only`, and the RLM sub-call builder.
 ///

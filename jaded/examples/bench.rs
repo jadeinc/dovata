@@ -1,6 +1,6 @@
 //! Protocol-level latency / throughput benchmark for the jaded daemon.
 //!
-//! Talks directly to the Unix socket using `jade-protocol` (no Jade runtime in
+//! Talks directly to the Unix socket using `ovata-infer-protocol` (no Jade runtime in
 //! the path), so the numbers reflect the daemon itself. Measures:
 //!   * TTFT  — request send → first `Token` frame (prefill + first decode step)
 //!   * decode tok/s — generated tokens after the first, over the time to `Done`
@@ -12,7 +12,7 @@
 //!
 //! Prompts carry a per-iteration nonce so the daemon's response cache never hits.
 
-use jade_protocol::{Frame, InferenceRequest};
+use ovata_infer_protocol::{Frame, InferenceRequest};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Instant;
@@ -56,7 +56,7 @@ fn read_done_tokens(s: &mut UnixStream) -> std::io::Result<u64> {
                 Ok((_, consumed)) => {
                     buf.drain(..consumed);
                 }
-                Err(jade_protocol::FrameError::Incomplete) => break,
+                Err(ovata_infer_protocol::FrameError::Incomplete) => break,
                 Err(e) => return Err(err(format!("{e}"))),
             }
         }
@@ -121,7 +121,7 @@ fn run_once(sock: &str, prompt: &str, max_tokens: u32) -> std::io::Result<Sample
                         Frame::Error(e) => return Err(err(e)),
                     }
                 }
-                Err(jade_protocol::FrameError::Incomplete) => break,
+                Err(ovata_infer_protocol::FrameError::Incomplete) => break,
                 Err(e) => return Err(err(format!("{e}"))),
             }
         }

@@ -17,7 +17,7 @@
 //! lives in [`super::bench`].
 
 use super::compose::{blended_compose_and_answer, BlockStore, KvBlockCache};
-use jade_protocol::{Frame, InferenceRequest};
+use ovata_infer_protocol::{Frame, InferenceRequest};
 use llama_cpp_2::{context::LlamaContext, model::LlamaModel};
 use std::collections::HashMap;
 use std::io::Write;

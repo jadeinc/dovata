@@ -295,7 +295,7 @@ Still open (these are design decisions, not tidy-ups — deferred to implementat
    keep them clearly marked as infra (currently kept alive only by the `selftest_rlm` bench).
 5. **Naming.** The module is called `rlm` but the path is no longer recursive — consider
    renaming to reflect "retrieval + KV composition". Deferred: the `rlm` request field is
-   part of the wire protocol (`jade-protocol`) and shared with clients, so a rename is a
+   part of the wire protocol (`ovata-infer-protocol`) and shared with clients, so a rename is a
    deliberate protocol change, not a local cleanup.
 
 ---

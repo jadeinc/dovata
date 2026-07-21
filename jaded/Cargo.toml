@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "JADE OS inference daemon — serves jade-protocol inference requests over a Unix socket"
+description = "JADE OS inference daemon — serves ovata-infer-protocol inference requests over a Unix socket"
 
 [lib]
 name = "jaded"
@@ -22,7 +22,7 @@ inference = ["dep:llama-cpp-2", "dep:llama-cpp-sys-2", "dep:encoding_rs", "dep:i
 cuda = ["inference", "llama-cpp-2/cuda"]
 
 [dependencies]
-jade-protocol = { path = "../jade-protocol" }
+ovata-infer-protocol = { path = "../ovata-infer-protocol" }
 jade-model-profile = { path = "../jade-model-profile" }
 serde_json = { version = "1", features = ["std"] }
 # Vendored in-tree (llama-cpp/ = llama-cpp-rs @ 0.1.150) with its llama.cpp

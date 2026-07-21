@@ -5,7 +5,7 @@
 use super::build_formatted_prompt;
 use super::kv;
 use jade_model_profile::ChatTemplate;
-use jade_protocol::InferenceRequest;
+use ovata_infer_protocol::InferenceRequest;
 use jaded::control::DecodeControl;
 use llama_cpp_2::{
     context::LlamaContext,
