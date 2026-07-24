@@ -9,16 +9,20 @@
 //! swapping the model silently breaks tool calling.
 //!
 //! A [`ModelProfile`] captures that model-specific vocabulary as data. The wire
-//! protocol stays model-agnostic (it carries opaque text + frames); the language
-//! layer (`use llm`) loads the profile for whatever model the daemon reports and
-//! uses it to construct requests and interpret the streamed special tokens. Swap
-//! the model → swap the profile file → no Jade program changes.
+//! protocol stays model-agnostic (it carries opaque text + frames) — and as of
+//! protocol v3 it no longer reports a model name at all: the `Meta` frame names
+//! the *provider*, not the model. So the profile is selected where the model
+//! identity is actually known — daemon-side, keyed on the name the daemon reads
+//! from the loaded `.gguf` — and used to construct requests and interpret the
+//! streamed special tokens. Swap the model → swap the profile file → no Jade
+//! program changes.
 //!
 //! ## Format
 //!
 //! Profiles are TOML. See `profiles/qwen3-coder-30b.toml` for a worked example.
 //! Load one with [`ModelProfile::from_toml`], or use a [`Registry`] to pick the
-//! right profile for a model name reported by the daemon's `Meta` frame.
+//! right profile for the model name the daemon reads from the loaded `.gguf`
+//! (the wire no longer carries a model name — `Meta` reports the provider).
 
 use serde::Deserialize;
 
@@ -32,7 +36,7 @@ pub struct ModelProfile {
     pub schema_version: u32,
     /// Human-readable model name this profile targets.
     pub model: String,
-    /// Glob patterns (against the daemon-reported model name) this profile
+    /// Glob patterns (against the daemon's loaded model name) this profile
     /// applies to. `*` matches any sequence. First matching profile wins.
     #[serde(default, rename = "match")]
     pub match_patterns: Vec<String>,
