@@ -1,5 +1,5 @@
 [package]
-name = "jaded"
+name = "dovata"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 description = "JADE OS inference daemon — serves ovata-infer-protocol inference requests over a Unix socket"
 
 [lib]
-name = "jaded"
+name = "dovata"
 path = "src/lib.rs"
 
 [[bin]]
-name = "jaded"
+name = "dovata"
 path = "src/main.rs"
 
 [features]

@@ -114,7 +114,7 @@ pub(crate) fn handle_rlm(
         };
         let cap = kv_cache_cap_bytes();
         let h = store_context(StoredContext { blocks, kv_cache: KvBlockCache::new(cap) });
-        eprintln!("jaded: [rlm] uploaded context handle={h} ({n} sections, kv cache cap {} MB)", cap / (1024 * 1024));
+        eprintln!("dovata: [rlm] uploaded context handle={h} ({n} sections, kv cache cap {} MB)", cap / (1024 * 1024));
         stream.write_all(&Frame::Json(format!("{{\"handle\":{h}}}")).encode())?;
         stream.write_all(&Frame::Done { tokens_used: 0 }.encode())?;
         return Ok(());
@@ -155,7 +155,7 @@ pub(crate) fn handle_rlm(
 
     match result {
         Ok((answer, picked)) => {
-            eprintln!("jaded: [rlm] query answered (compose blocks {picked:?})");
+            eprintln!("dovata: [rlm] query answered (compose blocks {picked:?})");
             stream.write_all(&Frame::Meta { model: model_name.to_owned() }.encode())?;
             stream.write_all(&Frame::Token(answer).encode())?;
             stream.write_all(&Frame::Done { tokens_used: 0 }.encode())?;
@@ -173,7 +173,7 @@ pub(crate) fn handle_rlm(
 // The compose engine itself needs a real model and is exercised by the selftests in
 // `super::bench` + `examples/rlm_client.rs` on the box; its pure pieces (retrieval, KV
 // cache LRU) are unit-tested in `super::compose`. This whole module is behind the
-// Linux-only `inference` feature, so these run under `cargo test -p jaded --features
+// Linux-only `inference` feature, so these run under `cargo test -p dovata --features
 // inference` (not the macOS pure suite).
 #[cfg(test)]
 mod tests {

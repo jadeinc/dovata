@@ -1,4 +1,4 @@
-//! jaded — JADE OS inference daemon.
+//! dovata — JADE OS inference daemon.
 //!
 //! This library holds the **pure, platform-independent core** of the daemon:
 //! configuration, prompt parsing, the response cache, and the constrained-

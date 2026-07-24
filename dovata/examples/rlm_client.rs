@@ -1,6 +1,6 @@
 //! RLM socket-client smoke test (Phase 3).
 //!
-//! Talks to a running `jaded` over its Unix socket using the real wire protocol:
+//! Talks to a running `dovata` over its Unix socket using the real wire protocol:
 //!   1. UPLOAD a large needle-in-haystack context  → receive a handle,
 //!   2. QUERY by handle                            → receive the answer,
 //!   3. QUERY inline (sections in the request)      → receive the answer,
@@ -10,7 +10,7 @@
 //! decode); it needs the unified KV cache, which is on by default.
 //!
 //! Run on the box AFTER starting the daemon:
-//!   JADE_SOCK=$HOME/.jade/llm.sock cargo run --example rlm_client -p jaded
+//!   JADE_SOCK=$HOME/.jade/llm.sock cargo run --example rlm_client -p dovata
 
 use ovata_infer_protocol::{Frame, InferenceRequest};
 use std::io::{Read, Write};

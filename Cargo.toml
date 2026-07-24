@@ -5,11 +5,11 @@ members = [
     # a git dependency on this private one. Both sides build the same definition.
     "ovata-infer-protocol",
     "jade-model-profile",
-    "jaded",
+    "dovata",
 ]
 # Vendored llama-cpp-rs (0.1.150), in-tree at llama-cpp/, is its own workspace —
 # its crates inherit from their own [workspace.dependencies]/[lints]. Exclude it
-# here so it stays an independent workspace root; jaded uses its crates via path deps.
+# here so it stays an independent workspace root; dovata uses its crates via path deps.
 exclude = ["llama-cpp"]
 resolver = "2"
 

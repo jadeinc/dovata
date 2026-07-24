@@ -10,7 +10,7 @@
 //!                         copy its KV into N sequences, so each only prefills its
 //!                         unique suffix (concurrent / mass prompting).
 
-use jaded::config::KvType;
+use dovata::config::KvType;
 use llama_cpp_2::{
     context::{params::KvCacheType, LlamaContext},
     llama_batch::LlamaBatch,
@@ -58,7 +58,7 @@ pub(crate) fn reuse_prefix(
             .map_err(|e| format!("kv_cache_seq clear failed: {e}"))?;
         kv_tokens.truncate(prefix_len);
         eprintln!(
-            "jaded: kv prefix reuse {prefix_len}/{n_prompt} tokens ({} new)",
+            "dovata: kv prefix reuse {prefix_len}/{n_prompt} tokens ({} new)",
             n_prompt - prefix_len
         );
     } else {

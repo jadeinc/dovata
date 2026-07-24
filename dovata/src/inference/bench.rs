@@ -21,7 +21,7 @@ use super::compose::{
 use super::concurrency::{run_concurrent, SubInfer};
 use jade_model_profile::ChatTemplate;
 use ovata_infer_protocol::InferenceRequest;
-use jaded::control::DecodeControl;
+use dovata::control::DecodeControl;
 use llama_cpp_2::{
     context::LlamaContext,
     llama_batch::LlamaBatch,
@@ -89,25 +89,25 @@ fn selftest_kv_roundtrip(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &Lla
         ctx.clear_kv_cache();
         prefill(ctx, block, 0, 0, false)?;
         let bytes = save_seq(ctx, 0);
-        eprintln!("jaded: [kv-roundtrip] saved {} bytes for {} block tokens", bytes.len(), n - 1);
+        eprintln!("dovata: [kv-roundtrip] saved {} bytes for {} block tokens", bytes.len(), n - 1);
         feed_token(ctx, last, last_pos, 0)?;
         let ref_text = gen_loop(model, ctx, 0, last_pos + 1, 16)?;
 
         // Restore the block into a clean cache and continue identically.
         ctx.clear_kv_cache();
         let ok = load_seq(ctx, &bytes, 0);
-        eprintln!("jaded: [kv-roundtrip] restore ok={ok}");
+        eprintln!("dovata: [kv-roundtrip] restore ok={ok}");
         feed_token(ctx, last, last_pos, 0)?;
         let test_text = gen_loop(model, ctx, 0, last_pos + 1, 16)?;
 
-        eprintln!("jaded: [kv-roundtrip] ref  = {:?}", ref_text.trim());
-        eprintln!("jaded: [kv-roundtrip] test = {:?}", test_text.trim());
-        eprintln!("jaded: [kv-roundtrip] MATCH = {}", ref_text.trim() == test_text.trim());
+        eprintln!("dovata: [kv-roundtrip] ref  = {:?}", ref_text.trim());
+        eprintln!("dovata: [kv-roundtrip] test = {:?}", test_text.trim());
+        eprintln!("dovata: [kv-roundtrip] MATCH = {}", ref_text.trim() == test_text.trim());
         ctx.clear_kv_cache();
         Ok(())
     };
     if let Err(e) = run() {
-        eprintln!("jaded: [kv-roundtrip] error: {e}");
+        eprintln!("dovata: [kv-roundtrip] error: {e}");
     }
 }
 
@@ -138,7 +138,7 @@ fn selftest_kv_compose(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &Llama
         // (same-stream metadata copy under a unified cache).
         ctx.kv_cache_seq_add(1, Some(0), Some(lb as u32), la).map_err(|e| format!("seq_add: {e}"))?;
         ctx.copy_kv_cache_seq(1, 0, Some(la as u32), Some((la + lb) as u32)).map_err(|e| format!("seq_cp: {e}"))?;
-        eprintln!("jaded: [kv-compose] composed block A[0..{la}) + block B[{la}..{}) into seq 0", la + lb);
+        eprintln!("dovata: [kv-compose] composed block A[0..{la}) + block B[{la}..{}) into seq 0", la + lb);
 
         // Append the question on seq 0 after both blocks and decode.
         let qbase = la + lb;
@@ -147,14 +147,14 @@ fn selftest_kv_compose(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &Llama
         let lc = ans.to_lowercase();
         let has_animal = lc.contains("platypus");
         let has_number = lc.contains("42");
-        eprintln!("jaded: [kv-compose] ANSWER: {:?}", ans.trim());
-        eprintln!("jaded: [kv-compose] platypus={has_animal} 42={has_number} -> {}",
+        eprintln!("dovata: [kv-compose] ANSWER: {:?}", ans.trim());
+        eprintln!("dovata: [kv-compose] platypus={has_animal} 42={has_number} -> {}",
             if has_animal && has_number { "COMPOSE OK (both blocks visible)" } else { "INCOMPLETE" });
         ctx.clear_kv_cache();
         Ok(())
     };
     if let Err(e) = run() {
-        eprintln!("jaded: [kv-compose] error: {e}");
+        eprintln!("dovata: [kv-compose] error: {e}");
     }
 }
 
@@ -185,20 +185,20 @@ fn selftest_compose_demo(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &Lla
     let (texts, _) = needle_haystack(needle, n);
     let store = match BlockStore::from_texts(model, &texts) {
         Ok(s) => s,
-        Err(e) => { eprintln!("jaded: [compose-demo] build error: {e}"); return; }
+        Err(e) => { eprintln!("dovata: [compose-demo] build error: {e}"); return; }
     };
     let question = "What is the secret access code?";
-    eprintln!("jaded: [compose-demo] {} blocks, question: {question:?}", store.blocks.len());
+    eprintln!("dovata: [compose-demo] {} blocks, question: {question:?}", store.blocks.len());
     let mut cache = KvBlockCache::new(0); // one-shot demo: caching disabled
     let t = Instant::now();
     match compose_and_answer(model, ctx, &store, &mut cache, question, 4) {
         Ok((ans, sel)) => {
             let ms = t.elapsed().as_millis();
-            eprintln!("jaded: [compose-demo] selected {sel:?}");
-            eprintln!("jaded: [compose-demo] ANSWER: {:?}", ans.trim());
-            eprintln!("jaded: [compose-demo] needle {needle} found: {}  ({ms}ms, ONE decode, zero agentic calls)", ans.contains(needle));
+            eprintln!("dovata: [compose-demo] selected {sel:?}");
+            eprintln!("dovata: [compose-demo] ANSWER: {:?}", ans.trim());
+            eprintln!("dovata: [compose-demo] needle {needle} found: {}  ({ms}ms, ONE decode, zero agentic calls)", ans.contains(needle));
         }
-        Err(e) => eprintln!("jaded: [compose-demo] error: {e}"),
+        Err(e) => eprintln!("dovata: [compose-demo] error: {e}"),
     }
 }
 
@@ -213,7 +213,7 @@ fn selftest_compose_multi(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &Ll
     }).collect();
     let store = match BlockStore::from_texts(model, &texts) {
         Ok(s) => s,
-        Err(e) => { eprintln!("jaded: [compose-multi] build error: {e}"); return; }
+        Err(e) => { eprintln!("dovata: [compose-multi] build error: {e}"); return; }
     };
     let question = "What are the launch code and the abort code?";
     let mut cache = KvBlockCache::new(0);
@@ -221,10 +221,10 @@ fn selftest_compose_multi(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &Ll
         Ok((ans, sel)) => {
             let lc = ans.to_lowercase();
             let both = lc.contains("alpha-9") && lc.contains("omega-3");
-            eprintln!("jaded: [compose-multi] selected={sel:?} both_facts={both}");
-            eprintln!("jaded: [compose-multi]   ANSWER: {:?}", ans.trim());
+            eprintln!("dovata: [compose-multi] selected={sel:?} both_facts={both}");
+            eprintln!("dovata: [compose-multi]   ANSWER: {:?}", ans.trim());
         }
-        Err(e) => eprintln!("jaded: [compose-multi] error: {e}"),
+        Err(e) => eprintln!("dovata: [compose-multi] error: {e}"),
     }
 }
 
@@ -239,11 +239,11 @@ fn selftest_compose_cache(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &Ll
     let (texts, _) = needle_haystack(needle, n);
     let store = match BlockStore::from_texts(model, &texts) {
         Ok(s) => s,
-        Err(e) => { eprintln!("jaded: [compose-cache] build error: {e}"); return; }
+        Err(e) => { eprintln!("dovata: [compose-cache] build error: {e}"); return; }
     };
     let mut cache = KvBlockCache::new(2 * 1024 * 1024 * 1024); // 2 GiB
     let question = "What is the secret access code?";
-    eprintln!("jaded: [compose-cache] {} blocks, 2 GiB KV cache, question: {question:?}", store.blocks.len());
+    eprintln!("dovata: [compose-cache] {} blocks, 2 GiB KV cache, question: {question:?}", store.blocks.len());
 
     // WARMUP: a throwaway compose (its own cache) so the COLD timing below isn't polluted
     // by one-time CUDA graph compilation on the first decode after model load.
@@ -256,7 +256,7 @@ fn selftest_compose_cache(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &Ll
     let t = Instant::now();
     let (cold_ans, cold_sel) = match compose_and_answer(model, ctx, &store, &mut cache, question, 4) {
         Ok(r) => r,
-        Err(e) => { eprintln!("jaded: [compose-cache] cold error: {e}"); return; }
+        Err(e) => { eprintln!("dovata: [compose-cache] cold error: {e}"); return; }
     };
     let cold_ms = t.elapsed().as_millis();
     let (n_entries, bytes) = cache.stats();
@@ -265,23 +265,23 @@ fn selftest_compose_cache(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &Ll
     let t = Instant::now();
     let (warm_ans, _) = match compose_and_answer(model, ctx, &store, &mut cache, question, 4) {
         Ok(r) => r,
-        Err(e) => { eprintln!("jaded: [compose-cache] warm error: {e}"); return; }
+        Err(e) => { eprintln!("dovata: [compose-cache] warm error: {e}"); return; }
     };
     let warm_ms = t.elapsed().as_millis();
 
     let same = cold_ans.trim() == warm_ans.trim();
-    eprintln!("jaded: [compose-cache] selected {cold_sel:?}; cache now {n_entries} blocks / {:.1} MB",
+    eprintln!("dovata: [compose-cache] selected {cold_sel:?}; cache now {n_entries} blocks / {:.1} MB",
         bytes as f64 / (1024.0 * 1024.0));
-    eprintln!("jaded: [compose-cache] COLD (re-prefill) {cold_ms}ms   WARM (restore) {warm_ms}ms   speedup {:.2}x",
+    eprintln!("dovata: [compose-cache] COLD (re-prefill) {cold_ms}ms   WARM (restore) {warm_ms}ms   speedup {:.2}x",
         cold_ms as f64 / warm_ms.max(1) as f64);
-    eprintln!("jaded: [compose-cache] prefill saved by caching: {}ms over {} composed block(s) (decode time is identical & unaffected)",
+    eprintln!("dovata: [compose-cache] prefill saved by caching: {}ms over {} composed block(s) (decode time is identical & unaffected)",
         cold_ms.saturating_sub(warm_ms), cold_sel.len());
-    eprintln!("jaded: [compose-cache] answers identical (cold==warm): {same}");
-    eprintln!("jaded: [compose-cache] needle {needle} found: cold={} warm={}",
+    eprintln!("dovata: [compose-cache] answers identical (cold==warm): {same}");
+    eprintln!("dovata: [compose-cache] needle {needle} found: cold={} warm={}",
         cold_ans.contains(needle), warm_ans.contains(needle));
     if !same {
-        eprintln!("jaded: [compose-cache]   COLD: {:?}", cold_ans.trim());
-        eprintln!("jaded: [compose-cache]   WARM: {:?}", warm_ans.trim());
+        eprintln!("dovata: [compose-cache]   COLD: {:?}", cold_ans.trim());
+        eprintln!("dovata: [compose-cache]   WARM: {:?}", warm_ans.trim());
     }
 }
 
@@ -310,10 +310,10 @@ fn selftest_blended(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCha
     }).collect();
     let store = match BlockStore::from_texts(model, &texts) {
         Ok(s) => s,
-        Err(e) => { eprintln!("jaded: [blended] build error: {e}"); return; }
+        Err(e) => { eprintln!("dovata: [blended] build error: {e}"); return; }
     };
     let question = "What is the secret access code?";
-    eprintln!("jaded: [blended] {} blocks (needle @ {needle_at}, distractors {distractors:?}); N={n_cand} k={k}", store.blocks.len());
+    eprintln!("dovata: [blended] {} blocks (needle @ {needle_at}, distractors {distractors:?}); N={n_cand} k={k}", store.blocks.len());
 
     // PLAIN: retrieve top-k → compose.
     let mut cache = KvBlockCache::new(2 * 1024 * 1024 * 1024);
@@ -321,9 +321,9 @@ fn selftest_blended(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCha
     match compose_and_answer(model, ctx, &store, &mut cache, question, k) {
         Ok((ans, sel)) => {
             let ms = t.elapsed().as_millis();
-            eprintln!("jaded: [blended] PLAIN   sel={sel:?} needle={} ({ms}ms)", ans.contains(needle));
+            eprintln!("dovata: [blended] PLAIN   sel={sel:?} needle={} ({ms}ms)", ans.contains(needle));
         }
-        Err(e) => { eprintln!("jaded: [blended] plain error: {e}"); return; }
+        Err(e) => { eprintln!("dovata: [blended] plain error: {e}"); return; }
     }
 
     // BLENDED: retrieve N → rerank → compose top-k.
@@ -332,15 +332,15 @@ fn selftest_blended(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCha
     match blended_compose_and_answer(model, ctx, &store, &mut cache_b, question, n_cand, k) {
         Ok((ans, sel, scored)) => {
             let ms = t.elapsed().as_millis();
-            eprintln!("jaded: [blended] BLENDED sel={sel:?} needle={} ({ms}ms)", ans.contains(needle));
-            eprintln!("jaded: [blended] rerank scores (top 8, higher=more relevant):");
+            eprintln!("dovata: [blended] BLENDED sel={sel:?} needle={} ({ms}ms)", ans.contains(needle));
+            eprintln!("dovata: [blended] rerank scores (top 8, higher=more relevant):");
             for (bi, s) in scored.iter().take(8) {
                 let tag = if *bi == needle_at { " <- NEEDLE" }
                     else if distractors.contains(bi) { " <- distractor" } else { "" };
-                eprintln!("jaded: [blended]   block {bi:>3}  score {s:>9.4}{tag}");
+                eprintln!("dovata: [blended]   block {bi:>3}  score {s:>9.4}{tag}");
             }
         }
-        Err(e) => { eprintln!("jaded: [blended] blended error: {e}"); }
+        Err(e) => { eprintln!("dovata: [blended] blended error: {e}"); }
     }
 }
 
@@ -364,9 +364,9 @@ fn selftest_kv_bench(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
         let sizes = [64usize, 128, 256, 512, 1024, 2048];
         let iters = 5usize;
 
-        eprintln!("jaded: [kv-bench] re-prefill (GPU compute) vs CPU-RAM KV restore (PCIe), mean of {iters}");
+        eprintln!("dovata: [kv-bench] re-prefill (GPU compute) vs CPU-RAM KV restore (PCIe), mean of {iters}");
         eprintln!(
-            "jaded: [kv-bench] {:>6} {:>11} {:>11} {:>9} {:>8} {:>9} {:>11}",
+            "dovata: [kv-bench] {:>6} {:>11} {:>11} {:>9} {:>8} {:>9} {:>11}",
             "tokens", "prefill_ms", "restore_ms", "save_ms", "KB/tok", "save_MB", "restore_GB/s"
         );
 
@@ -414,15 +414,15 @@ fn selftest_kv_bench(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
             let kb_tok = bytes.len() as f64 / 1024.0 / n as f64;
             let restore_gbs = (bytes.len() as f64 / 1e9) / (restore_ms / 1000.0);
             eprintln!(
-                "jaded: [kv-bench] {n:>6} {prefill_ms:>11.3} {restore_ms:>11.3} {save_ms:>9.3} {kb_tok:>8.2} {save_mb:>9.3} {restore_gbs:>11.2}"
+                "dovata: [kv-bench] {n:>6} {prefill_ms:>11.3} {restore_ms:>11.3} {save_ms:>9.3} {kb_tok:>8.2} {save_mb:>9.3} {restore_gbs:>11.2}"
             );
         }
         ctx.clear_kv_cache();
-        eprintln!("jaded: [kv-bench] restore wins where prefill_ms > restore_ms; that's the cache-KV-in-RAM crossover.");
+        eprintln!("dovata: [kv-bench] restore wins where prefill_ms > restore_ms; that's the cache-KV-in-RAM crossover.");
         Ok(())
     };
     if let Err(e) = run() {
-        eprintln!("jaded: [kv-bench] error: {e}");
+        eprintln!("dovata: [kv-bench] error: {e}");
     }
 }
 
@@ -444,8 +444,8 @@ fn selftest_gen_bench(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaC
         prefill(ctx, &all[..64.min(all.len())], 0, 0, true)?;
         let _ = gen_loop(model, ctx, 0, 64, 8)?;
 
-        eprintln!("jaded: [gen-bench] pure decode throughput, generating {gen_n} tokens per resident size");
-        eprintln!("jaded: [gen-bench] {:>10} {:>10} {:>12}", "resident", "decode_ms", "decode_tok/s");
+        eprintln!("dovata: [gen-bench] pure decode throughput, generating {gen_n} tokens per resident size");
+        eprintln!("dovata: [gen-bench] {:>10} {:>10} {:>12}", "resident", "decode_ms", "decode_tok/s");
 
         for &csz in &sizes {
             if all.len() < csz {
@@ -469,13 +469,13 @@ fn selftest_gen_bench(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaC
             }
             let ms = t.elapsed().as_secs_f64() * 1000.0;
             let tok_s = gen_n as f64 / (ms / 1000.0);
-            eprintln!("jaded: [gen-bench] {csz:>10} {ms:>10.1} {tok_s:>12.1}");
+            eprintln!("dovata: [gen-bench] {csz:>10} {ms:>10.1} {tok_s:>12.1}");
         }
         ctx.clear_kv_cache();
         Ok(())
     };
     if let Err(e) = run() {
-        eprintln!("jaded: [gen-bench] error: {e}");
+        eprintln!("dovata: [gen-bench] error: {e}");
     }
 }
 
@@ -509,8 +509,8 @@ fn selftest_rlm_overwindow(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &L
         let qtoks = model.str_to_token("\nQuestion: What is the secret access code?\nAnswer: ", AddBos::Never)
             .map_err(|e| format!("tok q: {e}"))?;
 
-        eprintln!("jaded: [overwindow] ctx window = {n_ctx} tokens; composing k={k} blocks (~{btok} tok each), generating {gen_n}");
-        eprintln!("jaded: [overwindow] {:>12} {:>9} {:>9} {:>9} {:>10} {:>12}",
+        eprintln!("dovata: [overwindow] ctx window = {n_ctx} tokens; composing k={k} blocks (~{btok} tok each), generating {gen_n}");
+        eprintln!("dovata: [overwindow] {:>12} {:>9} {:>9} {:>9} {:>10} {:>12}",
             "corpus_tok", "blocks", "x_window", "resident", "decode_ms", "decode_tok/s");
 
         for mult in [2usize, 4, 8] {
@@ -548,14 +548,14 @@ fn selftest_rlm_overwindow(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &L
             }
             let ms = t.elapsed().as_secs_f64() * 1000.0;
             let tok_s = gen_n as f64 / (ms / 1000.0);
-            eprintln!("jaded: [overwindow] {total:>12} {n_blocks:>9} {mult:>8}x {resident:>9} {ms:>10.1} {tok_s:>12.1}");
+            eprintln!("dovata: [overwindow] {total:>12} {n_blocks:>9} {mult:>8}x {resident:>9} {ms:>10.1} {tok_s:>12.1}");
         }
         ctx.clear_kv_cache();
-        eprintln!("jaded: [overwindow] resident window stays bounded → decode tok/s flat vs corpus size (standard model: cannot run past {n_ctx}).");
+        eprintln!("dovata: [overwindow] resident window stays bounded → decode tok/s flat vs corpus size (standard model: cannot run past {n_ctx}).");
         Ok(())
     };
     if let Err(e) = run() {
-        eprintln!("jaded: [overwindow] error: {e}");
+        eprintln!("dovata: [overwindow] error: {e}");
     }
 }
 
@@ -710,9 +710,9 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
         let _ = prefill(ctx, &w, 0, 0, true).and_then(|_| gen_loop(model, ctx, 0, w.len() as i32, 8));
     }
 
-    eprintln!("jaded: [frontier] RULER-style sweep; window={n_ctx} tok, block≈{block_tok} tok, reps={reps}, k={k}, N={n_cand}, τ={tau}");
-    eprintln!("jaded: [frontier] accuracy per arm (native = full-context ceiling; n/a = doesn't fit window)");
-    eprintln!("jaded: [frontier] {:>13} {:>6} {:>11} {:>7} {:>8} {:>8} {:>8}",
+    eprintln!("dovata: [frontier] RULER-style sweep; window={n_ctx} tok, block≈{block_tok} tok, reps={reps}, k={k}, N={n_cand}, τ={tau}");
+    eprintln!("dovata: [frontier] accuracy per arm (native = full-context ceiling; n/a = doesn't fit window)");
+    eprintln!("dovata: [frontier] {:>13} {:>6} {:>11} {:>7} {:>8} {:>8} {:>8}",
         "task", "xwin", "corpus_tok", "blocks", "native", "plain", "blended");
 
     // (task, corpus_tok, blended_accuracy) records for the frontier computation.
@@ -738,7 +738,7 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
                 }
                 let store = match BlockStore::from_texts(model, &corpus) {
                     Ok(s) => s,
-                    Err(e) => { eprintln!("jaded: [frontier] build error: {e}"); continue; }
+                    Err(e) => { eprintln!("dovata: [frontier] build error: {e}"); continue; }
                 };
                 let mut c0 = KvBlockCache::new(0);
                 if let Ok((ans, _)) = compose_and_answer(model, ctx, &store, &mut c0, &question, k) {
@@ -752,7 +752,7 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
             let r = reps as f64;
             let blended_acc = blend_hits as f64 / r;
             let native_str = if native_ran { format!("{:.2}", nat_hits as f64 / r) } else { "   n/a".into() };
-            eprintln!("jaded: [frontier] {task:>13} {mult:>5}x {corpus_tok:>11} {n_blocks:>7} {native_str:>8} {:>8.2} {:>8.2}",
+            eprintln!("dovata: [frontier] {task:>13} {mult:>5}x {corpus_tok:>11} {n_blocks:>7} {native_str:>8} {:>8.2} {:>8.2}",
                 plain_hits as f64 / r, blended_acc);
             records.push((task, corpus_tok, blended_acc));
         }
@@ -764,7 +764,7 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
     // EXCLUDED from the length-frontier min (otherwise one unsupported task type would
     // drive the limit to zero). rlm_max_context = the min largest-passing-length over
     // the tasks the engine actually performs.
-    eprintln!("jaded: [frontier] ── effective RLM length per task (largest corpus with blended ≥ {tau}) ──");
+    eprintln!("dovata: [frontier] ── effective RLM length per task (largest corpus with blended ≥ {tau}) ──");
     let smallest_corpus = records.iter().map(|(_, tok, _)| *tok).min().unwrap_or(0);
     let mut overall = usize::MAX;
     for &task in &tasks {
@@ -774,14 +774,14 @@ fn selftest_frontier(model: &LlamaModel, ctx: &mut LlamaContext, _tmpl: &LlamaCh
         let best = rows.clone().filter(|(_, _, acc)| *acc >= tau).map(|(_, tok, _)| *tok).max();
         match (passes_small, best) {
             (true, Some(tok)) => {
-                eprintln!("jaded: [frontier]   {task:>13}: {tok} tok");
+                eprintln!("dovata: [frontier]   {task:>13}: {tok} tok");
                 overall = overall.min(tok);
             }
-            _ => eprintln!("jaded: [frontier]   {task:>13}: CAPABILITY GAP (fails sub-window; excluded from frontier)"),
+            _ => eprintln!("dovata: [frontier]   {task:>13}: CAPABILITY GAP (fails sub-window; excluded from frontier)"),
         }
     }
     if overall == usize::MAX { overall = 0; } // every task was a capability gap
-    eprintln!("jaded: [frontier] SUGGESTED rlm_max_context = {overall} tok (min length-frontier over supported tasks; set in the model profile)");
+    eprintln!("dovata: [frontier] SUGGESTED rlm_max_context = {overall} tok (min length-frontier over supported tasks; set in the model profile)");
 }
 
 // ── Continuous-batching engine self-test (`JADE_RLM_SELFTEST`) ──────────────────
@@ -841,7 +841,7 @@ fn selftest_rlm(model: &LlamaModel, ctx: &mut LlamaContext, tmpl: &LlamaChatTemp
             .collect()
     };
 
-    eprintln!("jaded: [selftest] {} sub-inferences, max_new={max_new}", prompts.len());
+    eprintln!("dovata: [selftest] {} sub-inferences, max_new={max_new}", prompts.len());
 
     // Sequential baseline: one sub per run_concurrent call, summed wall-clock.
     let seq_start = Instant::now();
@@ -851,11 +851,11 @@ fn selftest_rlm(model: &LlamaModel, ctx: &mut LlamaContext, tmpl: &LlamaChatTemp
             for sub in subs {
                 match run_concurrent(model, ctx, vec![sub]) {
                     Ok(mut o) => seq_outputs.push(o.pop().unwrap_or_default()),
-                    Err(e) => { eprintln!("jaded: [selftest] sequential error: {e}"); return; }
+                    Err(e) => { eprintln!("dovata: [selftest] sequential error: {e}"); return; }
                 }
             }
         }
-        Err(e) => { eprintln!("jaded: [selftest] build error: {e}"); return; }
+        Err(e) => { eprintln!("dovata: [selftest] build error: {e}"); return; }
     }
     let seq_ms = seq_start.elapsed().as_millis();
 
@@ -864,27 +864,27 @@ fn selftest_rlm(model: &LlamaModel, ctx: &mut LlamaContext, tmpl: &LlamaChatTemp
     let con_outputs = match build_subs() {
         Ok(subs) => match run_concurrent(model, ctx, subs) {
             Ok(o) => o,
-            Err(e) => { eprintln!("jaded: [selftest] concurrent error: {e}"); return; }
+            Err(e) => { eprintln!("dovata: [selftest] concurrent error: {e}"); return; }
         },
-        Err(e) => { eprintln!("jaded: [selftest] build error: {e}"); return; }
+        Err(e) => { eprintln!("dovata: [selftest] build error: {e}"); return; }
     };
     let con_ms = con_start.elapsed().as_millis();
 
-    eprintln!("jaded: [selftest] ── outputs (concurrent) ──");
+    eprintln!("dovata: [selftest] ── outputs (concurrent) ──");
     for (i, (p, o)) in prompts.iter().zip(con_outputs.iter()).enumerate() {
         eprintln!("  [{i}] {p}\n       -> {:?}", o.trim());
     }
-    eprintln!("jaded: [selftest] sequential={seq_ms}ms  concurrent={con_ms}ms  speedup={:.2}x",
+    eprintln!("dovata: [selftest] sequential={seq_ms}ms  concurrent={con_ms}ms  speedup={:.2}x",
         seq_ms as f64 / con_ms.max(1) as f64);
     // Sanity: concurrent outputs should match sequential (same greedy-ish sampling
     // path, modulo the shared free sampler's RNG — compare trimmed first words).
     let matches = seq_outputs.iter().zip(con_outputs.iter())
         .filter(|(a, b)| a.trim() == b.trim()).count();
-    eprintln!("jaded: [selftest] concurrent==sequential on {matches}/{} outputs", prompts.len());
+    eprintln!("dovata: [selftest] concurrent==sequential on {matches}/{} outputs", prompts.len());
 
     // Concurrency sweep: latency + throughput vs N concurrent sub-inferences (the A10G
     // knee). Latency staying ~flat as N grows = continuous batching working.
-    eprintln!("jaded: [selftest] ── concurrency sweep (N concurrent, max_new={max_new}) ──");
+    eprintln!("dovata: [selftest] ── concurrency sweep (N concurrent, max_new={max_new}) ──");
     for &nn in &[1usize, 2, 4, 8, 16] {
         let mut subs = Vec::with_capacity(nn);
         let mut ok = true;

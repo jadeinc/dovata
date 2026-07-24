@@ -3,7 +3,7 @@
 > Status: **the official over-context inference path**, validated end-to-end on EC2
 > (A10G), on branch `feat/rlm-phase0-fork-vendor`. A standard request over the context
 > window is auto-routed through this engine (see §1b); native full-context serves
-> everything that fits. Selftests/benches are env-gated in `jaded/src/inference/bench.rs`.
+> everything that fits. Selftests/benches are env-gated in `dovata/src/inference/bench.rs`.
 
 All numbers below were measured on the EC2 `g5.xlarge` (NVIDIA A10G, 23 GB), serving the
 deployed 30B-MoE Q4 model (~18.5 GB GGUF), `JADE_CTX_SIZE=32768`, `q4_0` K/V cache,
@@ -46,7 +46,7 @@ Three building blocks:
      uses (the canonical `0..len` KV, saved *before* the compose offset-shift), so the two
      phases share work.
 
-### Module map (`jaded/src/inference/`)
+### Module map (`dovata/src/inference/`)
 - `compose.rs` — the KV-composition engine only: KV save/restore + prefill/decode
   primitives, `BlockStore` + IDF retrieve, `KvBlockCache`, `compose_and_answer`, and the
   blended rerank pipeline (`score_block_query`/`rerank`/`blended_compose_and_answer`).
@@ -233,11 +233,11 @@ Run on the box; all need `JADE_MODEL_PATH` set and (for compose paths) `JADE_KV_
 
 ```bash
 # build (Linux/EC2 only)
-cargo build --release -p jaded --features cuda
+cargo build --release -p dovata --features cuda
 
 # run a selftest (it runs, prints to stderr, and exits)
 LD_LIBRARY_PATH=/usr/local/cuda/lib64 JADE_MODEL_PATH=/jade/inference/model.gguf \
-JADE_KV_UNIFIED=1 <FLAG>=1 ./target/release/jaded
+JADE_KV_UNIFIED=1 <FLAG>=1 ./target/release/dovata
 ```
 
 | Flag | What it measures |
@@ -277,7 +277,7 @@ Runtime knobs: `JADE_KV_CACHE_MB` (per-handle cache cap, default 2048),
 The first cleanup pass is **done** (2026-06-21):
 
 1. ~~**Split benches/selftests out of `compose.rs`.**~~ ✅ All env-gated selftests/benches
-   (the 9 `selftest_*` routines + `build_sub`) moved to `jaded/src/inference/bench.rs`; the
+   (the 9 `selftest_*` routines + `build_sub`) moved to `dovata/src/inference/bench.rs`; the
    ~10 env-var checks in `inference.rs::run` collapsed to one `bench::dispatch()` call.
    `compose.rs` is now just the engine + its pure unit tests.
 2. ~~**Prune dead/experimental knobs.**~~ ✅ The dead `recompute_frac` (CacheBlend-lite)

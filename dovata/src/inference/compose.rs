@@ -277,7 +277,7 @@ pub(crate) fn compose_and_answer(
     // ── PICK: retrieve top-k (non-agentic) ──────────────────────────────────────
     let q_ids = tokenize_query(model, question)?;
     let selected = store.retrieve(&q_ids, k);
-    eprintln!("jaded: [compose] retrieved blocks {selected:?} of {}", store.blocks.len());
+    eprintln!("dovata: [compose] retrieved blocks {selected:?} of {}", store.blocks.len());
     // ── COMBINE: compose + single decode ────────────────────────────────────────
     let ans = compose_selected(model, ctx, store, cache, &selected, question)?;
     Ok((ans, selected))
@@ -419,7 +419,7 @@ pub(crate) fn blended_compose_and_answer(
     let candidates = store.retrieve(&q_ids, n_candidates.max(k)); // PICK (recall)
     let scored = rerank(ctx, cache, store, &candidates, &q_ids)?; // FAN-OUT (rerank)
     let selected: Vec<usize> = scored.iter().take(k).map(|(i, _)| *i).collect();
-    eprintln!("jaded: [blended] PICK {} candidates -> RERANK -> COMBINE top-{k} {selected:?}", candidates.len());
+    eprintln!("dovata: [blended] PICK {} candidates -> RERANK -> COMBINE top-{k} {selected:?}", candidates.len());
     let ans = compose_selected(model, ctx, store, cache, &selected, question)?; // COMBINE
     Ok((ans, selected, scored))
 }

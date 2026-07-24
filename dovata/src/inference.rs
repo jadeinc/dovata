@@ -8,7 +8,7 @@
 //!                     prefix reuse, and shared-prefix prefill+copy.
 //! * [`standard`]    — single-shot inference (one sequence, constrained decode).
 //! * [`concurrency`] — the continuous-batching engine (N sequences, one decode
-//!                     per tick) over the pure [`jaded::sched::Scheduler`].
+//!                     per tick) over the pure [`dovata::sched::Scheduler`].
 //! * [`compose`]     — Recursive Language Model engine: tensor-level KV-cache
 //!                     composition (retrieve → splice block KV → one decode).
 //! * [`rlm`]         — RLM socket dispatch: context-handle upload + query routing
@@ -17,7 +17,7 @@
 //!                     path); [`bench::dispatch`] runs one and exits if requested.
 //!
 //! The platform-independent logic (anchors/stop/grammar, config, response cache,
-//! scheduler) lives in the `jaded` library and is unit-tested on any platform;
+//! scheduler) lives in the `dovata` library and is unit-tested on any platform;
 //! everything here is llama.cpp-bound and Linux-only.
 
 mod kv;
@@ -29,9 +29,9 @@ mod bench;
 
 use io_uring::{opcode, types, IoUring};
 use ovata_infer_protocol::{Frame, InferenceRequest};
-use jaded::cache::PromptCache;
+use dovata::cache::PromptCache;
 use jade_model_profile::ChatTemplate;
-use jaded::config::{Config, KvType};
+use dovata::config::{Config, KvType};
 use llama_cpp_2::{
     context::{params::LlamaContextParams, LlamaContext},
     llama_backend::LlamaBackend,
@@ -169,30 +169,30 @@ impl IoUringWriter {
 
 pub fn run(sock_path: String) {
     let _ = START.set(Instant::now());
-    eprintln!("JADE OS — jaded v{}", env!("CARGO_PKG_VERSION"));
+    eprintln!("JADE OS — dovata v{}", env!("CARGO_PKG_VERSION"));
 
     let cfg = Config::from_env();
     if let Err(e) = cfg.validate() {
-        eprintln!("jaded: ERROR — {e}");
+        eprintln!("dovata: ERROR — {e}");
         std::process::exit(1);
     }
     // Warn when a KV-cache type fell back to q8_0 because it was unrecognized.
     for (label, var) in [("K", "JADE_KV_TYPE_K"), ("V", "JADE_KV_TYPE_V")] {
         if let Ok(s) = std::env::var(var) {
             if !KvType::is_known(&s) {
-                eprintln!("jaded: unknown KV cache type '{s}' for {label}, falling back to q8_0");
+                eprintln!("dovata: unknown KV cache type '{s}' for {label}, falling back to q8_0");
             }
         }
     }
 
-    eprintln!("jaded: loading model: {}", cfg.model_path);
+    eprintln!("dovata: loading model: {}", cfg.model_path);
     eprintln!(
-        "jaded: ctx_size={} gpu_layers={} n_batch={} n_ubatch={} kv_k={:?} kv_v={:?} flash_attn={}",
+        "dovata: ctx_size={} gpu_layers={} n_batch={} n_ubatch={} kv_k={:?} kv_v={:?} flash_attn={}",
         cfg.ctx_size, cfg.gpu_layers, cfg.n_batch, cfg.n_ubatch, cfg.kv_type_k, cfg.kv_type_v, cfg.flash_attn
     );
 
     let backend = LlamaBackend::init().unwrap_or_else(|e| {
-        eprintln!("jaded: llama backend init failed: {e}");
+        eprintln!("dovata: llama backend init failed: {e}");
         std::process::exit(1);
     });
 
@@ -218,7 +218,7 @@ pub fn run(sock_path: String) {
     // the JADE_CPU_MOE_LAYERS baseline (enforced by Config::validate).
     if cfg.moe.enabled {
         model_params.as_mut().add_cpu_moe_override();
-        eprintln!("jaded: MoE driver — all expert layers -> host RAM (page source)");
+        eprintln!("dovata: MoE driver — all expert layers -> host RAM (page source)");
     }
     let _cpu_moe_pattern: Option<std::ffi::CString> = match cfg.cpu_moe_pattern() {
         Some(pattern) => {
@@ -226,7 +226,7 @@ pub fn run(sock_path: String) {
                 std::ffi::CString::new(pattern).expect("cpu-moe pattern has no interior NUL");
             model_params.as_mut().add_cpu_buft_override(&cpattern);
             eprintln!(
-                "jaded: baseline cpu-moe offload — first {} layers' experts -> CPU",
+                "dovata: baseline cpu-moe offload — first {} layers' experts -> CPU",
                 cfg.cpu_moe_layers
             );
             Some(cpattern)
@@ -235,11 +235,11 @@ pub fn run(sock_path: String) {
     };
     let model = LlamaModel::load_from_file(&backend, &cfg.model_path, &model_params)
         .unwrap_or_else(|e| {
-            eprintln!("jaded: failed to load model from {}: {e}", cfg.model_path);
+            eprintln!("dovata: failed to load model from {}: {e}", cfg.model_path);
             std::process::exit(1);
         });
 
-    eprintln!("jaded: model ready");
+    eprintln!("dovata: model ready");
 
     let model_name = model.meta_val_str("general.name").unwrap_or_else(|_| {
         std::path::Path::new(&cfg.model_path)
@@ -248,7 +248,7 @@ pub fn run(sock_path: String) {
             .unwrap_or("unknown")
             .to_owned()
     });
-    eprintln!("jaded: model name: {model_name}");
+    eprintln!("dovata: model name: {model_name}");
 
     // Activate the index-driven MoE driver (the expert tensors are now host-
     // resident from the override above). moe_driver_init lives in libllama (the
@@ -257,7 +257,7 @@ pub fn run(sock_path: String) {
     // The resident GPU cache is allocated lazily on the first decode.
     if cfg.moe.enabled {
         let order_path = cfg.moe.order_path.as_deref().unwrap_or_default();
-        match jaded::moe::ExpertOrder::load(order_path) {
+        match dovata::moe::ExpertOrder::load(order_path) {
             Ok(order) => {
                 let mc = MoeDriverConfig {
                     enabled: true,
@@ -278,7 +278,7 @@ pub fn run(sock_path: String) {
                 };
                 if rc == 0 {
                     eprintln!(
-                        "jaded: MoE driver ACTIVE — pin={} cache={} ({}/{} resident/layer, {} layers)",
+                        "dovata: MoE driver ACTIVE — pin={} cache={} ({}/{} resident/layer, {} layers)",
                         cfg.moe.pin,
                         cfg.moe.cache,
                         cfg.moe.pin + cfg.moe.cache,
@@ -286,19 +286,19 @@ pub fn run(sock_path: String) {
                         order.n_layers
                     );
                 } else {
-                    eprintln!("jaded: MoE driver init failed (rc={rc}) — running stock path");
+                    eprintln!("dovata: MoE driver init failed (rc={rc}) — running stock path");
                 }
             }
-            Err(e) => eprintln!("jaded: MoE order load failed ({e}) — running stock path"),
+            Err(e) => eprintln!("dovata: MoE order load failed ({e}) — running stock path"),
         }
     }
 
     let chat_template = model.chat_template(None).unwrap_or_else(|e| {
-        eprintln!("jaded: WARNING — could not read chat template from GGUF: {e}");
-        eprintln!("jaded: falling back to ChatML");
+        eprintln!("dovata: WARNING — could not read chat template from GGUF: {e}");
+        eprintln!("dovata: falling back to ChatML");
         LlamaChatTemplate::new("chatml").expect("chatml fallback template")
     });
-    eprintln!("jaded: chat template loaded");
+    eprintln!("dovata: chat template loaded");
 
     let flash_attn_policy = if cfg.flash_attn {
         llama_cpp_sys_2::LLAMA_FLASH_ATTN_TYPE_ENABLED
@@ -327,15 +327,15 @@ pub fn run(sock_path: String) {
     };
     if kv_unified {
         ctx_params = ctx_params.with_kv_unified(true);
-        eprintln!("jaded: kv_unified enabled (default; set JADE_KV_UNIFIED=0 to disable)");
+        eprintln!("dovata: kv_unified enabled (default; set JADE_KV_UNIFIED=0 to disable)");
     } else {
-        eprintln!("jaded: kv_unified DISABLED — the rlm (compose) request path is unavailable");
+        eprintln!("dovata: kv_unified DISABLED — the rlm (compose) request path is unavailable");
     }
     let mut ctx = model.new_context(&backend, ctx_params).unwrap_or_else(|e| {
-        eprintln!("jaded: context init failed: {e}");
+        eprintln!("dovata: context init failed: {e}");
         std::process::exit(1);
     });
-    eprintln!("jaded: context ready (ctx_size={})", cfg.ctx_size);
+    eprintln!("dovata: context ready (ctx_size={})", cfg.ctx_size);
 
     // Developer self-tests / benchmarks: if a JADE_* selftest var is set, run that one
     // routine against the just-loaded model and exit WITHOUT serving (see `bench`). The
@@ -345,13 +345,13 @@ pub fn run(sock_path: String) {
     }
 
     let mut cache = PromptCache::new(cfg.cache_size);
-    eprintln!("jaded: prompt cache size={}", cfg.cache_size);
+    eprintln!("dovata: prompt cache size={}", cfg.cache_size);
 
     std::fs::create_dir_all(std::path::Path::new(&sock_path).parent().unwrap())
         .expect("create socket dir");
     let _ = std::fs::remove_file(&sock_path);
     let listener = UnixListener::bind(&sock_path).unwrap_or_else(|e| {
-        eprintln!("jaded: could not bind {sock_path}: {e}");
+        eprintln!("dovata: could not bind {sock_path}: {e}");
         std::process::exit(1);
     });
 
@@ -364,13 +364,13 @@ pub fn run(sock_path: String) {
     // resolved once: the active model's profile, else env, else a multiple of the
     // window. A request whose corpus exceeds this is rejected (see `answer_over_context`).
     let rlm_max = rlm_max_context(&model_name, cfg.ctx_size);
-    eprintln!("jaded: rlm frontier (max corpus tokens) = {rlm_max}");
+    eprintln!("dovata: rlm frontier (max corpus tokens) = {rlm_max}");
 
     // Prompt formatting is profile-driven (llama.cpp's apply_chat_template was removed
     // in the vendored fork). Resolve the active model's chat template once.
     let chat_tmpl = resolve_chat_template(&model_name);
 
-    eprintln!("jaded: listening on {sock_path}");
+    eprintln!("dovata: listening on {sock_path}");
     listen(&listener, &model, &mut ctx, &mut cache, &chat_tmpl, &mut kv_tokens, &model_name, rlm_max);
 }
 
@@ -410,10 +410,10 @@ fn listen(listener: &UnixListener, model: &LlamaModel, ctx: &mut LlamaContext, c
         match stream {
             Ok(mut stream) => {
                 if let Err(e) = handle_connection(&mut stream, model, ctx, cache, tmpl, kv_tokens, model_name, rlm_max) {
-                    eprintln!("jaded: connection error: {e}");
+                    eprintln!("dovata: connection error: {e}");
                 }
             }
-            Err(e) => eprintln!("jaded: accept error: {e}"),
+            Err(e) => eprintln!("dovata: accept error: {e}"),
         }
     }
 }
@@ -453,14 +453,14 @@ fn handle_connection(
                     // hung up cleanly), so this connection is done.
                     let n = stream.read(&mut tmp)?;
                     if n == 0 {
-                        eprintln!("jaded: connection closed after {request_count} requests");
+                        eprintln!("dovata: connection closed after {request_count} requests");
                         return Ok(());
                     }
                     buf.extend_from_slice(&tmp[..n]);
                 }
                 Err(e) => {
                     // garbage on the wire — we can't resync, so drop the connection.
-                    eprintln!("jaded: malformed request: {e}");
+                    eprintln!("dovata: malformed request: {e}");
                     return Ok(());
                 }
             }
@@ -470,7 +470,7 @@ fn handle_connection(
 
         // TODO(trust): daemon-side enforcement hook — currently the runtime is
         // the sole gatekeeper (refuses tainted strings at sh.exec/http.get/fs.read).
-        // jaded only records the trust level for observability.
+        // dovata only records the trust level for observability.
 
         if req.health_only {
             let health = ovata_infer_protocol::Health {
@@ -527,7 +527,7 @@ fn handle_connection(
         {
             Ok(toks) if toks.len() as u32 + NATIVE_GEN_HEADROOM > ctx.n_ctx() => {
                 eprintln!(
-                    "jaded: over-context ({} prompt tokens, window {}) → blended RLM compose",
+                    "dovata: over-context ({} prompt tokens, window {}) → blended RLM compose",
                     toks.len(), ctx.n_ctx()
                 );
                 answer_over_context(&req, model, ctx, stream, model_name, rlm_max)?;
@@ -541,7 +541,7 @@ fn handle_connection(
         }
 
         eprintln!(
-            "jaded: request — model={} max_tokens={} prompt_len={} trust={}",
+            "dovata: request — model={} max_tokens={} prompt_len={} trust={}",
             req.model, req.max_tokens, req.prompt.len(), req.trust
         );
 
@@ -557,7 +557,7 @@ fn handle_connection(
         // frame and skip the model entirely.
         let cache_key = PromptCache::key(&req);
         if let Some((cached_text, tokens_used)) = cache.get(cache_key) {
-            eprintln!("jaded: cache hit (key={cache_key:016x})");
+            eprintln!("dovata: cache hit (key={cache_key:016x})");
             writer.write(Frame::Token(cached_text.clone()).encode())?;
             writer.flush()?; // flush before Done so the client sees the bytes
             GLOBAL_TOKENS.fetch_add(*tokens_used, Ordering::Relaxed);
@@ -584,7 +584,7 @@ fn handle_connection(
                 // emits/synthesizes it), so the cached replay must keep it too.
                 if !req.keep_anchors {
                     if let Some(stop) = req.stop_anchor.as_deref() {
-                        jaded::prompt::strip_stop_anchor(&mut response_buf, stop);
+                        dovata::prompt::strip_stop_anchor(&mut response_buf, stop);
                     }
                 }
                 GLOBAL_TOKENS.fetch_add(tokens_used, Ordering::Relaxed);
@@ -592,7 +592,7 @@ fn handle_connection(
                 stream.write_all(&Frame::Done { tokens_used }.encode())?;
             }
             Err(msg) => {
-                eprintln!("jaded: inference error: {msg}");
+                eprintln!("dovata: inference error: {msg}");
                 stream.write_all(&Frame::Error(msg).encode())?;
             }
         }
@@ -600,7 +600,7 @@ fn handle_connection(
 }
 
 /// Answer an over-context request with the blended KV-composition engine. The prompt
-/// is split into a retrievable corpus + a question (`jaded::route`), chunked into
+/// is split into a retrievable corpus + a question (`dovata::route`), chunked into
 /// blocks, and — if the corpus is within the model's RLM frontier (`rlm_max`) — answered
 /// by retrieve→rerank→compose→single-decode. A corpus beyond the frontier is rejected
 /// with an `Error` frame (the documented limit) rather than answered with degraded
@@ -614,7 +614,7 @@ fn answer_over_context(
     rlm_max: u32,
 ) -> std::io::Result<()> {
     // Split prompt → (corpus blocks, question) and tokenize the corpus into a store.
-    let input = jaded::route::derive_rlm_input(&req.prompt, jaded::route::DEFAULT_CHUNK_CHARS);
+    let input = dovata::route::derive_rlm_input(&req.prompt, dovata::route::DEFAULT_CHUNK_CHARS);
     let store = match compose::BlockStore::from_texts(model, &input.corpus) {
         Ok(s) => s,
         Err(e) => {
@@ -631,7 +631,7 @@ fn answer_over_context(
             "context corpus ({corpus_tokens} tokens) exceeds this model's RLM limit \
              ({rlm_max} tokens); reduce the context (see the model profile's limits.rlm_max_context)"
         );
-        eprintln!("jaded: [over-context] REJECT — {msg}");
+        eprintln!("dovata: [over-context] REJECT — {msg}");
         stream.write_all(&Frame::Error(msg).encode())?;
         return Ok(());
     }
@@ -645,7 +645,7 @@ fn answer_over_context(
     match compose::blended_compose_and_answer(model, ctx, &store, &mut kv, &input.question, n_cand, k.max(1)) {
         Ok((answer, picked, _scored)) => {
             eprintln!(
-                "jaded: [over-context] {} blocks ({corpus_tokens} tok) → composed {picked:?}",
+                "dovata: [over-context] {} blocks ({corpus_tokens} tok) → composed {picked:?}",
                 store.blocks.len()
             );
             stream.write_all(&Frame::Meta { model: model_name.to_owned() }.encode())?;
@@ -671,5 +671,5 @@ pub(crate) fn build_formatted_prompt(
     prompt_str: &str,
     tmpl: &ChatTemplate,
 ) -> Result<String, String> {
-    Ok(jaded::prompt::format_prompt(prompt_str, tmpl))
+    Ok(dovata::prompt::format_prompt(prompt_str, tmpl))
 }

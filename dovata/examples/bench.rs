@@ -1,4 +1,4 @@
-//! Protocol-level latency / throughput benchmark for the jaded daemon.
+//! Protocol-level latency / throughput benchmark for the dovata daemon.
 //!
 //! Talks directly to the Unix socket using `ovata-infer-protocol` (no Jade runtime in
 //! the path), so the numbers reflect the daemon itself. Measures:
@@ -6,7 +6,7 @@
 //!   * decode tok/s — generated tokens after the first, over the time to `Done`
 //! `Done.tokens_used` (= n_prompt + n_gen) is used to recover the prompt length.
 //!
-//! Run on the box where jaded is listening:
+//! Run on the box where dovata is listening:
 //!   cargo run --release --example bench -- [sock_path] [iters]
 //! Defaults: $HOME/.jade/llm.sock, 5 iters/scenario.
 //!
@@ -157,7 +157,7 @@ fn main() {
     });
     let iters: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
 
-    println!("jaded bench — socket {sock}, {iters} iters/scenario\n");
+    println!("dovata bench — socket {sock}, {iters} iters/scenario\n");
 
     // (label, prompt, max_tokens)
     let scenarios: &[(&str, &str, u32)] = &[

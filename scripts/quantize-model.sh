@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Produce the JADE OS production inference model: download (or take locally-merged)
 # weights, convert to GGUF f16, build a code-calibrated importance matrix, and
-# quantize to Q4_K_M — using the EXACT llama.cpp commit that this repo's jaded
+# quantize to Q4_K_M — using the EXACT llama.cpp commit that this repo's dovata
 # links, so the GGUF can never be rejected for quant-type / GGUF-version skew.
 #
 # Outputs (into --out-dir, default ./dist/model):
@@ -104,7 +104,7 @@ command -v nvcc   >/dev/null || info "WARNING: nvcc not on PATH — CUDA build o
 
 # --- 1. build llama.cpp tools at the pinned commit --------------------------
 # We build llama-imatrix + llama-quantize (and use the bundled convert script)
-# from the SAME commit jaded links. A marker file skips the rebuild on reruns.
+# from the SAME commit dovata links. A marker file skips the rebuild on reruns.
 LLAMA_SRC="$WORKDIR/llama.cpp"
 BUILT_MARKER="$LLAMA_SRC/.jade-built-$LLAMA_CPP_COMMIT"
 LLAMA_REPO="${LLAMA_CPP_REPO:-https://github.com/ggml-org/llama.cpp}"
@@ -236,7 +236,7 @@ ok "quantized ($(du -sh "$QOUT" | cut -f1))"
 
 # --- 6b. GGUF sanity: valid v3 header + expected MoE arch -------------------
 # Cheap structural gate before we ship. The real serve-time compatibility is
-# already guaranteed by quantizing with jaded's exact llama.cpp commit; this
+# already guaranteed by quantizing with dovata's exact llama.cpp commit; this
 # just catches gross corruption / a wrong-arch convert.
 info "verifying GGUF header"
 python - "$QOUT" <<'PY'
@@ -246,7 +246,7 @@ r = GGUFReader(sys.argv[1])
 ver = int(r.fields["GGUF.version"].parts[-1][0]) if "GGUF.version" in r.fields else r.version
 arch_f = r.fields.get("general.architecture")
 arch = bytes(arch_f.parts[arch_f.data[0]]).decode() if arch_f else "?"
-assert ver == 3, f"unexpected GGUF version {ver} (jaded expects v3)"
+assert ver == 3, f"unexpected GGUF version {ver} (dovata expects v3)"
 assert "qwen3" in arch, f"unexpected architecture {arch!r}"
 print(f"    OK: GGUF v{ver}, architecture={arch}, tensors={len(r.tensors)}")
 PY
@@ -293,4 +293,4 @@ if [[ "$DO_UPLOAD" -eq 1 ]]; then
 fi
 
 echo ""
-ok "done. quantized with llama.cpp $LLAMA_CPP_COMMIT (matches jaded's linked llama-cpp-sys-2)."
+ok "done. quantized with llama.cpp $LLAMA_CPP_COMMIT (matches dovata's linked llama-cpp-sys-2)."

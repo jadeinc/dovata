@@ -1,12 +1,12 @@
 //! Continuous-batching concurrent engine: run N sub-inferences against ONE resident
 //! model/context, with every `ctx.decode` packing tokens from every live sequence
 //! into one forward pass (the RLM fan-out latency win). All scheduling bookkeeping
-//! is in the pure [`jaded::sched::Scheduler`]; this is the thin llama-bound driver
+//! is in the pure [`dovata::sched::Scheduler`]; this is the thin llama-bound driver
 //! that translates its plans into batches and feeds sampled tokens back.
 
 use super::kv;
-use jaded::control::DecodeControl;
-use jaded::sched::Scheduler;
+use dovata::control::DecodeControl;
+use dovata::sched::Scheduler;
 use llama_cpp_2::{
     context::LlamaContext,
     llama_batch::LlamaBatch,

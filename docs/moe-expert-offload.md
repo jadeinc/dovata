@@ -124,7 +124,7 @@ source.
 `top32_experts_per_layer.json` has only 32 entries/layer; we need the full ranking. Generate
 `expert_order[48][128]` (descending by `expert_counts`) from `expert_usage.json` and ship it
 as a model-profile sidecar asset, read at load. Config (enable, H, C, order-path) flows from
-`jaded` through the `ffi`/`api` crates into `moe_driver` init — nothing hardcoded.
+`dovata` through the `ffi`/`api` crates into `moe_driver` init — nothing hardcoded.
 
 New env / profile knobs: `JADE_MOE_DRIVER` (on/off), `JADE_MOE_PIN` (H), `JADE_MOE_CACHE`
 (C), `JADE_MOE_ORDER_PATH`.
@@ -137,7 +137,7 @@ coverage, ~2% CPU cold).
   combine; id remap into the two partitions.
 - **driver placement plan** consumed by the `load_tensors` seam: permute + split each
   `ffn_*_exps`, permute router/gate rows to match.
-- **Rust surface**: thread H / order-path / enable through `ffi` + `api` into `jaded`
+- **Rust surface**: thread H / order-path / enable through `ffi` + `api` into `dovata`
   (`Config::from_env` + model profile).
 - **Verify**: logits match full-resident within fp tolerance (box); VRAM + tok/s measured;
   index parsing + id-remap logic unit-tested pure on macOS.

@@ -1,7 +1,7 @@
-//! Anthropic HTTP inference backend — MOVED from the Jade language repo.
+//! OpenAI HTTP inference backend — MOVED from the Jade language repo.
 //!
-//! Provenance: `jadelang/src/llm/anthropic.rs`. It was removed from the language
-//! as part of making the language a pure wire-protocol client; all inference
+//! Provenance: `jadelang/src/llm/openai.rs`. It was removed from the language as
+//! part of making the language a pure wire-protocol client; all inference
 //! backends now live in the daemon behind one socket.
 //!
 //! NOT YET WIRED. This file is staged for integration, not compiled — it is not
@@ -9,10 +9,10 @@
 //!   * replace the language types (`InferenceBackend` / `InferenceResponse` /
 //!     `JadeError` / `Span`) with the daemon's request/response/error types;
 //!     the request is `ovata_infer_protocol::InferenceRequest`.
-//!   * add an async HTTP client dependency (`reqwest`) to `jaded/Cargo.toml`.
+//!   * add an async HTTP client dependency (`reqwest`) to `dovata/Cargo.toml`.
 //!   * register it as a route target in `route.rs` selected by config/provider.
 //!   * move the API key out of the request path and into the daemon's own
-//!     config (`jaded/src/config.rs`), which now owns provider + key + model.
+//!     config (`dovata/src/config.rs`), which now owns provider + key + model.
 
 use std::sync::Arc;
 
@@ -21,16 +21,16 @@ use tokio::sync::Semaphore;
 use super::{InferenceBackend, InferenceRequest, InferenceResponse};
 use crate::frontend::error::{JadeError, Result, Span};
 
-pub struct AnthropicBackend {
+pub struct OpenAiBackend {
     api_key: String,
     default_model: String,
     client: reqwest::Client,
     semaphore: Option<Arc<Semaphore>>,
 }
 
-impl AnthropicBackend {
+impl OpenAiBackend {
     pub fn new(api_key: &str, default_model: &str, max_parallel: Option<usize>) -> Result<Self> {
-        Ok(AnthropicBackend {
+        Ok(OpenAiBackend {
             api_key: api_key.to_string(),
             default_model: default_model.to_string(),
             client: reqwest::Client::builder()
@@ -46,7 +46,7 @@ impl AnthropicBackend {
 }
 
 #[async_trait::async_trait]
-impl InferenceBackend for AnthropicBackend {
+impl InferenceBackend for OpenAiBackend {
     async fn infer(&self, req: InferenceRequest, span: Span) -> Result<InferenceResponse> {
         let _permit = if let Some(sem) = &self.semaphore {
             Some(sem.acquire().await.map_err(|e| JadeError::InferenceError {
@@ -61,14 +61,12 @@ impl InferenceBackend for AnthropicBackend {
 
         let body = serde_json::json!({
             "model": model,
-            "max_tokens": req.max_tokens,
             "messages": [{ "role": "user", "content": req.prompt }],
         });
 
         let response = self.client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
+            .post("https://api.openai.com/v1/chat/completions")
+            .header("Authorization", format!("Bearer {}", self.api_key))
             .header("content-type", "application/json")
             .json(&body)
             .send()
@@ -79,7 +77,7 @@ impl InferenceBackend for AnthropicBackend {
             let status = response.status();
             let body_text = response.text().await.unwrap_or_default();
             return Err(JadeError::InferenceError {
-                message: format!("Anthropic API returned HTTP {}: {}", status, body_text),
+                message: format!("OpenAI API returned HTTP {}: {}", status, body_text),
                 span,
             });
         }
@@ -88,17 +86,16 @@ impl InferenceBackend for AnthropicBackend {
             .await
             .map_err(|e: reqwest::Error| JadeError::InferenceError { message: e.to_string(), span })?;
 
-        let text = json["content"][0]["text"]
+        let text = json["choices"][0]["message"]["content"]
             .as_str()
             .ok_or_else(|| JadeError::InferenceError {
-                message: "unexpected response format from Anthropic API".to_string(),
+                message: "unexpected response format from OpenAI API".to_string(),
                 span,
             })?
             .trim()
             .to_string();
 
-        let tokens_used = (json["usage"]["input_tokens"].as_u64().unwrap_or(0)
-            + json["usage"]["output_tokens"].as_u64().unwrap_or(0)) as i64;
+        let tokens_used = json["usage"]["total_tokens"].as_u64().unwrap_or(0) as i64;
 
         Ok(InferenceResponse { text, tokens_used })
     }

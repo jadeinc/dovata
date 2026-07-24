@@ -1,9 +1,9 @@
-//! jaded — JADE OS inference daemon (binary).
+//! dovata — JADE OS inference daemon (binary).
 //!
 //! Listens on `~/.jade/llm.sock` and serves `InferenceRequest`s from JADE
 //! programs, streaming `Frame` tokens back over the same socket. The pure core
 //! (config, prompt parsing, response cache, decode control) lives in the
-//! `jaded` library and is tested on any platform; this binary adds the
+//! `dovata` library and is tested on any platform; this binary adds the
 //! llama.cpp + io_uring backend behind the `inference` feature.
 //!
 //! ```bash
@@ -43,9 +43,9 @@ fn main() {
     // let `cargo test` exercise the pure library on any platform.
     #[cfg(not(feature = "inference"))]
     {
-        eprintln!("JADE OS — jaded v{}", env!("CARGO_PKG_VERSION"));
-        eprintln!("jaded: built without --features inference — no backend available");
-        eprintln!("jaded: rebuild with --features inference (Linux) for the llama.cpp backend");
+        eprintln!("JADE OS — dovata v{}", env!("CARGO_PKG_VERSION"));
+        eprintln!("dovata: built without --features inference — no backend available");
+        eprintln!("dovata: rebuild with --features inference (Linux) for the llama.cpp backend");
         std::process::exit(1);
     }
 }
