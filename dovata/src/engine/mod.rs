@@ -8,7 +8,7 @@
 //!
 //! * [`kv`]          — KV-cache optimizations (cache-type mapping, prefix reuse).
 //! * [`standard`]    — single-shot inference (one sequence, constrained decode).
-//! * [`concurrency`] — continuous-batching engine over the pure `dovata::sched`.
+//! * [`concurrency`] — continuous-batching engine over the pure `crate::sched`.
 //! * [`compose`]     — RLM engine: tensor-level KV-cache composition.
 //! * [`rlm`]         — RLM request dispatch onto [`compose`].
 //! * [`bench`]       — env-gated developer self-tests (not a request path).
@@ -39,11 +39,11 @@ mod bench;
 use std::num::NonZeroU32;
 use std::sync::Mutex;
 
-use ovata_infer_protocol::{export_provider, Frame, FrameSink, InferenceRequest, Provider};
+use ovata_infer_protocol::{Frame, FrameSink, InferenceRequest, Provider};
 
-use dovata::cache::PromptCache;
-use dovata::config::{Config, KvType};
-use jade_model_profile::ChatTemplate;
+use crate::cache::PromptCache;
+use crate::config::{Config, KvType};
+use crate::profile::ChatTemplate;
 use llama_cpp_2::{
     context::{params::LlamaContextParams, LlamaContext},
     llama_backend::LlamaBackend,
@@ -53,7 +53,7 @@ use llama_cpp_2::{
 
 /// FFI to the index-driven MoE expert-offload driver. `moe_driver_init` is a C
 /// symbol compiled into libllama; it mirrors `moe_driver_config` in `moe_driver.h`
-/// and `MoeOffload` in `dovata::config`.
+/// and `MoeOffload` in `crate::config`.
 #[repr(C)]
 struct MoeDriverConfig {
     enabled: bool,
@@ -182,7 +182,7 @@ impl Provider for Dovata {
         // Activate the index-driven MoE driver (expert tensors are host-resident now).
         if cfg.moe.enabled {
             let order_path = cfg.moe.order_path.as_deref().unwrap_or_default();
-            match dovata::moe::ExpertOrder::load(order_path) {
+            match crate::moe::ExpertOrder::load(order_path) {
                 Ok(order) => {
                     let mc = MoeDriverConfig {
                         enabled: true,
@@ -329,7 +329,7 @@ impl Provider for Dovata {
             Ok(tokens_used) => {
                 if !req.keep_anchors {
                     if let Some(stop) = req.stop_anchor.as_deref() {
-                        dovata::prompt::strip_stop_anchor(&mut response_buf, stop);
+                        crate::prompt::strip_stop_anchor(&mut response_buf, stop);
                     }
                 }
                 cache.insert(cache_key, response_buf, tokens_used);
@@ -352,7 +352,7 @@ fn answer_over_context(
     sink: &mut dyn FrameSink,
     rlm_max: u32,
 ) {
-    let input = dovata::route::derive_rlm_input(&req.prompt, dovata::route::DEFAULT_CHUNK_CHARS);
+    let input = crate::route::derive_rlm_input(&req.prompt, crate::route::DEFAULT_CHUNK_CHARS);
     let store = match compose::BlockStore::from_texts(model, &input.corpus) {
         Ok(s) => s,
         Err(e) => {
@@ -391,15 +391,15 @@ fn answer_over_context(
 
 /// Render a request prompt into the model's chat format. Shared by the standard
 /// path, `count_only`, and the RLM sub-call builder. The real work is the pure,
-/// tested `dovata::prompt::format_prompt`.
+/// tested `crate::prompt::format_prompt`.
 pub(crate) fn build_formatted_prompt(prompt_str: &str, tmpl: &ChatTemplate) -> Result<String, String> {
-    Ok(dovata::prompt::format_prompt(prompt_str, tmpl))
+    Ok(crate::prompt::format_prompt(prompt_str, tmpl))
 }
 
 /// The chat template for the active model: the matching profile's `[chat_template]`
 /// block, else the ChatML default.
 fn resolve_chat_template(model_name: &str) -> ChatTemplate {
-    jade_model_profile::Registry::builtin()
+    crate::profile::Registry::builtin()
         .select(model_name)
         .map(|p| p.chat_template.clone())
         .unwrap_or_default()
@@ -412,7 +412,7 @@ fn rlm_max_context(model_name: &str, ctx_size: u32) -> u32 {
             return n;
         }
     }
-    if let Some(p) = jade_model_profile::Registry::builtin().select(model_name) {
+    if let Some(p) = crate::profile::Registry::builtin().select(model_name) {
         if let Some(m) = p.limits.rlm_max_context() {
             return m;
         }
@@ -420,4 +420,3 @@ fn rlm_max_context(model_name: &str, ctx_size: u32) -> u32 {
     ctx_size.saturating_mul(RLM_FRONTIER_WINDOW_MULT)
 }
 
-export_provider!(Dovata);

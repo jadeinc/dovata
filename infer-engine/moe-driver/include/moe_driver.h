@@ -25,8 +25,8 @@ extern "C" {
 struct ggml_tensor;
 struct ggml_context;
 
-// Configuration passed from jaded (via the ffi/api crates). Mirrors MoeOffload
-// in jaded/src/config.rs.
+// Configuration passed from dovata (via the ffi/api crates). Mirrors MoeOffload
+// in dovata/src/config.rs.
 struct moe_driver_config {
     bool        enabled;       // master switch; false => all seam calls passthrough
     int32_t     pin;           // H: pinned experts per layer
@@ -40,7 +40,7 @@ bool moe_driver_active(void);
 
 // Initialize from config + model facts. `expert_order_flat` is the validated
 // per-layer ranking (row-major [n_layers*n_experts], hottest-first), already
-// parsed by the Rust side (jaded::moe::ExpertOrder) so the C++ stays JSON-free.
+// parsed by the Rust side (dovata::moe::ExpertOrder) so the C++ stays JSON-free.
 // Allocates the per-layer LayerResidency state. Returns 0 on success; non-zero
 // leaves the driver inactive (caller falls back to stock). Never aborts.
 int moe_driver_init(const struct moe_driver_config* cfg,

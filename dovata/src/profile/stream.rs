@@ -13,7 +13,7 @@
 //! socket. Consume it as a normal Rust dependency, or reimplement it from the
 //! descriptors — it is pure and fully unit-tested on any platform.
 
-use crate::ModelProfile;
+use super::ModelProfile;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {

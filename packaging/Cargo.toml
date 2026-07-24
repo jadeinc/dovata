@@ -1,0 +1,20 @@
+[package]
+name = "packaging"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Build + package the ovata provider .so bundles (and the dovata daemon) into dist/"
+
+[[bin]]
+name = "packaging"
+path = "src/main.rs"
+
+[dependencies]
+# Host ABI version to validate each provider against.
+ovata-infer-protocol = { path = "../protocol" }
+# Read the provider .so's exported name/ABI symbols to validate + label it.
+libloading = "0.8"
+serde_json = "1"
+# Checksums for release assets (portable, so `release` runs the same on macOS).
+sha2 = "0.10"

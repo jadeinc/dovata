@@ -19,9 +19,9 @@ use super::compose::{
     prefill, save_seq, BlockStore, KvBlockCache,
 };
 use super::concurrency::{run_concurrent, SubInfer};
-use jade_model_profile::ChatTemplate;
+use crate::profile::ChatTemplate;
 use ovata_infer_protocol::InferenceRequest;
-use dovata::control::DecodeControl;
+use crate::control::DecodeControl;
 use llama_cpp_2::{
     context::LlamaContext,
     llama_batch::LlamaBatch,

@@ -48,7 +48,9 @@ if [[ "$BUILD" -eq 1 ]]; then
     info "Building jadec..."
     cargo build --release -p jade 2>&1 | tail -3
     info "Building dovata..."
-    cargo build --release -p dovata --features inference 2>&1 | tail -3
+    # The local llama.cpp engine is compiled in by default on Linux; `cuda` adds GPU
+    # offload (drop it for a CPU-only build). The old `inference` feature is gone.
+    cargo build --release -p dovata --features cuda 2>&1 | tail -3
     ok "Build done"
 fi
 

@@ -3,7 +3,7 @@
 // The real driver (moe_driver.cpp + graph.cpp + page.cu) is compiled into the
 // ggml-cuda backend and is therefore present ONLY in CUDA builds. MoE offload is
 // a CUDA-only feature, but the seam that calls it (`build_moe_ffn` in
-// llama-graph.cpp) and jaded's `moe_driver_init` reference these symbols
+// llama-graph.cpp) and dovata's `moe_driver_init` reference these symbols
 // unconditionally — so a non-CUDA build (`--features inference` without `cuda`,
 // or any non-CUDA backend) would fail to link with undefined references.
 //
@@ -29,7 +29,7 @@ int moe_driver_init(const struct moe_driver_config* /*cfg*/,
                     int32_t /*n_experts*/,
                     int32_t /*n_expert_used*/,
                     const int32_t* /*expert_order_flat*/) {
-    // Non-zero => caller (jaded) logs "MoE driver init failed" and runs stock.
+    // Non-zero => caller (dovata) logs "MoE driver init failed" and runs stock.
     return 1;
 }
 

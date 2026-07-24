@@ -67,7 +67,7 @@ module; the vendored fork gets only a small, guarded seam so we can **abort clea
 diff).
 
 ```
-llama-cpp/
+infer-engine/
   moe-driver/            # NEW — standalone C++/CUDA static lib, OUTSIDE llama.cpp/ subtree
     CMakeLists.txt       #       own build target
     moe_driver.h         #       pure-ggml + C-ABI surface (no llama internal types)

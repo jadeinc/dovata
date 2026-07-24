@@ -1,15 +1,16 @@
 //! dovata — JADE OS inference daemon (host binary).
 //!
-//! A thin host: it owns the Unix socket at `~/.jade/llm.sock`, frames
-//! `InferenceRequest`s off the wire, answers `health`/`stats`, and routes each
-//! request to a provider loaded from a `.so` package (see [`dovata::providers`] and
-//! the `providers/` crates). All inference — the local llama.cpp backend
-//! (`provider-dovata`) or a remote HTTP backend (`provider-anthropic`,
-//! `provider-openai`) — lives in providers, so this binary links no model backend
-//! and builds on any platform.
+//! The host: it owns the Unix socket at `~/.jade/llm.sock`, frames
+//! `InferenceRequest`s off the wire, answers `health`/`stats`, and routes each request
+//! to a provider. The **local** llama.cpp engine (`dovata::engine`) is compiled in and
+//! served in-process (Linux); **remote** HTTP backends (`anthropic`, `openai`) are
+//! loaded from `.so` packages (see [`dovata::providers`]).
 //!
 //! ```bash
-//! JADE_PROVIDERS=/path/libovata_provider_dovata.so cargo run --release
+//! # Local engine (Linux, on by default) — configure the model via JADE_MODEL_PATH:
+//! JADE_MODEL_PATH=/models/qwen3.gguf cargo run --release --features cuda
+//! # Add remote providers:
+//! JADE_PROVIDERS=/path/libovata_provider_anthropic.so cargo run --release
 //! ```
 
 mod host;

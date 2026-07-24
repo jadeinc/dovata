@@ -1,6 +1,6 @@
 [submodule "llama-cpp/ffi/llama.cpp"]
-	path = llama-cpp/ffi/llama.cpp
+	path = infer-engine/ffi/llama.cpp
 	url = https://github.com/joericks1998/llama.cpp.git
 [submodule "ovata-infer-protocol"]
-	path = ovata-infer-protocol
+	path = protocol
 	url = https://github.com/joericks1998/ovata-infer-protocol.git

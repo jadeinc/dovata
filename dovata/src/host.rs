@@ -1,14 +1,19 @@
 //! The daemon host: owns the Unix socket, frames requests off the wire, answers
-//! daemon-wide `health`/`stats`, and routes each request to a loaded provider —
-//! emitting the provider's name in the `Meta` frame. Inference itself lives in the
-//! provider `.so` packages, loaded via [`dovata::providers`](crate::providers). This
-//! module links no model backend, so it builds on any platform.
+//! daemon-wide `health`/`stats`, and routes each request to a provider — emitting the
+//! provider's name in the `Meta` frame. The **local** llama.cpp engine
+//! ([`dovata::engine`]) is compiled in and served in-process; **remote** providers are
+//! `.so` packages loaded via [`dovata::providers`](crate::providers). The local engine
+//! is `#[cfg(target_os = "linux")]`, so on macOS the host builds without it (remote
+//! providers still load).
 //!
 //! ## Configuration (environment)
 //!
-//! * `JADE_PROVIDERS` — comma-separated provider libraries to load, each
-//!   `path/to/lib.so` or `path/to/lib.so@config.json` (the JSON file is passed to the
-//!   provider's `from_config`; absent → `{}`).
+//! * `JADE_LOCAL_ENGINE` — set to `0`/`off`/`false` to disable the in-process local
+//!   engine (Linux only; on by default). Its model/config come from the `JADE_*` env
+//!   read by `Config::from_env` (e.g. `JADE_MODEL_PATH`).
+//! * `JADE_PROVIDERS` — optional comma-separated remote provider libraries to load,
+//!   each `path/to/lib.so` or `path/to/lib.so@config.json` (the JSON file is passed to
+//!   the provider's `from_config`; absent → `{}`).
 //! * `JADE_DEFAULT_PROVIDER` — name of the provider that serves unrouted requests
 //!   (defaults to `dovata` if loaded, else the first).
 //! * `JADE_MODEL_ROUTES` — optional `prefix=provider,...` rules; a request whose
@@ -24,7 +29,7 @@ use ovata_infer_protocol::{
     Frame, FrameSink, Health, InferenceRequest, RequestDecodeError, PROTOCOL_VERSION,
 };
 
-use dovata::providers::LoadedProvider;
+use dovata::providers::{LoadedPlugin, ProviderHandle};
 
 /// Daemon-wide cumulative generated-token counter (served by `stats_only`).
 static GLOBAL_TOKENS: AtomicU64 = AtomicU64::new(0);
@@ -65,7 +70,7 @@ fn select_provider_index(model: &str, routes: &[(String, usize)], default_idx: u
 
 /// The loaded providers plus routing rules.
 pub struct Router {
-    providers: Vec<LoadedProvider>,
+    providers: Vec<ProviderHandle>,
     routes: Vec<(String, usize)>,
     default_idx: usize,
 }
@@ -73,32 +78,52 @@ pub struct Router {
 impl Router {
     /// Build from the environment (see the module docs).
     pub fn from_env() -> Result<Self, String> {
-        let spec = std::env::var("JADE_PROVIDERS").map_err(|_| {
-            "JADE_PROVIDERS is not set (comma-separated provider .so paths, each \
-             optionally `path.so@config.json`)"
-                .to_string()
-        })?;
-
         let mut providers = Vec::new();
         let mut names = Vec::new();
-        for entry in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            let (so_path, cfg_path) = match entry.split_once('@') {
-                Some((p, c)) => (p.trim(), Some(c.trim())),
-                None => (entry, None),
-            };
-            let config: Vec<u8> = match cfg_path {
-                Some(c) => std::fs::read(c).map_err(|e| format!("reading provider config {c}: {e}"))?,
-                None => b"{}".to_vec(),
-            };
-            // SAFETY: operator-provided provider library built with export_provider!.
-            let p = unsafe { LoadedProvider::load(Path::new(so_path), &config) }
-                .map_err(|e| format!("loading provider {so_path}: {e}"))?;
-            eprintln!("dovata: loaded provider '{}' from {so_path}", p.name());
-            names.push(p.name().to_string());
-            providers.push(p);
+
+        // The local llama.cpp engine is compiled in and served in-process. On Linux it
+        // loads by default (dovata is a local inference daemon); set JADE_LOCAL_ENGINE=0
+        // for a remote-only daemon. Compiled out entirely on non-Linux targets.
+        #[cfg(target_os = "linux")]
+        {
+            let local_on = std::env::var("JADE_LOCAL_ENGINE")
+                .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false"))
+                .unwrap_or(true);
+            if local_on {
+                use ovata_infer_protocol::Provider;
+                let engine = dovata::engine::Dovata::from_config(b"{}")
+                    .map_err(|e| format!("loading local engine: {e}"))?;
+                let name = <dovata::engine::Dovata as Provider>::NAME;
+                eprintln!("dovata: local engine ready (provider '{name}')");
+                names.push(name.to_string());
+                providers.push(ProviderHandle::Local(engine));
+            }
+        }
+
+        // Remote provider plugins (.so), optional: comma-separated `path.so` entries,
+        // each optionally `path.so@config.json` (the JSON is passed to from_config).
+        if let Ok(spec) = std::env::var("JADE_PROVIDERS") {
+            for entry in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                let (so_path, cfg_path) = match entry.split_once('@') {
+                    Some((p, c)) => (p.trim(), Some(c.trim())),
+                    None => (entry, None),
+                };
+                let config: Vec<u8> = match cfg_path {
+                    Some(c) => std::fs::read(c).map_err(|e| format!("reading provider config {c}: {e}"))?,
+                    None => b"{}".to_vec(),
+                };
+                // SAFETY: operator-provided provider library built with export_provider!.
+                let p = unsafe { LoadedPlugin::load(Path::new(so_path), &config) }
+                    .map_err(|e| format!("loading provider {so_path}: {e}"))?;
+                eprintln!("dovata: loaded provider '{}' from {so_path}", p.name());
+                names.push(p.name().to_string());
+                providers.push(ProviderHandle::Plugin(p));
+            }
         }
         if providers.is_empty() {
-            return Err("JADE_PROVIDERS listed no providers".into());
+            return Err("no providers loaded: enable the local engine (Linux, default on) \
+                        and/or set JADE_PROVIDERS to remote provider .so paths"
+                .into());
         }
 
         let mut routes = Vec::new();
@@ -129,12 +154,12 @@ impl Router {
     }
 
     /// The provider that serves `model`.
-    fn route(&self, model: &str) -> &LoadedProvider {
+    fn route(&self, model: &str) -> &ProviderHandle {
         &self.providers[select_provider_index(model, &self.routes, self.default_idx)]
     }
 
     /// The default provider (for daemon-wide reporting).
-    fn default_provider(&self) -> &LoadedProvider {
+    fn default_provider(&self) -> &ProviderHandle {
         &self.providers[self.default_idx]
     }
 }

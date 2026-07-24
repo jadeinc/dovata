@@ -4,9 +4,9 @@
 
 use super::build_formatted_prompt;
 use super::kv;
-use jade_model_profile::ChatTemplate;
+use crate::profile::ChatTemplate;
 use ovata_infer_protocol::InferenceRequest;
-use dovata::control::DecodeControl;
+use crate::control::DecodeControl;
 use llama_cpp_2::{
     context::LlamaContext,
     llama_batch::LlamaBatch,
@@ -93,7 +93,7 @@ pub(crate) fn infer_streaming(
     };
 
     // All anchor / stop-anchor / depth-tracking decisions live in this pure state
-    // machine (see dovata::control). The engine only asks it which sampler to use
+    // machine (see crate::control). The engine only asks it which sampler to use
     // and what text to emit.
     let mut control = DecodeControl::new(req);
 

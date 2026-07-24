@@ -48,7 +48,7 @@ impl std::error::Error for LoadError {}
 
 /// A loaded, initialized provider plugin. Owns the dynamic library and the
 /// provider handle; frees the handle and unloads the library on drop.
-pub struct LoadedProvider {
+pub struct LoadedPlugin {
     handle: *mut c_void,
     name: String,
     infer: InferFn,
@@ -58,7 +58,7 @@ pub struct LoadedProvider {
     _lib: Library,
 }
 
-impl LoadedProvider {
+impl LoadedPlugin {
     /// Load and initialize the provider at `path` with opaque `config` bytes
     /// (typically JSON from the daemon config).
     ///
@@ -126,7 +126,7 @@ impl LoadedProvider {
             .get(b"ovata_provider_free\0")
             .map_err(|e| LoadError::MissingSymbol(e.to_string()))?;
 
-        Ok(LoadedProvider { handle, name, infer, free, _lib: lib })
+        Ok(LoadedPlugin { handle, name, infer, free, _lib: lib })
     }
 
     /// The provider's name — what the daemon puts in the `Meta` frame.
@@ -162,7 +162,7 @@ impl LoadedProvider {
     }
 }
 
-impl Drop for LoadedProvider {
+impl Drop for LoadedPlugin {
     fn drop(&mut self) {
         if !self.handle.is_null() {
             // SAFETY: handle came from ovata_provider_new and is freed exactly once.
@@ -170,6 +170,44 @@ impl Drop for LoadedProvider {
             self.handle = std::ptr::null_mut();
         }
         // `_lib` unloads after this returns.
+    }
+}
+
+/// A routable provider the host can dispatch a request to: either the **local**
+/// llama.cpp engine served in-process (compiled in on Linux, no FFI hop) or a
+/// **remote** provider `.so` loaded via [`LoadedPlugin`]. The [`Router`](crate::host)
+/// holds a `Vec<ProviderHandle>` and picks one per request.
+pub enum ProviderHandle {
+    /// The in-process local engine. Linux-only (it links the vendored infer-engine).
+    #[cfg(target_os = "linux")]
+    Local(crate::engine::Dovata),
+    /// A dlopened remote-API provider (anthropic/openai).
+    Plugin(LoadedPlugin),
+}
+
+impl ProviderHandle {
+    /// The provider's name — what the daemon puts in the `Meta` frame.
+    pub fn name(&self) -> &str {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Local(_) => <crate::engine::Dovata as ovata_infer_protocol::Provider>::NAME,
+            Self::Plugin(p) => p.name(),
+        }
+    }
+
+    /// Serve one request, forwarding every frame the provider emits to `sink`. The
+    /// in-process engine surfaces its own errors as `Error` frames (so it always
+    /// returns `Ok`); a plugin can also fail at the C-ABI boundary.
+    pub fn infer(&self, req: &InferenceRequest, sink: &mut dyn FrameSink) -> Result<(), String> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Local(engine) => {
+                use ovata_infer_protocol::Provider;
+                engine.infer(req, sink);
+                Ok(())
+            }
+            Self::Plugin(p) => p.infer(req, sink),
+        }
     }
 }
 
@@ -205,7 +243,7 @@ mod tests {
 
         // SAFETY: the echo fixture is built from export_provider! against this
         // same protocol crate, so its ABI matches.
-        let provider = unsafe { LoadedProvider::load(&path, b"{}") }.expect("load echo provider");
+        let provider = unsafe { LoadedPlugin::load(&path, b"{}") }.expect("load echo provider");
         assert_eq!(provider.name(), "echo");
 
         let req = InferenceRequest { prompt: "ping".into(), ..Default::default() };
@@ -219,7 +257,7 @@ mod tests {
     #[test]
     fn loading_a_nonexistent_library_errors() {
         let path = Path::new("/nonexistent/libnope.so");
-        let err = unsafe { LoadedProvider::load(path, b"{}") };
+        let err = unsafe { LoadedPlugin::load(path, b"{}") };
         assert!(matches!(err, Err(LoadError::Open(_))));
     }
 }

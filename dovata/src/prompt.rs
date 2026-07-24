@@ -8,7 +8,7 @@
 /// Separated from inference.rs so it can be compiled and tested on all
 /// platforms (inference.rs is Linux + --features inference only).
 
-use jade_model_profile::ChatTemplate;
+use crate::profile::ChatTemplate;
 use ovata_infer_protocol::envelope::{self, Message};
 
 /// Render a request prompt into the model's chat format using the model profile's

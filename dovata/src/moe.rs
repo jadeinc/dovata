@@ -7,7 +7,7 @@
 //! bug-prone "is this a valid permutation" check is unit-tested on any platform.
 //!
 //! The expensive paging machinery itself lives in the Linux-only `inference`
-//! backend (the `llama-cpp/moe-driver` library); this module is the pure glue.
+//! backend (the `infer-engine/moe-driver` library); this module is the pure glue.
 
 use serde_json::Value;
 
@@ -138,7 +138,7 @@ mod tests {
     fn real_asset_is_valid() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../jade-model-profile/profiles/qwen3-coder-30b.expert-order.json"
+            "/profiles/qwen3-coder-30b.expert-order.json"
         );
         let o = ExpertOrder::load(path).expect("ship asset loads");
         assert_eq!(o.n_layers, 48);

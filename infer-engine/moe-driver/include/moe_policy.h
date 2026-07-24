@@ -4,7 +4,7 @@
 // bookkeeping that decides which experts live in VRAM (pinned or cached) and
 // which are cold (host RAM, computed on CPU this step). It is split out so it
 // compiles and unit-tests on any platform (including macOS) without the GPU
-// backend — mirroring the pure-core philosophy of the jaded library.
+// backend — mirroring the pure-core philosophy of the dovata library.
 //
 // Layout of the resident (VRAM) expert tensor for one layer:
 //
