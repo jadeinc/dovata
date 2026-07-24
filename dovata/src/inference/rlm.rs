@@ -156,7 +156,7 @@ pub(crate) fn handle_rlm(
     match result {
         Ok((answer, picked)) => {
             eprintln!("dovata: [rlm] query answered (compose blocks {picked:?})");
-            stream.write_all(&Frame::Meta { model: model_name.to_owned() }.encode())?;
+            stream.write_all(&Frame::Meta { provider: "dovata".to_owned() }.encode())?;
             stream.write_all(&Frame::Token(answer).encode())?;
             stream.write_all(&Frame::Done { tokens_used: 0 }.encode())?;
         }

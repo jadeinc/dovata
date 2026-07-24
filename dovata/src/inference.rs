@@ -545,9 +545,11 @@ fn handle_connection(
             req.model, req.max_tokens, req.prompt.len(), req.trust
         );
 
-        // first frame of every real response is Meta (the serving model name),
-        // sent before any tokens so the client knows what answered.
-        stream.write_all(&Frame::Meta { model: model_name.to_owned() }.encode())?;
+        // first frame of every real response is Meta (the provider name), sent
+        // before any tokens so the client knows which provider answered. The
+        // local llama backend is the "dovata" provider. TODO(task 4): source this
+        // from the loaded Provider's NAME once the backend is a cdylib.
+        stream.write_all(&Frame::Meta { provider: "dovata".to_owned() }.encode())?;
 
         // token frames go out through the async io_uring writer (overlaps the next
         // token's compute with the kernel draining this token's bytes).
@@ -648,7 +650,7 @@ fn answer_over_context(
                 "dovata: [over-context] {} blocks ({corpus_tokens} tok) → composed {picked:?}",
                 store.blocks.len()
             );
-            stream.write_all(&Frame::Meta { model: model_name.to_owned() }.encode())?;
+            stream.write_all(&Frame::Meta { provider: "dovata".to_owned() }.encode())?;
             stream.write_all(&Frame::Token(answer).encode())?;
             stream.write_all(&Frame::Done { tokens_used: 0 }.encode())?;
         }
