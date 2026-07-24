@@ -10,18 +10,17 @@
 //! blocks ONCE and carries a host-RAM [`KvBlockCache`](super::compose::KvBlockCache),
 //! so after the first query touches a block its KV is RESTORED (cheap host→device
 //! copy) rather than re-prefilled — ~50× cheaper per block on the A10G. This module
-//! owns the socket dispatch ([`handle_rlm`]) and the upload context handles.
+//! owns the RLM request dispatch ([`handle_rlm`]) and the upload context handles,
+//! emitting frames to the host's [`FrameSink`].
 //!
 //! The continuous-batching engine ([`super::concurrency`]) is retained as general
 //! infrastructure for concurrent / mass prompting, independent of RLM; its self-test
 //! lives in [`super::bench`].
 
 use super::compose::{blended_compose_and_answer, BlockStore, KvBlockCache};
-use ovata_infer_protocol::{Frame, InferenceRequest};
+use ovata_infer_protocol::{Frame, FrameSink, InferenceRequest};
 use llama_cpp_2::{context::LlamaContext, model::LlamaModel};
 use std::collections::HashMap;
-use std::io::Write;
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -85,14 +84,13 @@ pub(crate) fn handle_rlm(
     req: &InferenceRequest,
     model: &LlamaModel,
     ctx: &mut LlamaContext,
-    stream: &mut UnixStream,
-    model_name: &str,
-) -> std::io::Result<()> {
+    sink: &mut dyn FrameSink,
+) {
     let payload: serde_json::Value = match serde_json::from_str(&req.prompt) {
         Ok(v) => v,
         Err(e) => {
-            stream.write_all(&Frame::Error(format!("rlm: malformed payload JSON: {e}")).encode())?;
-            return Ok(());
+            sink.emit(Frame::Error(format!("rlm: malformed payload JSON: {e}")));
+            return;
         }
     };
 
@@ -100,24 +98,24 @@ pub(crate) fn handle_rlm(
     if let Some(up) = payload.get("upload") {
         let sections = parse_sections(up);
         if sections.is_empty() {
-            stream.write_all(&Frame::Error("rlm: upload had no [summary,body] sections".into()).encode())?;
-            return Ok(());
+            sink.emit(Frame::Error("rlm: upload had no [summary,body] sections".into()));
+            return;
         }
         let n = sections.len();
         let bodies: Vec<String> = sections.into_iter().map(|(_, b)| b).collect();
         let blocks = match BlockStore::from_texts(model, &bodies) {
             Ok(b) => b,
             Err(e) => {
-                stream.write_all(&Frame::Error(format!("rlm: upload tokenize failed: {e}")).encode())?;
-                return Ok(());
+                sink.emit(Frame::Error(format!("rlm: upload tokenize failed: {e}")));
+                return;
             }
         };
         let cap = kv_cache_cap_bytes();
         let h = store_context(StoredContext { blocks, kv_cache: KvBlockCache::new(cap) });
         eprintln!("dovata: [rlm] uploaded context handle={h} ({n} sections, kv cache cap {} MB)", cap / (1024 * 1024));
-        stream.write_all(&Frame::Json(format!("{{\"handle\":{h}}}")).encode())?;
-        stream.write_all(&Frame::Done { tokens_used: 0 }.encode())?;
-        return Ok(());
+        sink.emit(Frame::Json(format!("{{\"handle\":{h}}}")));
+        sink.emit(Frame::Done { tokens_used: 0 });
+        return;
     }
 
     // QUERY: blended compose-and-answer (PICK→rerank→COMBINE) over a stored handle
@@ -149,22 +147,21 @@ pub(crate) fn handle_rlm(
                 Err(e) => Err(e),
             }
         } else {
-            stream.write_all(&Frame::Error("rlm: query needs a \"handle\" or inline \"sections\"".into()).encode())?;
-            return Ok(());
+            sink.emit(Frame::Error("rlm: query needs a \"handle\" or inline \"sections\"".into()));
+            return;
         };
 
     match result {
         Ok((answer, picked)) => {
             eprintln!("dovata: [rlm] query answered (compose blocks {picked:?})");
-            stream.write_all(&Frame::Meta { provider: "dovata".to_owned() }.encode())?;
-            stream.write_all(&Frame::Token(answer).encode())?;
-            stream.write_all(&Frame::Done { tokens_used: 0 }.encode())?;
+            // Meta is the host's to send; the provider emits only the answer + Done.
+            sink.emit_text(&answer);
+            sink.emit(Frame::Done { tokens_used: 0 });
         }
         Err(e) => {
-            stream.write_all(&Frame::Error(format!("rlm: {e}")).encode())?;
+            sink.emit(Frame::Error(format!("rlm: {e}")));
         }
     }
-    Ok(())
 }
 
 // ── Unit tests ──────────────────────────────────────────────────────────────

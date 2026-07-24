@@ -1,12 +1,15 @@
 //! dovata — JADE OS inference daemon.
 //!
-//! This library holds the **pure, platform-independent core** of the daemon:
-//! configuration, prompt parsing, the response cache, and the constrained-
-//! decoding control state machine. None of it depends on llama.cpp, so it
-//! builds and unit-tests on any platform (notably macOS dev machines).
+//! This library holds the **pure, platform-independent core**: configuration,
+//! prompt parsing, the response cache, the constrained-decoding control state
+//! machine, the scheduler, and the host-side provider [`providers`] loader. None of
+//! it depends on llama.cpp, so it builds and unit-tests on any platform (notably
+//! macOS dev machines).
 //!
-//! The llama.cpp + io_uring backend lives in the binary (`src/inference.rs`)
-//! behind the `inference` feature and only builds on Linux.
+//! The daemon binary (`src/main.rs` + `src/host.rs`) is a thin host: it owns the
+//! socket and routes requests to provider `.so` packages it `dlopen`s. The llama.cpp
+//! backend now lives in its own package (`provider-dovata`), which also consumes
+//! several of these pure modules (config, cache, control, prompt, route, moe, sched).
 
 // Each module below is pure (no llama.cpp) and individually unit-tested:
 pub mod cache; // bounded LRU cache of past responses (skip the model on repeats)

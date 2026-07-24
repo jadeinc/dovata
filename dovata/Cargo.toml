@@ -14,22 +14,11 @@ path = "src/lib.rs"
 name = "dovata"
 path = "src/main.rs"
 
-[features]
-default = []
-# Full inference backend with llama.cpp — required for production boot (Linux only)
-inference = ["dep:llama-cpp-2", "dep:llama-cpp-sys-2", "dep:encoding_rs", "dep:io-uring"]
-# GPU offload on NVIDIA hardware
-cuda = ["inference", "llama-cpp-2/cuda"]
-
 [dependencies]
 ovata-infer-protocol = { path = "../ovata-infer-protocol" }
+# The pure core still uses profile chat templates (dovata::prompt).
 jade-model-profile = { path = "../jade-model-profile" }
 serde_json = { version = "1", features = ["std"] }
-# Host-side provider plugin loading (dlopen the provider .so packages).
+# Host-side provider plugin loading (dlopen the provider .so packages). The llama.cpp
+# backend now lives in provider-dovata, not here — this binary links no model backend.
 libloading = "0.8"
-# Vendored in-tree (llama-cpp/ = llama-cpp-rs @ 0.1.150) with its llama.cpp
-# submodule repointed to our fork joericks1998/llama.cpp @ 9e3b928. See .gitmodules.
-llama-cpp-2 = { path = "../llama-cpp/api", optional = true }
-llama-cpp-sys-2 = { path = "../llama-cpp/ffi", optional = true }
-encoding_rs = { version = "0.8", optional = true }
-io-uring = { version = "0.6", optional = true }
