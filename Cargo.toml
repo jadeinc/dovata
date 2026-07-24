@@ -6,6 +6,8 @@ members = [
     "ovata-infer-protocol",
     "jade-model-profile",
     "dovata",
+    "providers/anthropic",
+    "providers/openai",
 ]
 # Vendored llama-cpp-rs (0.1.150), in-tree at llama-cpp/, is its own workspace —
 # its crates inherit from their own [workspace.dependencies]/[lints]. Exclude it

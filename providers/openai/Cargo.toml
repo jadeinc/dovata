@@ -1,0 +1,19 @@
+[package]
+name = "ovata-provider-openai"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "OpenAI provider for the ovata inference protocol — a loadable .so"
+
+[lib]
+# cdylib: the loadable provider .so the daemon dlopens.
+# rlib:   so the crate's own #[test]s can drive the exported symbols in-process.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ovata-infer-protocol = { path = "../../ovata-infer-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# rustls (not native-tls) to avoid a system OpenSSL build dependency.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
