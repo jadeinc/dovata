@@ -1,0 +1,13 @@
+[package]
+name = "ovata-provider-echo"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Minimal example/test provider — echoes the prompt. Doubles as the loader test fixture."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ovata-infer-protocol = { path = "../../ovata-infer-protocol" }

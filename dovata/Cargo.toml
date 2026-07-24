@@ -25,6 +25,8 @@ cuda = ["inference", "llama-cpp-2/cuda"]
 ovata-infer-protocol = { path = "../ovata-infer-protocol" }
 jade-model-profile = { path = "../jade-model-profile" }
 serde_json = { version = "1", features = ["std"] }
+# Host-side provider plugin loading (dlopen the provider .so packages).
+libloading = "0.8"
 # Vendored in-tree (llama-cpp/ = llama-cpp-rs @ 0.1.150) with its llama.cpp
 # submodule repointed to our fork joericks1998/llama.cpp @ 9e3b928. See .gitmodules.
 llama-cpp-2 = { path = "../llama-cpp/api", optional = true }

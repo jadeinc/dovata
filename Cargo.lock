@@ -158,6 +158,7 @@ dependencies = [
  "encoding_rs",
  "io-uring",
  "jade-model-profile",
+ "libloading",
  "llama-cpp-2",
  "llama-cpp-sys-2",
  "ovata-infer-protocol",
@@ -715,6 +716,13 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "ovata-provider-echo"
+version = "0.1.0"
+dependencies = [
+ "ovata-infer-protocol",
 ]
 
 [[package]]
