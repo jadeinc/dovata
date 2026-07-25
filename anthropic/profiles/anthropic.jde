@@ -1,0 +1,153 @@
+// Anthropic (Claude) — provider model profile, as a Jade package.
+//
+// The ovata wire protocol carries only an opaque prompt string + max_tokens.
+// Everything else the Claude Messages API accepts — system prompt, temperature,
+// sampling, stop sequences, tools, extended thinking — has no protocol field.
+// This profile is where a Jade program sets those "callable variables": it builds
+// a request ENVELOPE (JSON) that rides inside the prompt string, and it parses the
+// model's tool calls back out of the reply.
+//
+//     use "anthropic.jde" as claude
+//
+//     let tools = [ claude.tool("get_time", "Current time in a city",
+//                     { "type": "object", "properties": { "city": { "type": "string" } } }) ]
+//     prompt p = claude.request("What time is it in Tokyo?",
+//                     { "temperature": 0.2, "tools": tools, "tool_choice": claude.choice_auto() })
+//     let reply = ?p
+//     let call  = claude.tool_call(reply)     // { id, name, args } or nil
+//
+// Envelope contract — what the `anthropic` provider must parse from the prompt:
+//
+//     { "_ovata_infer_protocol": "anthropic",
+//       "system":   str?,                       // top-level system prompt
+//       "messages": [ { "role": str, "content": str }, ... ],
+//       "params":   { temperature?, top_p?, top_k?, max_tokens?, stop_sequences?,
+//                     tools?, tool_choice?, thinking?, metadata?, service_tier? } }
+//
+// Any absent key is simply not forwarded, so the API default applies. Under this
+// envelope the provider returns the Messages response as a JSON object
+// ({ "content": [blocks], "stop_reason": str, "usage": {...} }) so the return-path
+// helpers below can recover text + tool calls. (Provider support for parsing this
+// envelope and returning structured content is the companion change to this file.)
+
+use std::json
+
+// ── Identity ────────────────────────────────────────────────────────────────
+// One Messages-API shape covers the whole Claude family; the daemon's Meta frame
+// (provider = "anthropic") selects this profile regardless of the exact model.
+let MODELS = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]
+let PROTOCOL = "anthropic"
+
+// ── Forward path: build the request envelope ────────────────────────────────
+
+// build_params(opts) -> a dict of only the knobs present in `opts`, validated.
+// A knob absent from `opts` is omitted from the envelope (API default applies);
+// an out-of-range value raises rather than being silently sent.
+fn build_params(opts) {
+    let p = {}
+    if opts.has("temperature") {
+        let t = opts["temperature"]
+        if t < 0.0 || t > 1.0 {
+            raise f"anthropic profile: temperature {t} out of range [0.0, 1.0]"
+        }
+        p["temperature"] = t
+    }
+    if opts.has("top_p")          { p["top_p"] = opts["top_p"] }
+    if opts.has("top_k")          { p["top_k"] = opts["top_k"] }
+    if opts.has("max_tokens")     { p["max_tokens"] = opts["max_tokens"] }
+    if opts.has("stop_sequences") { p["stop_sequences"] = opts["stop_sequences"] }
+    if opts.has("tools")          { p["tools"] = opts["tools"] }
+    if opts.has("tool_choice")    { p["tool_choice"] = opts["tool_choice"] }
+    if opts.has("thinking")       { p["thinking"] = opts["thinking"] }
+    if opts.has("metadata")       { p["metadata"] = opts["metadata"] }
+    if opts.has("service_tier")   { p["service_tier"] = opts["service_tier"] }
+    return p
+}
+
+// chat(messages, opts) -> the envelope JSON string for a full turn list.
+// `messages` is [ { "role": str, "content": str }, ... ]. A "system" key in
+// `opts` becomes the top-level system prompt (Claude keeps system out of the
+// message list). Pass `{}` for no options.
+fn chat(messages, opts) {
+    let env = {
+        "_ovata_infer_protocol": PROTOCOL,
+        "messages": messages,
+        "params": build_params(opts),
+    }
+    if opts.has("system") {
+        env["system"] = opts["system"]
+    }
+    return json.stringify(env)
+}
+
+// request(text, opts) -> the envelope JSON string for a single user turn.
+// Sugar over chat() for the common one-shot case. Pass `{}` for no options.
+fn request(text, opts) {
+    return chat([{ "role": "user", "content": text }], opts)
+}
+
+// ── Tool declaration helpers ────────────────────────────────────────────────
+
+// tool(name, description, schema) -> a Claude tool definition. `schema` is a
+// JSON-schema dict describing the tool's input object.
+fn tool(name, description, schema) {
+    return { "name": name, "description": description, "input_schema": schema }
+}
+
+// tool_choice: let the model decide / force some tool / force a named tool.
+fn choice_auto() { return { "type": "auto" } }
+fn choice_any()  { return { "type": "any" } }
+fn choice_tool(name) { return { "type": "tool", "name": name } }
+
+// thinking(budget_tokens) -> extended-thinking config for the params map.
+fn thinking(budget_tokens) {
+    return { "type": "enabled", "budget_tokens": budget_tokens }
+}
+
+// ── Return path: parse the model's reply ────────────────────────────────────
+//
+// `reply` is the provider's structured JSON response under this envelope. A
+// content block is either { "type":"text", "text": str } or
+// { "type":"tool_use", "id": str, "name": str, "input": {...} }.
+
+// text(reply) -> the concatenated text of every text block ("" if none).
+fn text(reply) {
+    let doc = json.parse(reply)
+    let out = ""
+    for block in doc["content"] {
+        if block["type"] == "text" {
+            out = out + block["text"]
+        }
+    }
+    return out
+}
+
+// tool_calls(reply) -> [ { id, name, args }, ... ] in order, empty when none.
+// `args` is the tool input as a dict (re-stringify with json.stringify if needed).
+fn tool_calls(reply) {
+    let doc = json.parse(reply)
+    let out = []
+    for block in doc["content"] {
+        if block["type"] == "tool_use" {
+            out.push({ "id": block["id"], "name": block["name"], "args": block["input"] })
+        }
+    }
+    return out
+}
+
+// tool_call(reply) -> the first tool call, or nil.
+fn tool_call(reply) {
+    let calls = tool_calls(reply)
+    if len(calls) == 0 {
+        return nil
+    }
+    return calls[0]
+}
+
+// stop_reason(reply) -> why generation ended:
+//   "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
+// A "tool_use" stop reason means the model is waiting on a tool result.
+fn stop_reason(reply) {
+    let doc = json.parse(reply)
+    return doc["stop_reason"]
+}
