@@ -1,6 +1,6 @@
 // JADE OS — importance-matrix calibration corpus (code).
 //
-// Used by scripts/quantize-model.sh: `llama-imatrix -f ci/calib-code.txt` builds
+// Used by src/scripts/quantize-model.py: `llama-imatrix -f ci/calib-code.txt` builds
 // per-tensor activation statistics that steer the Q4_K_M quantization toward the
 // weights that matter for THIS workload. Qwen3-Coder is a coder model, so the
 // corpus is code — across the languages JADE programs are written in and call
@@ -14,7 +14,7 @@
 // IMATRIX_CHUNKS in ci/model-version.lock (default 100); it uses
 // min(available_chunks, cap). This file alone is only a few chunks — it is the
 // deployment-SPECIFIC seed (Jade + wire formats), kept small and committed so
-// the high-value signal is identical every build. scripts/quantize-model.sh
+// the high-value signal is identical every build. src/scripts/quantize-model.py
 // then deterministically augments it with real source from the PINNED llama.cpp
 // checkout (diverse C/C++/Python/CUDA, fixed by LLAMA_CPP_COMMIT → reproducible,
 // no repo bloat) to reach a production chunk count. Set JADE_CALIB_AUGMENT=0 to

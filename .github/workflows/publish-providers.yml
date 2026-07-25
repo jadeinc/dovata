@@ -41,9 +41,9 @@ env:
   # name (`use ...`) is the consumer's choice at `jade pkg add`. Includes the remote
   # providers and the dovata local-model profile (tool-call parsing).
   PACKAGES: |
-    anthropic anthropic/anthropic.jde
-    openai openai/openai.jde
-    qwen3-coder-30b dovata/profiles/qwen3-coder-30b.jde
+    anthropic src/anthropic/anthropic.jde
+    openai src/openai/openai.jde
+    qwen3-coder-30b src/dovata/profiles/qwen3-coder-30b.jde
   # Public repo whose GitHub Pages serves jadelang.org, and where the built .so's are
   # staged for the Pages deploy to inject.
   PAGES_REPO: "joericks1998/jade"

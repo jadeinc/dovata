@@ -36,7 +36,7 @@ let more = openai.infer({ "prompt": "Thanks!" })
 
 ```toml
 [lib.openai]
-path  = "path/to/dovata/openai"
+path  = "path/to/dovata/src/openai"
 files = ["openai.jde"]
 ```
 
@@ -44,7 +44,7 @@ files = ["openai.jde"]
 
 `api_key()` resolves in order: `configure({api_key})`, then **`OPENAI_API_KEY`**, then
 the `"api_key"` field of **`~/.jade/providers/openai.json`** (written by
-`scripts/configure-provider.sh openai`, mode 0600). A missing key surfaces as an `Error`
+`src/scripts/configure-provider.py openai`, mode 0600). A missing key surfaces as an `Error`
 frame, not a raise. Set **`OPENAI_BASE_URL`** (or `configure({base_url})`) to point at a
 gateway/proxy or OpenAI-compatible host.
 

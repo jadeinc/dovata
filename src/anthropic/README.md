@@ -36,7 +36,7 @@ let more = anthropic.infer({ "prompt": "Thanks!" })
 
 ```toml
 [lib.anthropic]
-path  = "path/to/dovata/anthropic"
+path  = "path/to/dovata/src/anthropic"
 files = ["anthropic.jde"]
 ```
 
@@ -44,7 +44,7 @@ files = ["anthropic.jde"]
 
 `api_key()` resolves in order: `configure({api_key})`, then **`ANTHROPIC_API_KEY`**,
 then the `"api_key"` field of **`~/.jade/providers/anthropic.json`** (written by
-`scripts/configure-provider.sh anthropic`, mode 0600). A missing key surfaces as an
+`src/scripts/configure-provider.py anthropic`, mode 0600). A missing key surfaces as an
 `Error` frame, not a raise. Set **`ANTHROPIC_BASE_URL`** (or `configure({base_url})`) to
 point at a gateway/proxy.
 
