@@ -6,7 +6,7 @@
 #
 # Usage:
 #   bash scripts/ec2/run-tests.sh           # binaries must already be built
-#   bash scripts/ec2/run-tests.sh --build   # cargo-build jadec + jaded first
+#   bash scripts/ec2/run-tests.sh --build   # cargo-build jadec + dovata first
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,7 +25,7 @@ for arg in "$@"; do
 done
 
 JADE="/usr/bin/jade"
-JADED="$REPO/target/release/jaded"
+JADED="$REPO/target/release/dovata"
 MODEL_PATH="${JADE_MODEL_PATH:-/jade/inference/model.gguf}"
 TESTS_DIR="$REPO/tests/ec2-inference"
 JADED_PID=""
@@ -36,7 +36,7 @@ export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 
 cleanup() {
     if [[ -n "$JADED_PID" ]] && kill -0 "$JADED_PID" 2>/dev/null; then
-        info "Stopping jaded (pid $JADED_PID)..."
+        info "Stopping dovata (pid $JADED_PID)..."
         kill "$JADED_PID"
         wait "$JADED_PID" 2>/dev/null || true
     fi
@@ -47,44 +47,46 @@ trap cleanup EXIT
 if [[ "$BUILD" -eq 1 ]]; then
     info "Building jadec..."
     cargo build --release -p jade 2>&1 | tail -3
-    info "Building jaded..."
-    cargo build --release -p jaded --features inference 2>&1 | tail -3
+    info "Building dovata..."
+    # The local llama.cpp engine is compiled in by default on Linux; `cuda` adds GPU
+    # offload (drop it for a CPU-only build). The old `inference` feature is gone.
+    cargo build --release -p dovata --features cuda 2>&1 | tail -3
     ok "Build done"
 fi
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 [[ -x "$JADE" ]]        || die "jade not found at $JADE — run: bash scripts/ec2/deploy.sh"
-[[ -f "$JADED" ]]   || die "jaded not found: $JADED"
+[[ -f "$JADED" ]]   || die "dovata not found: $JADED"
 [[ -f "$MODEL_PATH" ]]  || die "model not found: $MODEL_PATH (run ec2-first-run.sh first)"
 
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | \
     while IFS= read -r line; do ok "GPU: $line"; done || true
 
-# ── Start jaded ───────────────────────────────────────────────────────────
-# Kill any existing jaded first — a running repl instance holds the socket
-# path; starting a second jaded clobbers it, leaving the original with an
+# ── Start dovata ───────────────────────────────────────────────────────────
+# Kill any existing dovata first — a running repl instance holds the socket
+# path; starting a second dovata clobbers it, leaving the original with an
 # unlinked socket fd (ECONNREFUSED on next connect).
-if pgrep -x jaded > /dev/null 2>&1; then
-    info "Stopping existing jaded before test run..."
-    pkill -x jaded 2>/dev/null || true
+if pgrep -x dovata > /dev/null 2>&1; then
+    info "Stopping existing dovata before test run..."
+    pkill -x dovata 2>/dev/null || true
     sleep 2
 fi
 mkdir -p "$HOME/.jade"
 rm -f "$HOME/.jade/llm.sock"
-info "Starting jaded (model: $MODEL_PATH)..."
-JADE_MODEL_PATH="$MODEL_PATH" "$JADED" > /tmp/jaded.log 2>&1 &
+info "Starting dovata (model: $MODEL_PATH)..."
+JADE_MODEL_PATH="$MODEL_PATH" "$JADED" > /tmp/dovata.log 2>&1 &
 JADED_PID=$!
 
-info "Waiting for jaded to load model..."
+info "Waiting for dovata to load model..."
 for i in $(seq 1 60); do
-    if grep -q "jaded: listening on" /tmp/jaded.log 2>/dev/null; then
-        ok "jaded ready"
+    if grep -q "dovata: listening on" /tmp/dovata.log 2>/dev/null; then
+        ok "dovata ready"
         break
     fi
     if ! kill -0 "$JADED_PID" 2>/dev/null; then
-        echo "jaded log:"
-        cat /tmp/jaded.log
-        die "jaded exited unexpectedly"
+        echo "dovata log:"
+        cat /tmp/dovata.log
+        die "dovata exited unexpectedly"
     fi
     sleep 2
 done

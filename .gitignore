@@ -53,3 +53,6 @@ jade.toml
 .env.ec2
 .ec2-host
 .venv/
+# Jade/native build artifacts (provider .so live in dist/ or the release bundle)
+*.so
+*.dylib

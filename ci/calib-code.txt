@@ -5,7 +5,7 @@
 // weights that matter for THIS workload. Qwen3-Coder is a coder model, so the
 // corpus is code — across the languages JADE programs are written in and call
 // out to, PLUS the JadeLang dialect itself and the exact wire shapes the daemon
-// feeds the model in production (the `_jade_protocol: messages` chat envelope and
+// feeds the model in production (the `_ovata_infer_protocol: messages` chat envelope and
 // the `<tool>`/`<tool_response>` tool-call format). Calibrating on the literal
 // formats the model sees at serve time is the point — generic web text would
 // waste the imatrix budget on tokens this deployment never generates.
@@ -214,7 +214,7 @@ fn main() {
 }
 
 // ===== Daemon wire format: jade messages protocol (production input) ========
-{"_jade_protocol":"messages","system":"You are a coding assistant running inside JADE OS. Prefer small, correct diffs. When you need a tool, emit a single <tool>{...}</tool> JSON object and stop.","messages":[{"role":"user","content":"Read config.rs and tell me which env var sets the KV cache type."},{"role":"assistant","content":"<tool>{\"name\":\"fs.read\",\"args\":{\"path\":\"src/config.rs\"}}</tool>"},{"role":"tool","content":"JADE_KV_TYPE_K / JADE_KV_TYPE_V select the KV cache quantization; a quantized V cache requires flash attention."},{"role":"assistant","content":"`JADE_KV_TYPE_K` and `JADE_KV_TYPE_V` set the K and V cache types. Note a quantized V cache needs flash attention on, or the daemon refuses to start."}]}
+{"_ovata_infer_protocol":"messages","system":"You are a coding assistant running inside JADE OS. Prefer small, correct diffs. When you need a tool, emit a single <tool>{...}</tool> JSON object and stop.","messages":[{"role":"user","content":"Read config.rs and tell me which env var sets the KV cache type."},{"role":"assistant","content":"<tool>{\"name\":\"fs.read\",\"args\":{\"path\":\"src/config.rs\"}}</tool>"},{"role":"tool","content":"JADE_KV_TYPE_K / JADE_KV_TYPE_V select the KV cache quantization; a quantized V cache requires flash attention."},{"role":"assistant","content":"`JADE_KV_TYPE_K` and `JADE_KV_TYPE_V` set the K and V cache types. Note a quantized V cache needs flash attention on, or the daemon refuses to start."}]}
 
 // ===== Tool-call exchange (the <tool_response> shape the template expects) ===
 <|im_start|>assistant

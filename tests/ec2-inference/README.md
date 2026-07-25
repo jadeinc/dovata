@@ -1,8 +1,8 @@
-# jaded inference eval suite
+# dovata inference eval suite
 
-End-to-end evals for the `jaded` inference daemon, written in Jade. Each program
+End-to-end evals for the `dovata` inference daemon, written in Jade. Each program
 exercises one daemon capability through the real runtime: the Jade VM connects to
-`~/.jade/llm.sock` and every `?p` dereference is served by `jaded`.
+`~/.jade/llm.sock` and every `?p` dereference is served by `dovata`.
 
 These are **integration/correctness** evals — they assert the daemon's *mechanics*
 (grammar validity, type coercion, anchor handling, multi-turn context), not the
@@ -25,7 +25,7 @@ FAIL and the program's last output line is shown as the diagnostic.
 | `03_struct.jde`       | JSON object grammar (explicit GBNF) → parseable object           |
 | `04_collections.jde`  | JSON array grammar (explicit GBNF) → non-empty parsed array      |
 | `05_grammar.jde`      | explicit user GBNF via `Grammar.new`, enforced from token 1      |
-| `06_multiturn.jde`    | `_jade_protocol: messages` history threading (basis of KV reuse) |
+| `06_multiturn.jde`    | `_ovata_infer_protocol: messages` history threading (basis of KV reuse) |
 | `07_tool_anchor.jde`  | anchored grammar: deferred enforcement, depth retire, stop-strip |
 | `08_latency.jde`      | coarse end-to-end latency / throughput probe (Phase 0 bench)     |
 
@@ -46,12 +46,12 @@ FAIL and the program's last output line is shown as the diagnostic.
 
 ## Running
 
-On the EC2 GPU instance, with `jaded` built (`--features cuda`) and a model present:
+On the EC2 GPU instance, with `dovata` built (`--features cuda`) and a model present:
 
 ```bash
 bash scripts/ec2/run-tests.sh           # binaries already built
-bash scripts/ec2/run-tests.sh --build   # build jaded + jade runtime first
+bash scripts/ec2/run-tests.sh --build   # build dovata + jade runtime first
 ```
 
-The harness starts `jaded`, waits for `jaded: listening on …`, runs every
+The harness starts `dovata`, waits for `dovata: listening on …`, runs every
 `*.jde` here, and reports pass/fail.

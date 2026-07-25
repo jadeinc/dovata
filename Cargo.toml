@@ -1,16 +1,56 @@
 [workspace]
 members = [
-    "jade-protocol",
-    "jade-model-profile",
-    "jaded",
+    # The wire protocol lives in its own public repo (git submodule at protocol/) so
+    # the Jade language, which is public, can depend on it too — a public repo cannot
+    # take a git dependency on this private one. Both sides build the same definition.
+    "protocol",
+    # The inference daemon: host + the in-process local llama.cpp engine + the folded-in
+    # model-profile module (Linux engine gated; the host builds on any platform).
+    "dovata",
+    # Remote-API providers (anthropic, openai) are pure-Jade libraries that call
+    # their HTTP APIs directly (see anthropic/anthropic.jde, openai/openai.jde) —
+    # not daemon .so plugins, so they are not workspace members. `echo` remains the
+    # reference native provider + the host loader's dlopen fixture.
+    "echo",
+    # The inference engine — the vendored/forked llama.cpp bindings, now first-class
+    # members of the one workspace (single lockfile, editable). Heavy: building these
+    # needs the nested infer-engine/ffi/llama.cpp submodule + cmake, so bare
+    # `cargo build --workspace` is a Linux operation; on macOS use targeted `-p` builds.
+    "infer-engine/api",
+    "infer-engine/ffi",
+    # Build/packaging xtask: assembles the provider .so bundles into dist/.
+    "packaging",
 ]
-# Vendored llama-cpp-rs (0.1.150), in-tree at llama-cpp/, is its own workspace —
-# its crates inherit from their own [workspace.dependencies]/[lints]. Exclude it
-# here so it stays an independent workspace root; jaded uses its crates via path deps.
-exclude = ["llama-cpp"]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 authors = ["JADE OS Contributors"]
 license = "MIT"
+
+# Shared deps for the infer-engine crates (api/ffi opt in via `{ workspace = true }`).
+# Absorbed from the former infer-engine (llama-cpp) sub-workspace when it was merged in.
+[workspace.dependencies]
+# core library deps
+thiserror = "2"
+tracing = "0.1"
+tracing-core = "0.1"
+# examples and benchmarks
+hf-hub = { version = "0.5.0" }
+criterion = "0.5.1"
+pprof = "0.13.0"
+bindgen = "0.72.1"
+cc = "1.2.61"
+anyhow = "1.0.102"
+clap = "4.6.1"
+encoding_rs = "0.8.35"
+tracing-subscriber = { version = "0.3", features = ["json"] }
+
+# Only the infer-engine crates opt into these via `[lints] workspace = true`; the
+# daemon/provider crates don't reference workspace lints, so they're unaffected.
+[workspace.lints.rust]
+missing_docs = { level = "warn" }
+missing_debug_implementations = { level = "warn" }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn" }

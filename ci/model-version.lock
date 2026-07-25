@@ -24,13 +24,13 @@ QUANT=Q4_K_M
 IMATRIX_CHUNKS=100
 
 # --- llama.cpp toolchain (THE compatibility contract) -----------------------
-# The GGUF is served by THIS repo's jaded, which statically links llama.cpp via
+# The GGUF is served by THIS repo's dovata, which statically links llama.cpp via
 # the `llama-cpp-sys-2` crate. To avoid quant-type / GGUF-version skew we
 # quantize with the EXACT llama.cpp commit that crate vendors, so the convert
-# script, imatrix, quantize, and GGUF writer are identical to jaded's.
+# script, imatrix, quantize, and GGUF writer are identical to dovata's.
 #
 # Provenance of this commit (re-derive when bumping the engine):
-#   jaded no longer pulls llama-cpp-sys-2 from crates.io — it vendors
+#   dovata no longer pulls llama-cpp-sys-2 from crates.io — it vendors
 #   utilityai/llama-cpp-rs 0.1.150 in-tree (llama-cpp/: ffi/ = sys crate,
 #   api/ = safe wrapper) with the ffi/llama.cpp submodule repointed to OUR fork
 #   joericks1998/llama.cpp, pinned at commit 9e3b928 (dated 2026-06-07 — the
@@ -44,5 +44,5 @@ LLAMA_CPP_COMMIT=9e3b928fd8c9d14dbf15a8768b9fdd7e5c721d66
 
 # --- GPU offload ------------------------------------------------------------
 # CUDA compute arch the imatrix/quantize tools are built for (A10G=86, A100=80,
-# L4/Ada=89). Matches the release-jaded default. Overridable via CUDAARCHS.
+# L4/Ada=89). Matches the release-dovata default. Overridable via CUDAARCHS.
 CUDAARCHS=86

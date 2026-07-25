@@ -1,17 +1,23 @@
-name: release-jaded
+name: release-dovata
 
-# Builds the jaded inference daemon with the CUDA backend (Linux x86_64) and
-# publishes the binary so the JADE OS bootloader can install a prebuilt daemon
-# at /jade/inference/ instead of compiling it on the target box.
+# Builds the dovata inference daemon with the CUDA backend (Linux x86_64) and the
+# native `echo` reference provider, and publishes the bundle so the JADE OS bootloader
+# can install a prebuilt daemon at /jade/inference/ instead of compiling it on the
+# target. The remote providers (anthropic/openai) are NOT in this OS bundle — they are
+# pure-Jade .so packages published separately to jadelang.org (see publish-providers.yml).
+#
+# The actual build + staging logic lives in the `packaging` xtask
+# (`cargo run -p packaging -- release`), so this workflow only sets up the environment
+# and ships whatever packaging drops into dist/.
 #
 # Triggers:
-#   * push of a tag matching v*  → builds + creates a GitHub Release with the
-#     binary attached (this is the real "release").
-#   * manual run (workflow_dispatch) → builds + uploads the binary as a workflow
+#   * push of a tag matching v*  → builds + creates a GitHub Release with the bundle
+#     attached (this is the real "release").
+#   * manual run (workflow_dispatch) → builds + uploads the bundle as a workflow
 #     artifact only (no Release is created). Use for ad-hoc / test builds.
 #
 # Runtime requirements on the booted OS:
-#   The CUDA runtime (cudart/cublas) is linked STATICALLY into the binary
+#   The CUDA runtime (cudart/cublas) is linked STATICALLY into the daemon
 #   (see llama-cpp-sys-2 build.rs), so the rootfs does NOT need the CUDA toolkit.
 #   It needs only: libcuda.so.1 (shipped by the NVIDIA driver), glibc,
 #   libstdc++.so.6, and libgomp.so.1 (OpenMP). The model is provided separately
@@ -47,10 +53,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # llama.cpp is now a vendored git submodule (llama-cpp/ffi/llama.cpp
-          # → our fork @ pinned commit), not a bundled
-          # crates.io copy. The CUDA build compiles it from source, so it must be
-          # checked out here or the build hits an empty directory.
+          # llama.cpp is a vendored git submodule (infer-engine/ffi/llama.cpp
+          # → our fork @ pinned commit), not a bundled crates.io copy. The CUDA
+          # build compiles it from source, so it must be checked out here or the
+          # build hits an empty directory.
           submodules: recursive
 
       # CUDA toolkit (~3.5GB installed) + the llama.cpp cmake build can exhaust
@@ -68,7 +74,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          # cmake + a C/C++ toolchain for the bundled llama.cpp build; clang +
+          # cmake + a C/C++ toolchain for the vendored llama.cpp build; clang +
           # libclang for llama-cpp-sys-2's bindgen step. gcc-13 is the newest
           # host compiler CUDA 12.6's nvcc accepts.
           sudo apt-get install -y -qq \
@@ -96,7 +102,7 @@ jobs:
       # cached build that never recompiles the changed C++/CUDA sources.
       - name: Resolve llama.cpp submodule SHA (cache key)
         id: llama_sha
-        run: echo "sha=$(git -C llama-cpp/ffi/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: echo "sha=$(git -C infer-engine/ffi/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo + build (incl. compiled llama.cpp)
         uses: Swatinem/rust-cache@v2
@@ -112,56 +118,47 @@ jobs:
       # we never cut a release from a broken library/protocol.
       - name: Test pure crates
         run: |
-          cargo test -p jade-protocol
-          cargo test -p jaded --lib
+          cargo test -p ovata-infer-protocol
+          cargo test -p dovata --lib
 
-      - name: Build jaded (--features cuda)
-        run: cargo build --release -p jaded --features cuda
+      # Build the daemon (--features cuda) + the provider .so packages and stage the
+      # whole bundle into dist/ (daemon asset `dovata-<arch>` + .sha256, provider .so's,
+      # manifest.json). All the real logic lives in the packaging xtask.
+      - name: Build + package (packaging xtask)
+        run: cargo run -p packaging -- release --cuda
 
-      - name: Stage release asset
-        id: stage
+      - name: Inspect bundle
+        id: bundle
         run: |
-          BIN=target/release/jaded
-          test -f "$BIN" || { echo "::error::$BIN not produced"; exit 1; }
-          mkdir -p dist
-          # jade-os's scripts/install-jade.sh fetches this by EXACT asset name
-          # from jade-versions.lock (no globbing) and fails fast on a miss, so the
-          # name must be literally "jaded-x86_64". The CUDA arch ($CUDAARCHS) is
-          # recorded in the release notes / sha file instead of the filename, so
-          # the bootloader's pinned asset name stays stable across arch builds.
-          NAME="jaded-x86_64"
-          cp "$BIN" "dist/$NAME"
-          ( cd dist && sha256sum "$NAME" > "$NAME.sha256" )
+          test -f dist/manifest.json || { echo "::error::packaging produced no manifest"; exit 1; }
+          NAME="$(jq -r '.daemon.asset' dist/manifest.json)"
+          test -n "$NAME" && test "$NAME" != "null" || { echo "::error::no daemon asset in manifest"; exit 1; }
+          echo "Bundle contents:"; ls -l dist
           echo "Linked runtime libs (target must provide these):"
-          ldd "$BIN" || true
-          echo "asset_name=$NAME"            >> "$GITHUB_OUTPUT"
-          echo "asset_path=dist/$NAME"       >> "$GITHUB_OUTPUT"
-          echo "sha_path=dist/$NAME.sha256"  >> "$GITHUB_OUTPUT"
+          ldd "dist/$NAME" || true
+          echo "asset_name=$NAME" >> "$GITHUB_OUTPUT"
 
-      # Manual runs: keep the binary as a downloadable artifact, no Release.
+      # Manual runs: keep the whole bundle as a downloadable artifact, no Release.
       - name: Upload artifact (manual runs)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.stage.outputs.asset_name }}
+          name: ${{ steps.bundle.outputs.asset_name }}-bundle
           path: dist/*
           if-no-files-found: error
 
-      # Tag pushes: create/update the GitHub Release and attach the binary.
+      # Tag pushes: create/update the GitHub Release and attach the whole bundle.
       - name: Publish Release (tag pushes)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ${{ steps.stage.outputs.asset_path }}
-            ${{ steps.stage.outputs.sha_path }}
+          files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
 
-      # Tag pushes: also mirror the binary + checksum to S3 so the bootloader /
-      # other consumers can pull from the bucket instead of GitHub Releases.
-      # Auth is via long-lived access keys (repo secrets); bucket + region are
-      # repo variables so nothing is hardcoded here.
+      # Tag pushes: also mirror the bundle to S3 so the bootloader / other consumers
+      # can pull from the bucket instead of GitHub Releases. Auth is via long-lived
+      # access keys (repo secrets); bucket + region are repo variables.
       - name: Configure AWS credentials (tag pushes)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: aws-actions/configure-aws-credentials@v4
@@ -170,32 +167,25 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
-      - name: Upload binary to S3 (tag pushes)
+      - name: Upload bundle to S3 (tag pushes)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           BUCKET: ${{ vars.AWS_S3_BUCKET }}
-          ASSET_PATH: ${{ steps.stage.outputs.asset_path }}
-          SHA_PATH: ${{ steps.stage.outputs.sha_path }}
-          ASSET_NAME: ${{ steps.stage.outputs.asset_name }}
           TAG: ${{ github.ref_name }}
         run: |
           test -n "$BUCKET" || { echo "::error::AWS_S3_BUCKET variable is not set"; exit 1; }
 
-          # 1) Generic "latest" key — overwritten in place so consumers (the
-          #    bootloader / installer) can always pull the newest daemon from a
-          #    stable path. Safe to overwrite because every release is also
-          #    archived immutably under artifacts/versions/ below.
-          LATEST="s3://${BUCKET}/artifacts"
-          aws s3 cp "$ASSET_PATH" "$LATEST/" --no-progress
-          aws s3 cp "$SHA_PATH"   "$LATEST/" --no-progress
+          # 1) Generic "latest" prefix — overwritten in place so consumers (the
+          #    bootloader / installer) can always pull the newest daemon + providers
+          #    from a stable path. The daemon lands at artifacts/dovata-<arch>. Safe
+          #    to overwrite because every release is also archived immutably under
+          #    artifacts/versions/<tag>/ below.
+          aws s3 cp dist/ "s3://${BUCKET}/artifacts/" --recursive --no-progress
 
-          # 2) Immutable, tag-named archive copy — one per release, never
-          #    overwritten, so any prior version stays retrievable by git tag
-          #    even after the generic key moves forward. (Independent of bucket
-          #    versioning, which keys by opaque version id rather than git tag.)
-          VERSIONED="s3://${BUCKET}/artifacts/versions"
-          aws s3 cp "$ASSET_PATH" "$VERSIONED/${ASSET_NAME}-${TAG}"        --no-progress
-          aws s3 cp "$SHA_PATH"   "$VERSIONED/${ASSET_NAME}-${TAG}.sha256" --no-progress
+          # 2) Immutable, tag-named archive copy — one per release, never overwritten,
+          #    so any prior version stays retrievable by git tag even after the generic
+          #    prefix moves forward.
+          aws s3 cp dist/ "s3://${BUCKET}/artifacts/versions/${TAG}/" --recursive --no-progress
 
-          echo "Uploaded latest  → $LATEST/${ASSET_NAME}"
-          echo "Archived release → $VERSIONED/${ASSET_NAME}-${TAG}"
+          echo "Uploaded latest  → s3://${BUCKET}/artifacts/"
+          echo "Archived release → s3://${BUCKET}/artifacts/versions/${TAG}/"

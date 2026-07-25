@@ -91,5 +91,5 @@ fi
 
 echo ""
 echo "Connect:  bash scripts/dev-vm/ssh.sh"
-echo "Run cmd:  bash scripts/dev-vm/run.sh 'cargo test -p jade-protocol'"
+echo "Run cmd:  bash scripts/dev-vm/run.sh 'cargo test -p ovata-infer-protocol'"
 echo "Stop:     bash scripts/dev-vm/stop.sh"
