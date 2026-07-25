@@ -1,0 +1,125 @@
+name: publish-providers
+
+# Build the remote provider Jade libraries (anthropic, openai) to native .so
+# packages for each supported platform and publish them so they can be installed
+# with `jade pkg add --url`. The .so's are served at
+# https://www.jadelang.org/<name>-<platform>.so — the pipeline uploads them to a
+# release on the public `jade` repo (the transfer medium), then triggers that repo's
+# Pages deploy, which injects them into the site.
+#
+# Consumer install:
+#   jade pkg add anthropic --url 'https://www.jadelang.org/anthropic-{platform}.so' --version <v>
+#
+# Requires one secret: JADE_REPO_TOKEN — a token with Contents:write + Actions:write
+# on github.com/joericks1998/jade (to upload the release + trigger its Pages deploy).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Provider package version (semver, e.g. 0.1.0)"
+        required: true
+        default: "0.1.0"
+
+permissions:
+  contents: read
+
+env:
+  # Jade toolchain used to compile the .jde libraries (kept in lock-step with the
+  # release workflow's pin).
+  JADE_VERSION: "v1.1.23"
+  # The providers to build (each is <name>/<name>.jde).
+  PROVIDERS: "anthropic openai"
+  # Public repo whose GitHub Pages serves jadelang.org, and where the built .so's are
+  # staged for the Pages deploy to inject.
+  PAGES_REPO: "joericks1998/jade"
+  # Rolling release tag on PAGES_REPO used purely to transfer the built artifacts.
+  TRANSFER_TAG: "providers-latest"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            jade_archive: jade-linux-x86_64.tar.gz
+          - os: macos-14
+            platform: darwin-aarch64
+            jade_archive: jade-macos-arm64.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install the pinned jade toolchain (binary + lib/*.a runtime archives that
+      # `jade build` links) under a prefix so jade resolves <prefix>/lib/jade.
+      - name: Install jade ${{ env.JADE_VERSION }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/joericks1998/jade/releases/download/${JADE_VERSION}"
+          tmp="$(mktemp -d)"
+          curl -fsSL "${base}/${{ matrix.jade_archive }}" -o "${tmp}/jade.tgz"
+          curl -fsSL "${base}/checksums.txt"              -o "${tmp}/checksums.txt"
+          if command -v sha256sum >/dev/null 2>&1; then SUM="sha256sum"; else SUM="shasum -a 256"; fi
+          ( cd "${tmp}" && grep "${{ matrix.jade_archive }}" checksums.txt | $SUM -c - )
+          prefix="${HOME}/jade-toolchain"
+          mkdir -p "${prefix}/bin" "${prefix}/lib/jade"
+          tar -xzf "${tmp}/jade.tgz" -C "${tmp}"
+          install -m 0755 "${tmp}/jade" "${prefix}/bin/jade"
+          if [ -d "${tmp}/lib" ]; then cp "${tmp}"/lib/*.a "${prefix}/lib/jade/"; fi
+          echo "${prefix}/bin" >> "$GITHUB_PATH"
+
+      - name: Build provider .so's (${{ matrix.platform }})
+        run: |
+          set -euo pipefail
+          jade --version
+          mkdir -p out
+          for p in $PROVIDERS; do
+            jade build "${p}/${p}.jde" --lib -o "out/${p}-${{ matrix.platform }}.so"
+            echo "built out/${p}-${{ matrix.platform }}.so"
+          done
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: providers-${{ matrix.platform }}
+          path: out/*.so
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect built .so's
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: providers-*
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.so > checksums.txt
+          echo "Published artifacts:"; ls -l; echo; cat checksums.txt
+
+      # Stage the artifacts on the public jade repo (transfer medium) and trigger its
+      # Pages deploy, which injects them so they are served at jadelang.org/<name>.so.
+      - name: Stage to ${{ env.PAGES_REPO }} and trigger Pages deploy
+        env:
+          GH_TOKEN: ${{ secrets.JADE_REPO_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          # Ensure the rolling transfer release exists (idempotent).
+          gh release view "$TRANSFER_TAG" --repo "$PAGES_REPO" >/dev/null 2>&1 || \
+            gh release create "$TRANSFER_TAG" --repo "$PAGES_REPO" --prerelease \
+              --title "Provider packages (rolling)" \
+              --notes "Latest built anthropic/openai provider .so packages. Served at https://www.jadelang.org/<name>-<platform>.so. Auto-published by dovata; do not edit by hand."
+          gh release upload "$TRANSFER_TAG" --repo "$PAGES_REPO" --clobber dist/*.so dist/checksums.txt
+          echo "Uploaded provider .so's (version ${VERSION}) to ${PAGES_REPO}:${TRANSFER_TAG}"
+          # Kick the Pages deploy so the site picks up the new .so's.
+          gh workflow run deploy-docs.yml --repo "$PAGES_REPO" \
+            || echo "::warning::could not trigger deploy-docs on ${PAGES_REPO} — run it manually to publish"

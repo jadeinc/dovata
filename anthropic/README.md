@@ -5,9 +5,24 @@ not a daemon `.so`. It builds the Messages request, calls the API directly over
 `std::http`, and parses the reply — no Rust, no dlopen, no daemon involvement. (The
 daemon and the wire protocol are for *local* llama inference only.)
 
-## Use it
+## Install it
 
-Register the directory as a library in your project's `jade.toml`, then import:
+Published as a native `.so` package at `jadelang.org`; install with the package
+manager (downloads, checksums, pins in `jade.lock`):
+
+```sh
+jade pkg add anthropic --url 'https://www.jadelang.org/anthropic-{platform}.so' --version 0.1.0
+```
+
+```jade
+use anthropic
+let reply = anthropic.complete([{ "role": "user", "content": "Hi" }], { "temperature": 0.2 })
+print(anthropic.text(reply))
+```
+
+## Use from source (dev)
+
+Or register the directory as a library in your project's `jade.toml`:
 
 ```toml
 [lib.anthropic]

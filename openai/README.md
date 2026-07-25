@@ -5,9 +5,24 @@ not a daemon `.so`. It builds the Chat Completions request, calls the API direct
 over `std::http`, and parses the reply — no Rust, no dlopen, no daemon involvement.
 (The daemon and the wire protocol are for *local* llama inference only.)
 
-## Use it
+## Install it
 
-Register the directory as a library in your project's `jade.toml`, then import:
+Published as a native `.so` package at `jadelang.org`; install with the package
+manager (downloads, checksums, pins in `jade.lock`):
+
+```sh
+jade pkg add openai --url 'https://www.jadelang.org/openai-{platform}.so' --version 0.1.0
+```
+
+```jade
+use openai
+let reply = openai.complete([{ "role": "user", "content": "Hi" }], { "temperature": 0.2 })
+print(openai.text(reply))
+```
+
+## Use from source (dev)
+
+Or register the directory as a library in your project's `jade.toml`:
 
 ```toml
 [lib.openai]
