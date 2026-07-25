@@ -1,10 +1,12 @@
-# openai — OpenAI provider (Jade library)
+# openai — OpenAI model-profile (Jade package)
 
-A provider conforming to **ovata-infer-protocol**, written in Jade. `infer()` consumes
-an ovata `InferenceRequest` and returns the response as protocol `Frame`s — it calls
-the Chat Completions API directly over `std::http`. The API knobs the wire protocol
-doesn't carry (temperature, tools, system, …) live in a separate `params` value that
-**complements** the request; nothing is added to the protocol.
+A model-profile package conforming to **ovata-infer-protocol**, written in Jade. The
+inference call is protocol-pure — `infer(request)` takes an ovata `InferenceRequest`
+and returns protocol `Frame`s. The fixed per-request parameters OpenAI needs but the
+protocol doesn't carry (`api_key`, `tools`, `temperature`, `system`, …) are held as the
+profile's **config**, set at runtime via `configure()`; body-building and auth are
+internal. The config is runtime-**mutable** — change `tools`/params between requests and
+the next `infer()` uses them.
 
 ## Install it
 
@@ -18,18 +20,19 @@ jade pkg add openai --url 'https://www.jadelang.org/openai-{platform}.so' --vers
 ```jade
 use openai
 
-let request = { "prompt": "What time is it in Tokyo?", "model": "gpt-4o", "max_tokens": 128 }
-let p = openai.params({ "temperature": 0.2,
-          "tools": [ openai.tool("get_time", "Current time in a city",
-                       { "type": "object", "properties": { "city": { "type": "string" } } }) ],
-          "tool_choice": openai.choice_auto() })
+openai.configure({ "temperature": 0.2, "system": "Be terse.",
+    "tools": [ openai.tool("get_time", "Current time in a city",
+                 { "type": "object", "properties": { "city": { "type": "string" } } }) ],
+    "tool_choice": openai.choice_auto() })
 
-let frames = openai.infer(request, p)   // -> [ Token?, Json(tool_calls)?, Done ] or [ Error ]
+let frames = openai.infer({ "prompt": "What time is it in Tokyo?" })
+// -> [ Token?, Json(tool_calls)?, Done ]   or   [ Error ]
+
+openai.set_tools([])                          // mutate at runtime; next infer() reflects it
+let more = openai.infer({ "prompt": "Thanks!" })
 ```
 
 ## Use from source (dev)
-
-Register the directory as a library in your project's `jade.toml`:
 
 ```toml
 [lib.openai]
@@ -39,46 +42,36 @@ files = ["openai.jde"]
 
 ## API key
 
-`api_key()` resolves the key in this order:
-
-1. **`OPENAI_API_KEY`** in the environment (wins if set).
-2. the `"api_key"` field of **`~/.jade/providers/openai.json`** — the config file
-   written when you install the provider. Configure it with:
-
-   ```sh
-   scripts/configure-provider.sh openai             # prompts for the key (mode 0600)
-   ```
-
-Point **`OPENAI_BASE_URL`** at a gateway/proxy or an OpenAI-compatible host to override
-the endpoint. A missing key surfaces as an `Error` frame, not a raise.
+`api_key()` resolves in order: `configure({api_key})`, then **`OPENAI_API_KEY`**, then
+the `"api_key"` field of **`~/.jade/providers/openai.json`** (written by
+`scripts/configure-provider.sh openai`, mode 0600). A missing key surfaces as an `Error`
+frame, not a raise. Set **`OPENAI_BASE_URL`** (or `configure({base_url})`) to point at a
+gateway/proxy or OpenAI-compatible host.
 
 ## Shipping as a native `.so`
 
-`jade build openai.jde --lib -o openai.so` compiles this library to a native package
-the Jade runtime loads without the source; the publish-providers workflow builds it per
-platform and serves it at jadelang.org.
+`jade build openai.jde --lib -o openai.so` compiles this to a native package the Jade
+runtime loads without the source; the publish-providers workflow builds it per platform
+and serves it at jadelang.org.
 
 ## Surface
 
-**Inference (the wire-protocol interface)**
-- `infer(request, params) -> [Frame]` — `request` is an ovata `InferenceRequest`
-  (`prompt`, `model`, `max_tokens`, `grammar`, …); `params` is the complement (below).
-  Returns `Token`(s) then `Done` on success, or a single `Error`; tool calls ride in a
-  `Json` frame. The **host** emits the leading `Meta` frame, so this provider doesn't.
-  `rlm` / `grammar` / `count_only` requests (protocol fields OpenAI can't honor) return
-  `Error`.
+**Configure (the profile's fixed params — runtime-mutable)**
+- `configure(opts)` — set any subset; validates (e.g. `temperature` 0–2). Keys: `api_key`,
+  `base_url`, `model`, `max_tokens`, `temperature`, `top_p`, `frequency_penalty`,
+  `presence_penalty`, `stop`, `seed`, `n`, `system`, `tools`, `tool_choice`,
+  `response_format`, `metadata`.
+- `set_tools(tools)` — convenience for the common runtime mutation.
+- Builders: `tool(name, description, schema)`, `choice_auto()` / `choice_none()` /
+  `choice_required()` / `choice_tool(name)`, `json_object()` / `json_schema(name, schema)`.
+
+**Infer (the protocol-pure interface)**
+- `infer(request) -> [Frame]` — `request` is an ovata `InferenceRequest` (`prompt`,
+  `model`, `max_tokens`, `grammar`, …). Returns `Token`(s) then `Done`, tool calls in a
+  `Json` frame, or a single `Error`. The **host** emits `Meta`. `rlm`/`grammar`/`count_only`
+  requests return `Error`.
 
 **Frame values** (mirror `ovata-infer-protocol` `response.rs`)
-- `{ "type": "Token", "text": str }`
-- `{ "type": "Json",  "json": str }` — `{ tool_calls: [{ id, name, arguments }], finish_reason }` (`arguments` is a JSON **string**)
-- `{ "type": "Done",  "tokens_used": int }`
+- `{ "type": "Token", "text": str }` · `{ "type": "Done", "tokens_used": int }`
+- `{ "type": "Json",  "json": str }` (`{ tool_calls: [{ id, name, arguments }], finish_reason }`; `arguments` is a JSON **string**)
 - `{ "type": "Error", "message": str }`
-
-**Params — the complement** (`params({...})`; only keys you set are sent)
-`temperature` (validated 0–2), `top_p`, `frequency_penalty`, `presence_penalty`,
-`stop`, `seed`, `n`, `system`, `tools`, `tool_choice`, `response_format`, `metadata`.
-
-**Builders**
-- `tool(name, description, schema)` — a function-tool definition.
-- `choice_auto()` / `choice_none()` / `choice_required()` / `choice_tool(name)` — `tool_choice` values.
-- `json_object()` / `json_schema(name, schema)` — `response_format` values.

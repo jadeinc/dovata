@@ -1,20 +1,20 @@
-// OpenAI — provider conforming to ovata-infer-protocol.
+// OpenAI — model-profile package, conforming to ovata-infer-protocol.
 //
-// The inference interface is the wire protocol: infer() consumes an ovata
-// InferenceRequest (prompt, model, max_tokens, grammar, ...) and returns the response
-// as protocol Frames. Per the protocol a provider emits Token(s) then Done, or a
-// single Error; the HOST emits the leading Meta frame, so this provider does not.
-// Frames are the contract's data types — no wire encoding here; the host encodes.
+// The inference call is PROTOCOL-PURE: infer(request) takes an ovata InferenceRequest
+// (the user's request — prompt/model/max_tokens/…) and returns protocol Frames (the
+// model response + the metadata the protocol requires). Nothing provider-specific is
+// on that call.
 //
-// The knobs the wire protocol does not carry (temperature, tools, system, top_p, ...)
-// live in a separate `params` value that COMPLEMENTS the request — see Params below.
+// The fixed per-request parameters OpenAI needs but the protocol does not carry —
+// api_key, tools, temperature, system, … — are held as the profile's CONFIG and set at
+// runtime via configure(); body-building and auth are entirely internal. The config is
+// runtime-MUTABLE: change tools/params between requests and the next infer() uses them.
 //
 //     use openai
-//     let p = openai.params({ "temperature": 0.2, "system": "Be terse.",
-//                             "tools": [ openai.tool("get_time", "...", schema) ] })
-//     let frames = openai.infer(request, p)   // request = ovata InferenceRequest
-//
-// API key: OPENAI_API_KEY, else ~/.jade/providers/openai.json (see api_key()).
+//     openai.configure({ "temperature": 0.2, "system": "Be terse.",
+//                        "tools": [ openai.tool("get_time", "...", schema) ] })
+//     let frames = openai.infer({ "prompt": "What time is it in Tokyo?" })
+//     openai.set_tools([])                    // mutate; next infer() reflects it
 
 use std::http
 use std::json
@@ -25,39 +25,57 @@ let NAME = "openai"
 let DEFAULT_MODEL = "gpt-4o"
 let DEFAULT_MAX_TOKENS = 4096
 
-// ── Frame constructors — mirror ovata-infer-protocol response.rs Frame variants ──
-// A provider emits Token(s) then Done, or one Error. Meta is the host's, not ours.
-fn token(text)          { return { "type": "Token", "text": text } }
-fn done(tokens_used)    { return { "type": "Done", "tokens_used": tokens_used } }
-fn error(message)       { return { "type": "Error", "message": message } }
-fn json_frame(payload)  { return { "type": "Json", "json": payload } }
+// ── The profile's runtime-mutable config (the fixed per-request parameters) ──
+// nil = unset → not sent (the API default applies). Set via configure()/set_tools().
+let config = {
+    "api_key": nil,
+    "base_url": nil,
+    "model": nil,
+    "max_tokens": nil,
+    "temperature": nil,
+    "top_p": nil,
+    "frequency_penalty": nil,
+    "presence_penalty": nil,
+    "stop": nil,
+    "seed": nil,
+    "n": nil,
+    "system": nil,
+    "tools": nil,
+    "tool_choice": nil,
+    "response_format": nil,
+    "metadata": nil,
+}
 
-// ── Params — the provider-specific complement to the wire request ──
-// A plain map of only the knobs you set; anything absent takes the API default.
-fn params(opts) {
-    let p = {}
+// configure(opts) — set any subset of the profile's parameters. Runtime-mutable.
+fn configure(opts) {
     if opts.has("temperature") {
         let t = opts["temperature"]
         if t < 0.0 || t > 2.0 {
             raise f"openai: temperature {t} out of range [0.0, 2.0]"
         }
-        p["temperature"] = t
     }
-    if opts.has("top_p")             { p["top_p"] = opts["top_p"] }
-    if opts.has("frequency_penalty") { p["frequency_penalty"] = opts["frequency_penalty"] }
-    if opts.has("presence_penalty")  { p["presence_penalty"] = opts["presence_penalty"] }
-    if opts.has("stop")              { p["stop"] = opts["stop"] }
-    if opts.has("seed")              { p["seed"] = opts["seed"] }
-    if opts.has("n")                 { p["n"] = opts["n"] }
-    if opts.has("system")            { p["system"] = opts["system"] }
-    if opts.has("tools")             { p["tools"] = opts["tools"] }
-    if opts.has("tool_choice")       { p["tool_choice"] = opts["tool_choice"] }
-    if opts.has("response_format")   { p["response_format"] = opts["response_format"] }
-    if opts.has("metadata")          { p["metadata"] = opts["metadata"] }
-    return p
+    if opts.has("api_key")           { config["api_key"] = opts["api_key"] }
+    if opts.has("base_url")          { config["base_url"] = opts["base_url"] }
+    if opts.has("model")             { config["model"] = opts["model"] }
+    if opts.has("max_tokens")        { config["max_tokens"] = opts["max_tokens"] }
+    if opts.has("temperature")       { config["temperature"] = opts["temperature"] }
+    if opts.has("top_p")             { config["top_p"] = opts["top_p"] }
+    if opts.has("frequency_penalty") { config["frequency_penalty"] = opts["frequency_penalty"] }
+    if opts.has("presence_penalty")  { config["presence_penalty"] = opts["presence_penalty"] }
+    if opts.has("stop")              { config["stop"] = opts["stop"] }
+    if opts.has("seed")              { config["seed"] = opts["seed"] }
+    if opts.has("n")                 { config["n"] = opts["n"] }
+    if opts.has("system")            { config["system"] = opts["system"] }
+    if opts.has("tools")             { config["tools"] = opts["tools"] }
+    if opts.has("tool_choice")       { config["tool_choice"] = opts["tool_choice"] }
+    if opts.has("response_format")   { config["response_format"] = opts["response_format"] }
+    if opts.has("metadata")          { config["metadata"] = opts["metadata"] }
 }
 
-// Tool declaration + tool_choice + response_format helpers.
+// set_tools(tools) — convenience for the common runtime mutation.
+fn set_tools(tools) { config["tools"] = tools }
+
+// Builders for values you put in config.
 fn tool(name, description, schema) {
     return { "type": "function",
              "function": { "name": name, "description": description, "parameters": schema } }
@@ -71,17 +89,24 @@ fn json_schema(name, schema) {
     return { "type": "json_schema", "json_schema": { "name": name, "schema": schema } }
 }
 
-// ── Endpoint + key ──
+// ── Frame constructors — mirror ovata-infer-protocol response.rs Frame variants ──
+fn token(text)         { return { "type": "Token", "text": text } }
+fn done(tokens_used)   { return { "type": "Done", "tokens_used": tokens_used } }
+fn error(message)      { return { "type": "Error", "message": message } }
+fn json_frame(payload) { return { "type": "Json", "json": payload } }
+
+// ── Endpoint + key: config, else env, else installed config file ──
 fn base_url() {
+    if config["base_url"] != nil { return config["base_url"] }
     let b = env.get("OPENAI_BASE_URL")
-    if b == nil { return "https://api.openai.com" }
-    return b
+    if b != nil { return b }
+    return "https://api.openai.com"
 }
-fn config_path() { return env.get("HOME") + "/.jade/providers/openai.json" }
 fn api_key() {
+    if config["api_key"] != nil { return config["api_key"] }
     let e = env.get("OPENAI_API_KEY")
     if e != nil { return e }
-    let path = config_path()
+    let path = env.get("HOME") + "/.jade/providers/openai.json"
     if fs.exists(path) {
         let cfg = json.parse(fs.read(path))
         if cfg.has("api_key") { return cfg["api_key"] }
@@ -89,14 +114,12 @@ fn api_key() {
     return nil
 }
 
-// ── Request building ──
-// The wire request carries a flat `prompt`; Chat Completions wants a messages array.
-// Unlike Claude, `system` is a leading role:"system" message (not a top-level field),
-// so it is prepended here; then the wire prompt becomes the user turn.
-fn build_body(request, params) {
+// ── Body: the wire request (prompt/model/max_tokens) + the profile config ──
+// `system` (config) is a leading role:"system" message, then the wire prompt.
+fn build_body(request) {
     let messages = []
-    if params.has("system") {
-        messages.push({ "role": "system", "content": params["system"] })
+    if config["system"] != nil {
+        messages.push({ "role": "system", "content": config["system"] })
     }
     messages.push({ "role": "user", "content": request["prompt"] })
     let body = { "messages": messages }
@@ -104,32 +127,33 @@ fn build_body(request, params) {
     if request.has("model") && len(request["model"]) > 0 {
         body["model"] = request["model"]
     } else {
-        body["model"] = DEFAULT_MODEL
+        if config["model"] != nil { body["model"] = config["model"] } else { body["model"] = DEFAULT_MODEL }
     }
     if request.has("max_tokens") && request["max_tokens"] > 0 {
         body["max_tokens"] = request["max_tokens"]
     } else {
-        body["max_tokens"] = DEFAULT_MAX_TOKENS
+        if config["max_tokens"] != nil { body["max_tokens"] = config["max_tokens"] } else { body["max_tokens"] = DEFAULT_MAX_TOKENS }
     }
-    if params.has("temperature")       { body["temperature"] = params["temperature"] }
-    if params.has("top_p")             { body["top_p"] = params["top_p"] }
-    if params.has("frequency_penalty") { body["frequency_penalty"] = params["frequency_penalty"] }
-    if params.has("presence_penalty")  { body["presence_penalty"] = params["presence_penalty"] }
-    if params.has("stop")              { body["stop"] = params["stop"] }
-    if params.has("seed")              { body["seed"] = params["seed"] }
-    if params.has("n")                 { body["n"] = params["n"] }
-    if params.has("tools")             { body["tools"] = params["tools"] }
-    if params.has("tool_choice")       { body["tool_choice"] = params["tool_choice"] }
-    if params.has("response_format")   { body["response_format"] = params["response_format"] }
-    if params.has("metadata")          { body["metadata"] = params["metadata"] }
+
+    if config["temperature"] != nil       { body["temperature"] = config["temperature"] }
+    if config["top_p"] != nil             { body["top_p"] = config["top_p"] }
+    if config["frequency_penalty"] != nil { body["frequency_penalty"] = config["frequency_penalty"] }
+    if config["presence_penalty"] != nil  { body["presence_penalty"] = config["presence_penalty"] }
+    if config["stop"] != nil              { body["stop"] = config["stop"] }
+    if config["seed"] != nil              { body["seed"] = config["seed"] }
+    if config["n"] != nil                 { body["n"] = config["n"] }
+    if config["tools"] != nil             { body["tools"] = config["tools"] }
+    if config["tool_choice"] != nil       { body["tool_choice"] = config["tool_choice"] }
+    if config["response_format"] != nil   { body["response_format"] = config["response_format"] }
+    if config["metadata"] != nil          { body["metadata"] = config["metadata"] }
 
     return json.stringify(body)
 }
 
-// ── infer: ovata InferenceRequest + params -> [Frame] ──
+// ── infer(request) -> [Frame] — the protocol-pure inference call ──
 // Success -> [Token(text)?, Json(tool_calls)?, Done(tokens_used)]; failure -> [Error].
-fn infer(request, params) {
-    // Reject request features a remote API can't honor (see the InferenceRequest fields).
+// The host emits the leading Meta frame, so the profile does not.
+fn infer(request) {
     if request.has("rlm") && request["rlm"] {
         return [ error("openai: rlm mode is not supported by a remote provider") ]
     }
@@ -141,10 +165,10 @@ fn infer(request, params) {
     }
     let key = api_key()
     if key == nil {
-        return [ error("openai: no API key — set OPENAI_API_KEY or add api_key to ~/.jade/providers/openai.json") ]
+        return [ error("openai: no API key — configure({api_key}), set OPENAI_API_KEY, or add api_key to ~/.jade/providers/openai.json") ]
     }
 
-    let body = build_body(request, params)
+    let body = build_body(request)
     let resp = http.post(base_url() + "/v1/chat/completions", body, {
         "Authorization": f"Bearer {key}",
         "content-type": "application/json",
@@ -158,7 +182,6 @@ fn infer(request, params) {
     let msg = choice["message"]
     let out = []
 
-    // content -> a Token frame ("" / null when the turn is only tool calls).
     if msg.has("content") {
         let c = msg["content"]
         if c != nil {
@@ -167,7 +190,6 @@ fn infer(request, params) {
             }
         }
     }
-    // tool_calls -> a Json frame. OpenAI leaves `arguments` as a JSON string.
     let calls = []
     if msg.has("tool_calls") {
         for tc in msg["tool_calls"] {
