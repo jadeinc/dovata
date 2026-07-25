@@ -7,11 +7,13 @@
 //!   cargo run -p packaging -- build [--release]     # dev bundle (daemon copied as `dovata`)
 //!   cargo run -p packaging -- release [--cuda]      # release bundle: `dovata-<arch>` + sha256
 //!
-//! Both modes build every remote provider cdylib (anthropic/openai/echo), read each
+//! Both modes build every native provider cdylib (currently just `echo`), read each
 //! one's advertised name + provider-ABI version through its exported C symbols (which
 //! also validates the `.so` is a real `export_provider!` plugin), copy the `.so` into
 //! `dist/`, and write `dist/manifest.json`. The local `dovata` engine is compiled *into*
-//! the daemon (it's not a `.so`), so the daemon binary is staged as-is.
+//! the daemon (it's not a `.so`), so the daemon binary is staged as-is. The remote
+//! providers (anthropic/openai) are pure-Jade `.so` packages published separately to
+//! jadelang.org (see the publish-providers workflow); they are not part of this bundle.
 //!
 //! `release` builds the release profile, stages the daemon under its canonical,
 //! bootloader-facing asset name `dovata-<arch>` with a `.sha256` sidecar, and (with
@@ -30,14 +32,10 @@ const PROVIDER_CRATES: &[&str] = &[
     // remaining native reference provider.
     "ovata-provider-echo",
 ];
-/// Pure-Jade provider libraries, compiled to a native `.so` via `jade build --lib`.
-/// They export the Jade native-package ABI (`jade_pkg_init`), loaded by the Jade
-/// runtime — not the daemon's `ovata_provider` ABI. `(name, source .jde relative to
-/// the workspace root)`.
-const JADE_PROVIDERS: &[(&str, &str)] = &[
-    ("anthropic", "anthropic/anthropic.jde"),
-    ("openai", "openai/openai.jde"),
-];
+// The remote providers (anthropic, openai) are pure-Jade libraries published
+// separately as native `.so` packages to jadelang.org (see the publish-providers
+// workflow). They are NOT part of this OS bundle, which ships only the daemon (+ the
+// native `echo` reference provider) to S3.
 
 /// The daemon binary (host + the in-process local llama.cpp engine).
 const DAEMON_CRATE: &str = "dovata";
@@ -136,49 +134,6 @@ fn assemble(plan: &Plan) -> Result<(), String> {
         }));
     }
 
-    // 3b. Build the pure-Jade provider libraries to native `.so` (jade build --lib),
-    // dropping each at dist/<name>.so. These load in the Jade runtime via jade_pkg_init,
-    // not the daemon. Needs the `jade` toolchain; if it is absent, warn and skip so a
-    // cargo-only/dev bundle still succeeds.
-    let mut jade_providers = Vec::new();
-    match find_jade() {
-        Some(jade) => {
-            for (name, src) in JADE_PROVIDERS {
-                let src_path = root.join(src);
-                let file = format!("{name}.so");
-                let out = dist.join(&file);
-                let status = Command::new(&jade)
-                    .arg("build")
-                    .arg(&src_path)
-                    .arg("--lib")
-                    .arg("-o")
-                    .arg(&out)
-                    .status()
-                    .map_err(|e| format!("running jade build {src}: {e}"))?;
-                if !status.success() {
-                    // Don't abort the whole bundle — a dev machine may have an older
-                    // `jade` on PATH that lacks `build --lib`. A release must set JADE to
-                    // a current toolchain; CI should assert manifest.jade_providers is
-                    // non-empty so this skip can't silently ship an incomplete release.
-                    eprintln!("packaging: WARNING jade build failed for {src} — skipping (is `jade` current?)");
-                    continue;
-                }
-                eprintln!("packaging:   jade provider '{name}' -> dist/{file}");
-                jade_providers.push(serde_json::json!({
-                    "name": name,
-                    "kind": "jade",
-                    "abi": "jade_pkg_init",
-                    "file": file,
-                }));
-            }
-        }
-        None => eprintln!(
-            "packaging: WARNING `jade` not found (set JADE or add it to PATH) — skipping \
-             Jade providers ({})",
-            JADE_PROVIDERS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")
-        ),
-    }
-
     // 4. Stage the daemon binary.
     let daemon_src = target_dir.join(DAEMON_CRATE);
     let daemon = if !daemon_src.exists() {
@@ -212,7 +167,6 @@ fn assemble(plan: &Plan) -> Result<(), String> {
         "arch": std::env::consts::ARCH,
         "daemon": daemon,
         "providers": providers,
-        "jade_providers": jade_providers,
     });
     let manifest_path = dist.join("manifest.json");
     std::fs::write(
@@ -222,24 +176,6 @@ fn assemble(plan: &Plan) -> Result<(), String> {
     .map_err(|e| format!("writing manifest: {e}"))?;
     eprintln!("packaging: wrote {}", manifest_path.display());
     Ok(())
-}
-
-/// Locate the `jade` toolchain: `$JADE` if set and present, else `jade` on `PATH`
-/// (via `which`). Returns `None` when unavailable, so the Jade providers are skipped
-/// rather than failing a cargo-only bundle.
-fn find_jade() -> Option<PathBuf> {
-    if let Ok(j) = std::env::var("JADE") {
-        let p = PathBuf::from(j);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    let out = Command::new("which").arg("jade").output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(PathBuf::from(s)) }
 }
 
 /// The workspace root (packaging lives at `<root>/packaging`).

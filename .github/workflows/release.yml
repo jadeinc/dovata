@@ -1,8 +1,10 @@
 name: release-dovata
 
-# Builds the dovata inference daemon with the CUDA backend (Linux x86_64) plus the
-# remote provider .so packages, and publishes the bundle so the JADE OS bootloader can
-# install a prebuilt daemon at /jade/inference/ instead of compiling it on the target.
+# Builds the dovata inference daemon with the CUDA backend (Linux x86_64) and the
+# native `echo` reference provider, and publishes the bundle so the JADE OS bootloader
+# can install a prebuilt daemon at /jade/inference/ instead of compiling it on the
+# target. The remote providers (anthropic/openai) are NOT in this OS bundle — they are
+# pure-Jade .so packages published separately to jadelang.org (see publish-providers.yml).
 #
 # The actual build + staging logic lives in the `packaging` xtask
 # (`cargo run -p packaging -- release`), so this workflow only sets up the environment
@@ -43,9 +45,6 @@ env:
   # the default for CMAKE_CUDA_ARCHITECTURES (llama-cpp-sys-2 doesn't set it,
   # and there's no GPU on the runner for auto-detection — so we must).
   CUDAARCHS: "${{ github.event.inputs.cuda_archs || '86' }}"
-  # Jade toolchain version installed to build the anthropic/openai provider .so's
-  # (`jade build --lib`). Pinned for reproducible releases; bump deliberately.
-  JADE_VERSION: "v1.1.23"
 
 jobs:
   build-cuda:
@@ -97,35 +96,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # The remote providers (anthropic, openai) are pure-Jade libraries compiled to
-      # native .so via `jade build --lib`; the packaging xtask needs a current `jade`
-      # on the runner or it warn-skips them (and the manifest assertion below fails the
-      # release). Install the pinned toolchain from GitHub Releases — binary + the two
-      # runtime archives (lib/*.a) that `jade build` links, placed exactly where jade
-      # looks (<prefix>/bin/jade → <prefix>/lib/jade).
-      - name: Install jade toolchain (${{ env.JADE_VERSION }})
-        env:
-          JADE_REPO: joericks1998/jade
-        run: |
-          set -euo pipefail
-          ARCHIVE="jade-linux-x86_64.tar.gz"
-          BASE="https://github.com/${JADE_REPO}/releases/download/${JADE_VERSION}"
-          tmp="$(mktemp -d)"
-          echo "Installing jade ${JADE_VERSION} from ${BASE}"
-          curl -fsSL "${BASE}/${ARCHIVE}"    -o "${tmp}/${ARCHIVE}"
-          curl -fsSL "${BASE}/checksums.txt" -o "${tmp}/checksums.txt"
-          ( cd "${tmp}" && grep "${ARCHIVE}" checksums.txt | sha256sum -c - )
-          tar -xzf "${tmp}/${ARCHIVE}" -C "${tmp}"
-          sudo install -m 0755 "${tmp}/jade" /usr/local/bin/jade
-          if [ -d "${tmp}/lib" ]; then
-            sudo mkdir -p /usr/local/lib/jade
-            sudo cp "${tmp}"/lib/*.a /usr/local/lib/jade/
-          fi
-          rm -rf "${tmp}"
-          jade --version
-          # Pin the packaging xtask to this exact toolchain (find_jade prefers $JADE).
-          echo "JADE=/usr/local/bin/jade" >> "$GITHUB_ENV"
-
       # The compiled llama.cpp (incl. the MoE driver sources) is cached under the
       # key below. That key MUST include the llama.cpp submodule commit — without
       # it, repointing the submodule (e.g. to a new fork commit) reuses a stale
@@ -163,16 +133,6 @@ jobs:
           test -f dist/manifest.json || { echo "::error::packaging produced no manifest"; exit 1; }
           NAME="$(jq -r '.daemon.asset' dist/manifest.json)"
           test -n "$NAME" && test "$NAME" != "null" || { echo "::error::no daemon asset in manifest"; exit 1; }
-
-          # The Jade providers must be present — packaging warn-skips them if `jade` is
-          # missing/old, and a release must never silently ship without them.
-          for p in anthropic openai; do
-            jq -e --arg n "$p" '.jade_providers[] | select(.name==$n)' dist/manifest.json >/dev/null \
-              || { echo "::error::jade provider '$p' missing from bundle (is jade current on the runner?)"; exit 1; }
-            f="$(jq -r --arg n "$p" '.jade_providers[] | select(.name==$n) | .file' dist/manifest.json)"
-            test -f "dist/$f" || { echo "::error::jade provider file dist/$f named in manifest but not on disk"; exit 1; }
-          done
-
           echo "Bundle contents:"; ls -l dist
           echo "Linked runtime libs (target must provide these):"
           ldd "dist/$NAME" || true
