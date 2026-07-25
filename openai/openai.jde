@@ -1,216 +1,183 @@
-// OpenAI — provider library, written in Jade.
+// OpenAI — provider conforming to ovata-infer-protocol.
 //
-// A remote API is just HTTP, so OpenAI needs no daemon and no native provider .so.
-// This is a self-contained Jade library that builds the Chat Completions request,
-// calls the API directly over std::http, and parses the reply. (The ovata wire
-// protocol and daemon are for LOCAL llama inference only.)
+// The inference interface is the wire protocol: infer() consumes an ovata
+// InferenceRequest (prompt, model, max_tokens, grammar, ...) and returns the response
+// as protocol Frames. Per the protocol a provider emits Token(s) then Done, or a
+// single Error; the HOST emits the leading Meta frame, so this provider does not.
+// Frames are the contract's data types — no wire encoding here; the host encodes.
 //
-//     use openai::openai                  // register [lib.openai] -> this dir
+// The knobs the wire protocol does not carry (temperature, tools, system, top_p, ...)
+// live in a separate `params` value that COMPLEMENTS the request — see Params below.
 //
-//     let tools = [ openai.tool("get_time", "Current time in a city",
-//                     { "type": "object", "properties": { "city": { "type": "string" } } }) ]
-//     let reply = openai.complete(
-//         [{ "role": "user", "content": "What time is it in Tokyo?" }],
-//         { "temperature": 0.2, "tools": tools, "tool_choice": openai.choice_auto() })
+//     use openai
+//     let p = openai.params({ "temperature": 0.2, "system": "Be terse.",
+//                             "tools": [ openai.tool("get_time", "...", schema) ] })
+//     let frames = openai.infer(request, p)   // request = ovata InferenceRequest
 //
-//     let call = openai.tool_call(reply)   // { id, name, args } or nil (args is a JSON string)
-//     print(openai.text(reply))            // assistant text
-//
-// The API key is resolved by api_key(): the OPENAI_API_KEY env var if set,
-// otherwise the "api_key" field of ~/.jade/providers/openai.json — the config file
-// written when this provider package is installed. Point OPENAI_BASE_URL at a
-// gateway/proxy (or Azure/OpenAI-compatible host) to override the endpoint.
+// API key: OPENAI_API_KEY, else ~/.jade/providers/openai.json (see api_key()).
 
 use std::http
 use std::json
 use std::env
 use std::fs
 
-let MODELS = ["gpt-4o", "gpt-4o-mini", "o3", "o4-mini"]
+let NAME = "openai"
 let DEFAULT_MODEL = "gpt-4o"
 let DEFAULT_MAX_TOKENS = 4096
 
-// base_url() -> the API root, overridable via OPENAI_BASE_URL (gateways/proxies).
-fn base_url() {
-    let b = env.get("OPENAI_BASE_URL")
-    if b == nil {
-        return "https://api.openai.com"
-    }
-    return b
-}
+// ── Frame constructors — mirror ovata-infer-protocol response.rs Frame variants ──
+// A provider emits Token(s) then Done, or one Error. Meta is the host's, not ours.
+fn token(text)          { return { "type": "Token", "text": text } }
+fn done(tokens_used)    { return { "type": "Done", "tokens_used": tokens_used } }
+fn error(message)       { return { "type": "Error", "message": message } }
+fn json_frame(payload)  { return { "type": "Json", "json": payload } }
 
-// config_path() -> the per-provider config file written at install time.
-fn config_path() {
-    return env.get("HOME") + "/.jade/providers/openai.json"
-}
-
-// api_key() -> the API key: OPENAI_API_KEY if set, else the "api_key" field of the
-// installed config file. Raises if neither is present.
-fn api_key() {
-    let e = env.get("OPENAI_API_KEY")
-    if e != nil {
-        return e
-    }
-    let path = config_path()
-    if fs.exists(path) {
-        let cfg = json.parse(fs.read(path))
-        if cfg.has("api_key") {
-            return cfg["api_key"]
-        }
-    }
-    raise "openai: no API key — set OPENAI_API_KEY or add api_key to ~/.jade/providers/openai.json"
-}
-
-// ── Request building ─────────────────────────────────────────────────────────
-
-// build_messages(messages, opts) -> the message list. Unlike Claude, OpenAI takes
-// the system prompt as a leading {role:"system"} message, so opts["system"] is
-// prepended here rather than sent as a top-level field.
-fn build_messages(messages, opts) {
-    if opts.has("system") {
-        let out = [{ "role": "system", "content": opts["system"] }]
-        for m in messages {
-            out.push(m)
-        }
-        return out
-    }
-    return messages
-}
-
-// build_body(messages, opts) -> the request JSON string. Only the knobs present in
-// `opts` are sent; the rest take the API default. Ranges are validated.
-fn build_body(messages, opts) {
-    let body = { "messages": build_messages(messages, opts) }
-
-    if opts.has("model") {
-        body["model"] = opts["model"]
-    } else {
-        body["model"] = DEFAULT_MODEL
-    }
-    if opts.has("max_tokens") {
-        body["max_tokens"] = opts["max_tokens"]
-    } else {
-        body["max_tokens"] = DEFAULT_MAX_TOKENS
-    }
+// ── Params — the provider-specific complement to the wire request ──
+// A plain map of only the knobs you set; anything absent takes the API default.
+fn params(opts) {
+    let p = {}
     if opts.has("temperature") {
         let t = opts["temperature"]
         if t < 0.0 || t > 2.0 {
             raise f"openai: temperature {t} out of range [0.0, 2.0]"
         }
-        body["temperature"] = t
+        p["temperature"] = t
     }
-    if opts.has("top_p")             { body["top_p"] = opts["top_p"] }
-    if opts.has("frequency_penalty") { body["frequency_penalty"] = opts["frequency_penalty"] }
-    if opts.has("presence_penalty")  { body["presence_penalty"] = opts["presence_penalty"] }
-    if opts.has("stop")              { body["stop"] = opts["stop"] }
-    if opts.has("seed")              { body["seed"] = opts["seed"] }
-    if opts.has("n")                 { body["n"] = opts["n"] }
-    if opts.has("tools")             { body["tools"] = opts["tools"] }
-    if opts.has("tool_choice")       { body["tool_choice"] = opts["tool_choice"] }
-    if opts.has("response_format")   { body["response_format"] = opts["response_format"] }
-    if opts.has("metadata")          { body["metadata"] = opts["metadata"] }
-
-    return json.stringify(body)
+    if opts.has("top_p")             { p["top_p"] = opts["top_p"] }
+    if opts.has("frequency_penalty") { p["frequency_penalty"] = opts["frequency_penalty"] }
+    if opts.has("presence_penalty")  { p["presence_penalty"] = opts["presence_penalty"] }
+    if opts.has("stop")              { p["stop"] = opts["stop"] }
+    if opts.has("seed")              { p["seed"] = opts["seed"] }
+    if opts.has("n")                 { p["n"] = opts["n"] }
+    if opts.has("system")            { p["system"] = opts["system"] }
+    if opts.has("tools")             { p["tools"] = opts["tools"] }
+    if opts.has("tool_choice")       { p["tool_choice"] = opts["tool_choice"] }
+    if opts.has("response_format")   { p["response_format"] = opts["response_format"] }
+    if opts.has("metadata")          { p["metadata"] = opts["metadata"] }
+    return p
 }
 
-// ── The call ─────────────────────────────────────────────────────────────────
-
-// complete(messages, opts) -> the parsed Chat Completions response dict. `messages`
-// is [ { "role": str, "content": str }, ... ]; pass `{}` for no options. Raises on
-// a missing key or a non-200 response. Feed the result to text()/tool_call()/etc.
-fn complete(messages, opts) {
-    let key = api_key()
-    let body = build_body(messages, opts)
-    let resp = http.post(base_url() + "/v1/chat/completions", body, {
-        "Authorization": f"Bearer {key}",
-        "content-type": "application/json",
-    })
-    if resp["status"] != 200 {
-        raise f"openai: HTTP {resp['status']}: {resp['body']}"
-    }
-    return json.parse(resp["body"])
-}
-
-// ask(content, opts) -> the assistant's text for a single user turn. Sugar over
-// complete() + text() for the common one-shot, no-tools case.
-fn ask(content, opts) {
-    let reply = complete([{ "role": "user", "content": content }], opts)
-    return text(reply)
-}
-
-// ── Tool declaration helpers ────────────────────────────────────────────────
-
-// tool(name, description, schema) -> an OpenAI function-tool definition. `schema`
-// is a JSON-schema dict describing the function's parameters.
+// Tool declaration + tool_choice + response_format helpers.
 fn tool(name, description, schema) {
     return { "type": "function",
              "function": { "name": name, "description": description, "parameters": schema } }
 }
-
-// tool_choice: let the model decide / never call / must call some tool / a named tool.
 fn choice_auto()     { return "auto" }
 fn choice_none()     { return "none" }
 fn choice_required() { return "required" }
 fn choice_tool(name) { return { "type": "function", "function": { "name": name } } }
-
-// response_format helpers: force a JSON object, or a named JSON schema.
 fn json_object() { return { "type": "json_object" } }
 fn json_schema(name, schema) {
     return { "type": "json_schema", "json_schema": { "name": name, "schema": schema } }
 }
 
-// ── Response parsing ─────────────────────────────────────────────────────────
-//
-// `reply` is the parsed dict from complete(). The first choice's message holds the
-// content and any tool calls:
-//   message.content: str | null
-//   message.tool_calls: [ { id, type:"function", function:{ name, arguments } } ]
-// where `arguments` is a JSON *string* (OpenAI does not parse it for you).
-
-fn message(reply) {
-    return reply["choices"][0]["message"]
+// ── Endpoint + key ──
+fn base_url() {
+    let b = env.get("OPENAI_BASE_URL")
+    if b == nil { return "https://api.openai.com" }
+    return b
+}
+fn config_path() { return env.get("HOME") + "/.jade/providers/openai.json" }
+fn api_key() {
+    let e = env.get("OPENAI_API_KEY")
+    if e != nil { return e }
+    let path = config_path()
+    if fs.exists(path) {
+        let cfg = json.parse(fs.read(path))
+        if cfg.has("api_key") { return cfg["api_key"] }
+    }
+    return nil
 }
 
-// text(reply) -> the assistant's text ("" when the turn is only tool calls).
-fn text(reply) {
-    let msg = message(reply)
+// ── Request building ──
+// The wire request carries a flat `prompt`; Chat Completions wants a messages array.
+// Unlike Claude, `system` is a leading role:"system" message (not a top-level field),
+// so it is prepended here; then the wire prompt becomes the user turn.
+fn build_body(request, params) {
+    let messages = []
+    if params.has("system") {
+        messages.push({ "role": "system", "content": params["system"] })
+    }
+    messages.push({ "role": "user", "content": request["prompt"] })
+    let body = { "messages": messages }
+
+    if request.has("model") && len(request["model"]) > 0 {
+        body["model"] = request["model"]
+    } else {
+        body["model"] = DEFAULT_MODEL
+    }
+    if request.has("max_tokens") && request["max_tokens"] > 0 {
+        body["max_tokens"] = request["max_tokens"]
+    } else {
+        body["max_tokens"] = DEFAULT_MAX_TOKENS
+    }
+    if params.has("temperature")       { body["temperature"] = params["temperature"] }
+    if params.has("top_p")             { body["top_p"] = params["top_p"] }
+    if params.has("frequency_penalty") { body["frequency_penalty"] = params["frequency_penalty"] }
+    if params.has("presence_penalty")  { body["presence_penalty"] = params["presence_penalty"] }
+    if params.has("stop")              { body["stop"] = params["stop"] }
+    if params.has("seed")              { body["seed"] = params["seed"] }
+    if params.has("n")                 { body["n"] = params["n"] }
+    if params.has("tools")             { body["tools"] = params["tools"] }
+    if params.has("tool_choice")       { body["tool_choice"] = params["tool_choice"] }
+    if params.has("response_format")   { body["response_format"] = params["response_format"] }
+    if params.has("metadata")          { body["metadata"] = params["metadata"] }
+
+    return json.stringify(body)
+}
+
+// ── infer: ovata InferenceRequest + params -> [Frame] ──
+// Success -> [Token(text)?, Json(tool_calls)?, Done(tokens_used)]; failure -> [Error].
+fn infer(request, params) {
+    // Reject request features a remote API can't honor (see the InferenceRequest fields).
+    if request.has("rlm") && request["rlm"] {
+        return [ error("openai: rlm mode is not supported by a remote provider") ]
+    }
+    if request.has("grammar") && request["grammar"] != nil {
+        return [ error("openai: grammar/constrained decoding is not supported by a remote provider") ]
+    }
+    if request.has("count_only") && request["count_only"] {
+        return [ error("openai: count_only is not supported — OpenAI has no server-side tokenizer endpoint") ]
+    }
+    let key = api_key()
+    if key == nil {
+        return [ error("openai: no API key — set OPENAI_API_KEY or add api_key to ~/.jade/providers/openai.json") ]
+    }
+
+    let body = build_body(request, params)
+    let resp = http.post(base_url() + "/v1/chat/completions", body, {
+        "Authorization": f"Bearer {key}",
+        "content-type": "application/json",
+    })
+    if resp["status"] != 200 {
+        return [ error(f"openai: HTTP {resp['status']}: {resp['body']}") ]
+    }
+
+    let doc = json.parse(resp["body"])
+    let choice = doc["choices"][0]
+    let msg = choice["message"]
+    let out = []
+
+    // content -> a Token frame ("" / null when the turn is only tool calls).
     if msg.has("content") {
         let c = msg["content"]
         if c != nil {
-            return c
+            if len(c) > 0 {
+                out.push(token(c))
+            }
         }
     }
-    return ""
-}
-
-// tool_calls(reply) -> [ { id, name, args }, ... ] in order, empty when none.
-// `args` is the raw JSON-string arguments; json.parse it to get a dict.
-fn tool_calls(reply) {
-    let msg = message(reply)
-    let out = []
+    // tool_calls -> a Json frame. OpenAI leaves `arguments` as a JSON string.
+    let calls = []
     if msg.has("tool_calls") {
         for tc in msg["tool_calls"] {
-            out.push({ "id": tc["id"], "name": tc["function"]["name"], "args": tc["function"]["arguments"] })
+            calls.push({ "id": tc["id"], "name": tc["function"]["name"], "arguments": tc["function"]["arguments"] })
         }
     }
-    return out
-}
-
-// tool_call(reply) -> the first tool call, or nil.
-fn tool_call(reply) {
-    let calls = tool_calls(reply)
-    if len(calls) == 0 {
-        return nil
+    if len(calls) > 0 {
+        out.push(json_frame(json.stringify({ "tool_calls": calls, "finish_reason": choice["finish_reason"] })))
     }
-    return calls[0]
-}
 
-// finish_reason(reply) -> "stop" | "length" | "tool_calls" | "content_filter".
-fn finish_reason(reply) {
-    return reply["choices"][0]["finish_reason"]
-}
-
-// usage(reply) -> { prompt_tokens, completion_tokens, total_tokens }.
-fn usage(reply) {
-    return reply["usage"]
+    out.push(done(doc["usage"]["total_tokens"]))
+    return out
 }
