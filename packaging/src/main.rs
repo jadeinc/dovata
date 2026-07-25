@@ -25,9 +25,9 @@ use sha2::{Digest, Sha256};
 
 /// The remote provider crates that ship as loadable `.so` packages.
 const PROVIDER_CRATES: &[&str] = &[
-    // anthropic migrated to a pure-Jade library (anthropic/anthropic.jde); it is no
-    // longer a native .so, so it is not packaged here. openai is mid-migration.
-    "ovata-provider-openai",
+    // The remote providers (anthropic, openai) are now pure-Jade libraries, not
+    // native .so plugins, so they are not packaged here. `echo` is the only
+    // remaining native reference provider.
     "ovata-provider-echo",
 ];
 /// The daemon binary (host + the in-process local llama.cpp engine).

@@ -7,11 +7,10 @@ members = [
     # The inference daemon: host + the in-process local llama.cpp engine + the folded-in
     # model-profile module (Linux engine gated; the host builds on any platform).
     "dovata",
-    # Remote-API providers are pure-Jade libraries that call their HTTP APIs
-    # directly (see anthropic/anthropic.jde) — not daemon .so plugins, so they are
-    # not workspace members. `echo` remains the reference native provider + the
-    # host loader's dlopen fixture. `openai` is mid-migration to Jade.
-    "openai",
+    # Remote-API providers (anthropic, openai) are pure-Jade libraries that call
+    # their HTTP APIs directly (see anthropic/anthropic.jde, openai/openai.jde) —
+    # not daemon .so plugins, so they are not workspace members. `echo` remains the
+    # reference native provider + the host loader's dlopen fixture.
     "echo",
     # The inference engine — the vendored/forked llama.cpp bindings, now first-class
     # members of the one workspace (single lockfile, editable). Heavy: building these
