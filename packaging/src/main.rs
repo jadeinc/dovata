@@ -25,7 +25,8 @@ use sha2::{Digest, Sha256};
 
 /// The remote provider crates that ship as loadable `.so` packages.
 const PROVIDER_CRATES: &[&str] = &[
-    "ovata-provider-anthropic",
+    // anthropic migrated to a pure-Jade library (anthropic/anthropic.jde); it is no
+    // longer a native .so, so it is not packaged here. openai is mid-migration.
     "ovata-provider-openai",
     "ovata-provider-echo",
 ];

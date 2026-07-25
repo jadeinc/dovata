@@ -875,16 +875,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ovata-provider-anthropic"
-version = "0.1.0"
-dependencies = [
- "ovata-infer-protocol",
- "reqwest",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "ovata-provider-echo"
 version = "0.1.0"
 dependencies = [
