@@ -1,14 +1,15 @@
 name: publish-providers
 
-# Build the remote provider Jade libraries (anthropic, openai) to native .so
-# packages for each supported platform and publish them so they can be installed
-# with `jade pkg add --url`. The .so's are served at
-# https://www.jadelang.org/<name>-<platform>.so — the pipeline uploads them to a
+# Build the Jade packages (the remote providers anthropic/openai, and the dovata
+# local-model profile qwen3-coder-30b) to native .so for each supported platform and
+# publish them so they can be installed with `jade pkg add --url`. The .so's are served
+# at https://www.jadelang.org/<name>-<platform>.so — the pipeline uploads them to a
 # release on the public `jade` repo (the transfer medium), then triggers that repo's
 # Pages deploy, which injects them into the site.
 #
 # Consumer install:
-#   jade pkg add anthropic --url 'https://www.jadelang.org/anthropic-{platform}.so' --version <v>
+#   jade pkg add anthropic       --url 'https://www.jadelang.org/anthropic-{platform}.so'       --version <v>
+#   jade pkg add qwen3_coder_30b --url 'https://www.jadelang.org/qwen3-coder-30b-{platform}.so' --version <v>
 #
 # Requires one secret: JADE_REPO_TOKEN — a token with Contents:write + Actions:write
 # on github.com/joericks1998/jade (to upload the release + trigger its Pages deploy).
@@ -28,8 +29,14 @@ env:
   # Jade toolchain used to compile the .jde libraries (kept in lock-step with the
   # release workflow's pin).
   JADE_VERSION: "v1.1.23"
-  # The providers to build (each is <name>/<name>.jde).
-  PROVIDERS: "anthropic openai"
+  # Jade packages to publish, one "<name> <source.jde>" per line. <name> is the
+  # published .so basename (served as jadelang.org/<name>-<platform>.so); the import
+  # name (`use ...`) is the consumer's choice at `jade pkg add`. Includes the remote
+  # providers and the dovata local-model profile (tool-call parsing).
+  PACKAGES: |
+    anthropic anthropic/anthropic.jde
+    openai openai/openai.jde
+    qwen3-coder-30b dovata/profiles/qwen3-coder-30b.jde
   # Public repo whose GitHub Pages serves jadelang.org, and where the built .so's are
   # staged for the Pages deploy to inject.
   PAGES_REPO: "joericks1998/jade"
@@ -70,14 +77,15 @@ jobs:
           if [ -d "${tmp}/lib" ]; then cp "${tmp}"/lib/*.a "${prefix}/lib/jade/"; fi
           echo "${prefix}/bin" >> "$GITHUB_PATH"
 
-      - name: Build provider .so's (${{ matrix.platform }})
+      - name: Build Jade packages (${{ matrix.platform }})
         run: |
           set -euo pipefail
           jade --version
           mkdir -p out
-          for p in $PROVIDERS; do
-            jade build "${p}/${p}.jde" --lib -o "out/${p}-${{ matrix.platform }}.so"
-            echo "built out/${p}-${{ matrix.platform }}.so"
+          printf '%s\n' "$PACKAGES" | while read -r name src; do
+            [ -z "$name" ] && continue
+            jade build "$src" --lib -o "out/${name}-${{ matrix.platform }}.so" || exit 1
+            echo "built out/${name}-${{ matrix.platform }}.so"
           done
           ls -l out
 

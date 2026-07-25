@@ -10,6 +10,28 @@ loads the profile for whatever model the daemon reports (its `Meta` frame) and
 uses it to build requests and parse the stream. **Swap the `.gguf` → drop in the
 matching profile → no Jade program changes.**
 
+## Two artifacts per model
+
+- **`<model>.toml`** — the daemon-side profile, compiled into `dovata::profile`
+  (below). Used by the daemon to build requests / parse the stream.
+- **`<model>.jde`** — the language-side profile, a standalone **Jade package** a
+  program installs to parse the model's tool calls out of a reply. It is published as
+  a native `.so` to jadelang.org (by the publish-providers workflow) alongside the
+  provider packages, and installed like any dependency:
+
+  ```sh
+  jade pkg add qwen3_coder_30b \
+    --url 'https://www.jadelang.org/qwen3-coder-30b-{platform}.so' --version 0.1.0
+  ```
+
+  ```jade
+  use qwen3_coder_30b
+  let call = qwen3_coder_30b.find_tool_call(reply)   // { name, args } or nil
+  ```
+
+  (The import name is a valid identifier of your choice; the `.so` filename keeps the
+  hyphenated model name.)
+
 ## Packaging
 
 - One TOML file per model, named for the model (`qwen3-coder-30b.toml`).
