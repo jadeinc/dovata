@@ -45,7 +45,7 @@ env:
   CUDAARCHS: "${{ github.event.inputs.cuda_archs || '86' }}"
   # Jade toolchain version installed to build the anthropic/openai provider .so's
   # (`jade build --lib`). Pinned for reproducible releases; bump deliberately.
-  JADE_VERSION: "v1.1.22"
+  JADE_VERSION: "v1.1.23"
 
 jobs:
   build-cuda:
