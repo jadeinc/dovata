@@ -13,14 +13,21 @@ name: publish-providers
 #
 # Requires one secret: JADE_REPO_TOKEN — a token with Contents:write + Actions:write
 # on github.com/joericks1998/jade (to upload the release + trigger its Pages deploy).
+#
+# Triggers on the same `v*` release tag as the daemon (release.yml), so one tag ships
+# everything: the daemon to S3 and every Jade package to jadelang.org. The package
+# version defaults to the tag (minus the leading `v`); a manual run can override it.
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: "Provider package version (semver, e.g. 0.1.0)"
-        required: true
-        default: "0.1.0"
+        description: "Package version (semver, e.g. 0.1.0). Defaults to the tag for a tag push."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -118,9 +125,20 @@ jobs:
       - name: Stage to ${{ env.PAGES_REPO }} and trigger Pages deploy
         env:
           GH_TOKEN: ${{ secrets.JADE_REPO_TOKEN }}
-          VERSION: ${{ github.event.inputs.version }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
+          # Package version: the manual input if given, else the tag minus its leading
+          # `v` (so a `v1.3.0` release publishes package version 1.3.0); a manual run
+          # with no input gets a dev marker (VERSION is metadata, not baked into the .so).
+          VERSION="${INPUT_VERSION:-}"
+          if [ -z "$VERSION" ]; then
+            case "$GITHUB_REF" in
+              refs/tags/*) VERSION="${GITHUB_REF_NAME#v}" ;;
+              *)           VERSION="0.0.0-dev" ;;
+            esac
+          fi
+          echo "Publishing packages at version ${VERSION}"
           # Ensure the rolling transfer release exists (idempotent).
           gh release view "$TRANSFER_TAG" --repo "$PAGES_REPO" >/dev/null 2>&1 || \
             gh release create "$TRANSFER_TAG" --repo "$PAGES_REPO" --prerelease \
