@@ -1,200 +1,185 @@
-// Anthropic (Claude) — provider library, written in Jade.
+// Anthropic (Claude) — model-profile package, conforming to ovata-infer-protocol.
 //
-// The ovata wire protocol exists for LOCAL inference (the llama engine behind the
-// daemon). A remote API like Claude is just HTTP, so it needs no daemon and no
-// native provider .so — it is a plain Jade library that builds the request, calls
-// the Messages API directly over std::http, and parses the reply.
+// The inference call is PROTOCOL-PURE: infer(request) takes an ovata InferenceRequest
+// (the user's request — prompt/model/max_tokens/…) and returns protocol Frames (the
+// model response + the metadata the protocol requires). Nothing provider-specific is
+// on that call.
 //
-//     use anthropic::anthropic          // register [lib.anthropic] -> this dir
+// The fixed per-request parameters Claude needs but the protocol does not carry —
+// api_key, tools, temperature, system, … — are held as the profile's CONFIG and set at
+// runtime via configure(); body-building and auth are entirely internal. The config is
+// runtime-MUTABLE: change tools/params between requests and the next infer() uses them.
 //
-//     let tools = [ anthropic.tool("get_time", "Current time in a city",
-//                     { "type": "object", "properties": { "city": { "type": "string" } } }) ]
-//     let reply = anthropic.complete(
-//         [{ "role": "user", "content": "What time is it in Tokyo?" }],
-//         { "temperature": 0.2, "tools": tools, "tool_choice": anthropic.choice_auto() })
-//
-//     let call = anthropic.tool_call(reply)   // { id, name, args } or nil
-//     print(anthropic.text(reply))            // assistant text
-//
-// The API key is resolved by api_key(): the ANTHROPIC_API_KEY env var if set,
-// otherwise the "api_key" field of ~/.jade/providers/anthropic.json — the config
-// file written when this provider package is installed. Point ANTHROPIC_BASE_URL at
-// a gateway/proxy to override the endpoint.
+//     use anthropic
+//     anthropic.configure({ "temperature": 0.2, "system": "Be terse.",
+//                           "tools": [ anthropic.tool("get_time", "...", schema) ] })
+//     let frames = anthropic.infer({ "prompt": "What time is it in Tokyo?" })
+//     anthropic.set_tools([])                    // mutate; next infer() reflects it
+//     let more   = anthropic.infer({ "prompt": "Thanks!" })
 
 use std::http
 use std::json
 use std::env
 use std::fs
 
-// Claude models this library targets (one Messages-API shape covers them all).
-let MODELS = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]
+let NAME = "anthropic"
 let API_VERSION = "2023-06-01"
 let DEFAULT_MODEL = "claude-sonnet-5"
-// Messages requires max_tokens; substitute this when the caller omits it rather
-// than failing the request.
 let DEFAULT_MAX_TOKENS = 4096
 
-// base_url() -> the API root, overridable via ANTHROPIC_BASE_URL (gateways/proxies).
-fn base_url() {
-    let b = env.get("ANTHROPIC_BASE_URL")
-    if b == nil {
-        return "https://api.anthropic.com"
-    }
-    return b
+// ── The profile's runtime-mutable config (the fixed per-request parameters) ──
+// nil = unset → not sent (the API default applies). Set via configure()/set_tools().
+let config = {
+    "api_key": nil,
+    "base_url": nil,
+    "model": nil,
+    "max_tokens": nil,
+    "temperature": nil,
+    "top_p": nil,
+    "top_k": nil,
+    "stop_sequences": nil,
+    "system": nil,
+    "tools": nil,
+    "tool_choice": nil,
+    "thinking": nil,
+    "metadata": nil,
 }
 
-// config_path() -> the per-provider config file written at install time.
-fn config_path() {
-    return env.get("HOME") + "/.jade/providers/anthropic.json"
-}
-
-// api_key() -> the API key: ANTHROPIC_API_KEY if set, else the "api_key" field of
-// the installed config file. Raises if neither is present.
-fn api_key() {
-    let e = env.get("ANTHROPIC_API_KEY")
-    if e != nil {
-        return e
-    }
-    let path = config_path()
-    if fs.exists(path) {
-        let cfg = json.parse(fs.read(path))
-        if cfg.has("api_key") {
-            return cfg["api_key"]
-        }
-    }
-    raise "anthropic: no API key — set ANTHROPIC_API_KEY or add api_key to ~/.jade/providers/anthropic.json"
-}
-
-// ── Request building ─────────────────────────────────────────────────────────
-
-// build_body(messages, opts) -> the request JSON string. Only the knobs present
-// in `opts` are sent; the rest take the API default. Ranges are validated (an
-// out-of-range temperature raises rather than being sent).
-fn build_body(messages, opts) {
-    let body = { "messages": messages }
-
-    if opts.has("model") {
-        body["model"] = opts["model"]
-    } else {
-        body["model"] = DEFAULT_MODEL
-    }
-    if opts.has("max_tokens") {
-        body["max_tokens"] = opts["max_tokens"]
-    } else {
-        body["max_tokens"] = DEFAULT_MAX_TOKENS
-    }
-    // system is top-level in the Messages API, not a message.
-    if opts.has("system") {
-        body["system"] = opts["system"]
-    }
+// configure(opts) — set any subset of the profile's parameters. Runtime-mutable:
+// call again to change them; validation (e.g. temperature range) happens here.
+fn configure(opts) {
     if opts.has("temperature") {
         let t = opts["temperature"]
         if t < 0.0 || t > 1.0 {
             raise f"anthropic: temperature {t} out of range [0.0, 1.0]"
         }
-        body["temperature"] = t
     }
-    if opts.has("top_p")          { body["top_p"] = opts["top_p"] }
-    if opts.has("top_k")          { body["top_k"] = opts["top_k"] }
-    if opts.has("stop_sequences") { body["stop_sequences"] = opts["stop_sequences"] }
-    if opts.has("tools")          { body["tools"] = opts["tools"] }
-    if opts.has("tool_choice")    { body["tool_choice"] = opts["tool_choice"] }
-    if opts.has("thinking")       { body["thinking"] = opts["thinking"] }
-    if opts.has("metadata")       { body["metadata"] = opts["metadata"] }
-    if opts.has("service_tier")   { body["service_tier"] = opts["service_tier"] }
+    if opts.has("api_key")        { config["api_key"] = opts["api_key"] }
+    if opts.has("base_url")       { config["base_url"] = opts["base_url"] }
+    if opts.has("model")          { config["model"] = opts["model"] }
+    if opts.has("max_tokens")     { config["max_tokens"] = opts["max_tokens"] }
+    if opts.has("temperature")    { config["temperature"] = opts["temperature"] }
+    if opts.has("top_p")          { config["top_p"] = opts["top_p"] }
+    if opts.has("top_k")          { config["top_k"] = opts["top_k"] }
+    if opts.has("stop_sequences") { config["stop_sequences"] = opts["stop_sequences"] }
+    if opts.has("system")         { config["system"] = opts["system"] }
+    if opts.has("tools")          { config["tools"] = opts["tools"] }
+    if opts.has("tool_choice")    { config["tool_choice"] = opts["tool_choice"] }
+    if opts.has("thinking")       { config["thinking"] = opts["thinking"] }
+    if opts.has("metadata")       { config["metadata"] = opts["metadata"] }
+}
+
+// set_tools(tools) — convenience for the common runtime mutation.
+fn set_tools(tools) { config["tools"] = tools }
+
+// Builders for values you put in config.
+fn tool(name, description, schema) {
+    return { "name": name, "description": description, "input_schema": schema }
+}
+fn choice_auto() { return { "type": "auto" } }
+fn choice_any()  { return { "type": "any" } }
+fn choice_tool(name) { return { "type": "tool", "name": name } }
+fn thinking(budget_tokens) { return { "type": "enabled", "budget_tokens": budget_tokens } }
+
+// ── Frame constructors — mirror ovata-infer-protocol response.rs Frame variants ──
+fn token(text)         { return { "type": "Token", "text": text } }
+fn done(tokens_used)   { return { "type": "Done", "tokens_used": tokens_used } }
+fn error(message)      { return { "type": "Error", "message": message } }
+fn json_frame(payload) { return { "type": "Json", "json": payload } }
+
+// ── Endpoint + key: config, else env, else installed config file ──
+fn base_url() {
+    if config["base_url"] != nil { return config["base_url"] }
+    let b = env.get("ANTHROPIC_BASE_URL")
+    if b != nil { return b }
+    return "https://api.anthropic.com"
+}
+fn api_key() {
+    if config["api_key"] != nil { return config["api_key"] }
+    let e = env.get("ANTHROPIC_API_KEY")
+    if e != nil { return e }
+    let path = env.get("HOME") + "/.jade/providers/anthropic.json"
+    if fs.exists(path) {
+        let cfg = json.parse(fs.read(path))
+        if cfg.has("api_key") { return cfg["api_key"] }
+    }
+    return nil
+}
+
+// ── Body: the wire request (prompt/model/max_tokens) + the profile config ──
+fn build_body(request) {
+    let body = { "messages": [{ "role": "user", "content": request["prompt"] }] }
+
+    // model / max_tokens: the request wins, else the configured default, else built-in.
+    if request.has("model") && len(request["model"]) > 0 {
+        body["model"] = request["model"]
+    } else {
+        if config["model"] != nil { body["model"] = config["model"] } else { body["model"] = DEFAULT_MODEL }
+    }
+    if request.has("max_tokens") && request["max_tokens"] > 0 {
+        body["max_tokens"] = request["max_tokens"]
+    } else {
+        if config["max_tokens"] != nil { body["max_tokens"] = config["max_tokens"] } else { body["max_tokens"] = DEFAULT_MAX_TOKENS }
+    }
+
+    if config["system"] != nil         { body["system"] = config["system"] }
+    if config["temperature"] != nil    { body["temperature"] = config["temperature"] }
+    if config["top_p"] != nil          { body["top_p"] = config["top_p"] }
+    if config["top_k"] != nil          { body["top_k"] = config["top_k"] }
+    if config["stop_sequences"] != nil { body["stop_sequences"] = config["stop_sequences"] }
+    if config["tools"] != nil          { body["tools"] = config["tools"] }
+    if config["tool_choice"] != nil    { body["tool_choice"] = config["tool_choice"] }
+    if config["thinking"] != nil       { body["thinking"] = config["thinking"] }
+    if config["metadata"] != nil       { body["metadata"] = config["metadata"] }
 
     return json.stringify(body)
 }
 
-// ── The call ─────────────────────────────────────────────────────────────────
-
-// complete(messages, opts) -> the parsed Messages response dict. `messages` is
-// [ { "role": str, "content": str }, ... ]; pass `{}` for no options. Raises on a
-// missing key or a non-200 response. Feed the result to text()/tool_call()/etc.
-fn complete(messages, opts) {
+// ── infer(request) -> [Frame] — the protocol-pure inference call ──
+// Success -> [Token(text)?, Json(tool_calls)?, Done(tokens_used)]; failure -> [Error].
+// The host emits the leading Meta frame, so the profile does not.
+fn infer(request) {
+    if request.has("rlm") && request["rlm"] {
+        return [ error("anthropic: rlm mode is not supported by a remote provider") ]
+    }
+    if request.has("grammar") && request["grammar"] != nil {
+        return [ error("anthropic: grammar/constrained decoding is not supported by a remote provider") ]
+    }
     let key = api_key()
-    let body = build_body(messages, opts)
+    if key == nil {
+        return [ error("anthropic: no API key — configure({api_key}), set ANTHROPIC_API_KEY, or add api_key to ~/.jade/providers/anthropic.json") ]
+    }
+
+    let body = build_body(request)
     let resp = http.post(base_url() + "/v1/messages", body, {
         "x-api-key": key,
         "anthropic-version": API_VERSION,
         "content-type": "application/json",
     })
     if resp["status"] != 200 {
-        raise f"anthropic: HTTP {resp['status']}: {resp['body']}"
+        return [ error(f"anthropic: HTTP {resp['status']}: {resp['body']}") ]
     }
-    return json.parse(resp["body"])
-}
 
-// ask(content, opts) -> the assistant's text for a single user turn. Sugar over
-// complete() + text() for the common one-shot, no-tools case.
-fn ask(content, opts) {
-    let reply = complete([{ "role": "user", "content": content }], opts)
-    return text(reply)
-}
-
-// ── Tool declaration helpers ────────────────────────────────────────────────
-
-// tool(name, description, schema) -> a Claude tool definition. `schema` is a
-// JSON-schema dict describing the tool's input object.
-fn tool(name, description, schema) {
-    return { "name": name, "description": description, "input_schema": schema }
-}
-
-// tool_choice: let the model decide / force some tool / force a named tool.
-fn choice_auto() { return { "type": "auto" } }
-fn choice_any()  { return { "type": "any" } }
-fn choice_tool(name) { return { "type": "tool", "name": name } }
-
-// thinking(budget_tokens) -> extended-thinking config for opts["thinking"].
-fn thinking(budget_tokens) {
-    return { "type": "enabled", "budget_tokens": budget_tokens }
-}
-
-// ── Response parsing ─────────────────────────────────────────────────────────
-//
-// `reply` is the parsed dict returned by complete(). A content block is either
-// { "type":"text", "text": str } or
-// { "type":"tool_use", "id": str, "name": str, "input": {...} }.
-
-// text(reply) -> the concatenated text of every text block ("" if none).
-fn text(reply) {
-    let out = ""
-    for block in reply["content"] {
-        if block["type"] == "text" {
-            out = out + block["text"]
-        }
-    }
-    return out
-}
-
-// tool_calls(reply) -> [ { id, name, args }, ... ] in order, empty when none.
-// `args` is the tool input as a dict (re-stringify with json.stringify if needed).
-fn tool_calls(reply) {
+    let doc = json.parse(resp["body"])
     let out = []
-    for block in reply["content"] {
+    let text = ""
+    let calls = []
+    for block in doc["content"] {
+        if block["type"] == "text" {
+            text = text + block["text"]
+        }
         if block["type"] == "tool_use" {
-            out.push({ "id": block["id"], "name": block["name"], "args": block["input"] })
+            calls.push({ "id": block["id"], "name": block["name"], "input": block["input"] })
         }
     }
-    return out
-}
-
-// tool_call(reply) -> the first tool call, or nil.
-fn tool_call(reply) {
-    let calls = tool_calls(reply)
-    if len(calls) == 0 {
-        return nil
+    if len(text) > 0 {
+        out.push(token(text))
     }
-    return calls[0]
-}
+    if len(calls) > 0 {
+        out.push(json_frame(json.stringify({ "tool_calls": calls, "stop_reason": doc["stop_reason"] })))
+    }
 
-// stop_reason(reply) -> "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
-// A "tool_use" stop reason means the model is waiting on a tool result.
-fn stop_reason(reply) {
-    return reply["stop_reason"]
-}
-
-// usage(reply) -> { input_tokens, output_tokens }.
-fn usage(reply) {
-    return reply["usage"]
+    let usage = doc["usage"]
+    out.push(done(usage["input_tokens"] + usage["output_tokens"]))
+    return out
 }

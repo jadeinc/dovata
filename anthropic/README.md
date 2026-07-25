@@ -1,9 +1,12 @@
-# anthropic — Claude provider (Jade library)
+# anthropic — Claude model-profile (Jade package)
 
-A remote API like Claude is just HTTP, so this provider is a **pure-Jade library**,
-not a daemon `.so`. It builds the Messages request, calls the API directly over
-`std::http`, and parses the reply — no Rust, no dlopen, no daemon involvement. (The
-daemon and the wire protocol are for *local* llama inference only.)
+A model-profile package conforming to **ovata-infer-protocol**, written in Jade. The
+inference call is protocol-pure — `infer(request)` takes an ovata `InferenceRequest`
+and returns protocol `Frame`s. The fixed per-request parameters Claude needs but the
+protocol doesn't carry (`api_key`, `tools`, `temperature`, `system`, …) are held as the
+profile's **config**, set at runtime via `configure()`; body-building and auth are
+internal. The config is runtime-**mutable** — change `tools`/params between requests and
+the next `infer()` uses them.
 
 ## Install it
 
@@ -16,13 +19,20 @@ jade pkg add anthropic --url 'https://www.jadelang.org/anthropic-{platform}.so' 
 
 ```jade
 use anthropic
-let reply = anthropic.complete([{ "role": "user", "content": "Hi" }], { "temperature": 0.2 })
-print(anthropic.text(reply))
+
+anthropic.configure({ "temperature": 0.2, "system": "Be terse.",
+    "tools": [ anthropic.tool("get_time", "Current time in a city",
+                 { "type": "object", "properties": { "city": { "type": "string" } } }) ],
+    "tool_choice": anthropic.choice_auto() })
+
+let frames = anthropic.infer({ "prompt": "What time is it in Tokyo?" })
+// -> [ Token, Json(tool_calls)?, Done ]   or   [ Error ]
+
+anthropic.set_tools([])                       // mutate at runtime; next infer() reflects it
+let more = anthropic.infer({ "prompt": "Thanks!" })
 ```
 
 ## Use from source (dev)
-
-Or register the directory as a library in your project's `jade.toml`:
 
 ```toml
 [lib.anthropic]
@@ -30,55 +40,37 @@ path  = "path/to/dovata/anthropic"
 files = ["anthropic.jde"]
 ```
 
-```jade
-use anthropic::anthropic
-
-let reply = anthropic.complete(
-    [{ "role": "user", "content": "What time is it in Tokyo?" }],
-    { "temperature": 0.2 })
-print(anthropic.text(reply))
-```
-
 ## API key
 
-`api_key()` resolves the key in this order:
-
-1. **`ANTHROPIC_API_KEY`** in the environment (wins if set).
-2. the `"api_key"` field of **`~/.jade/providers/anthropic.json`** — the config file
-   written when you install the provider. Configure it with:
-
-   ```sh
-   scripts/configure-provider.sh anthropic          # prompts for the key (mode 0600)
-   ```
-
-Point **`ANTHROPIC_BASE_URL`** at a gateway/proxy to override the endpoint (also how
-the mock-server tests run).
+`api_key()` resolves in order: `configure({api_key})`, then **`ANTHROPIC_API_KEY`**,
+then the `"api_key"` field of **`~/.jade/providers/anthropic.json`** (written by
+`scripts/configure-provider.sh anthropic`, mode 0600). A missing key surfaces as an
+`Error` frame, not a raise. Set **`ANTHROPIC_BASE_URL`** (or `configure({base_url})`) to
+point at a gateway/proxy.
 
 ## Shipping as a native `.so`
 
-`jade build anthropic.jde --lib -o anthropic.so` compiles this library to a native
-package (`jade_pkg_init` ABI) that the Jade runtime loads without the source. The
-`packaging` xtask does this and drops `anthropic.so` into the release bundle
-(`dist/`, listed under `jade_providers` in the manifest); register that `.so` as the
-`[lib]` file in production instead of the `.jde`.
+`jade build anthropic.jde --lib -o anthropic.so` compiles this to a native package the
+Jade runtime loads without the source; the publish-providers workflow builds it per
+platform and serves it at jadelang.org.
 
 ## Surface
 
-**Call**
-- `complete(messages, opts) -> reply` — the Messages call; returns the parsed response dict. `messages` is `[{ role, content }, ...]`; pass `{}` for no options.
-- `ask(content, opts) -> str` — one-shot sugar: `complete` + `text`.
+**Configure (the profile's fixed params — runtime-mutable)**
+- `configure(opts)` — set any subset; validates (e.g. `temperature` 0–1). Keys: `api_key`,
+  `base_url`, `model`, `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences`,
+  `system`, `tools`, `tool_choice`, `thinking`, `metadata`.
+- `set_tools(tools)` — convenience for the common runtime mutation.
+- Builders: `tool(name, description, schema)`, `choice_auto()` / `choice_any()` /
+  `choice_tool(name)`, `thinking(budget_tokens)`.
 
-**opts** (only keys you set are sent; the rest take the API default)
-`model`, `max_tokens`, `system`, `temperature` (validated 0–1), `top_p`, `top_k`,
-`stop_sequences`, `tools`, `tool_choice`, `thinking`, `metadata`, `service_tier`.
+**Infer (the protocol-pure interface)**
+- `infer(request) -> [Frame]` — `request` is an ovata `InferenceRequest` (`prompt`,
+  `model`, `max_tokens`, `grammar`, …). Returns `Token`(s) then `Done`, tool calls in a
+  `Json` frame, or a single `Error`. The **host** emits `Meta`. `rlm`/`grammar` requests
+  return `Error`.
 
-**Tool helpers**
-- `tool(name, description, schema)` — a tool definition.
-- `choice_auto()` / `choice_any()` / `choice_tool(name)` — `tool_choice` values.
-- `thinking(budget_tokens)` — extended-thinking config.
-
-**Parse the reply**
-- `text(reply) -> str` — concatenated text blocks.
-- `tool_calls(reply) -> [{ id, name, args }]` / `tool_call(reply) -> {…} | nil`.
-- `stop_reason(reply) -> str` — `end_turn` / `tool_use` / `max_tokens` / `stop_sequence`.
-- `usage(reply) -> { input_tokens, output_tokens }`.
+**Frame values** (mirror `ovata-infer-protocol` `response.rs`)
+- `{ "type": "Token", "text": str }` · `{ "type": "Done", "tokens_used": int }`
+- `{ "type": "Json",  "json": str }` (`{ tool_calls: [{ id, name, input }], stop_reason }`)
+- `{ "type": "Error", "message": str }`

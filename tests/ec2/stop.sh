@@ -2,7 +2,7 @@
 # JADE OS — Stop EC2 inference instance
 #
 # Usage:
-#   bash scripts/ec2/stop.sh
+#   bash tests/ec2/stop.sh
 set -euo pipefail
 
 info() { echo "==> $*"; }

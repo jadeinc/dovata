@@ -1,9 +1,12 @@
-# openai — OpenAI provider (Jade library)
+# openai — OpenAI model-profile (Jade package)
 
-A remote API like OpenAI is just HTTP, so this provider is a **pure-Jade library**,
-not a daemon `.so`. It builds the Chat Completions request, calls the API directly
-over `std::http`, and parses the reply — no Rust, no dlopen, no daemon involvement.
-(The daemon and the wire protocol are for *local* llama inference only.)
+A model-profile package conforming to **ovata-infer-protocol**, written in Jade. The
+inference call is protocol-pure — `infer(request)` takes an ovata `InferenceRequest`
+and returns protocol `Frame`s. The fixed per-request parameters OpenAI needs but the
+protocol doesn't carry (`api_key`, `tools`, `temperature`, `system`, …) are held as the
+profile's **config**, set at runtime via `configure()`; body-building and auth are
+internal. The config is runtime-**mutable** — change `tools`/params between requests and
+the next `infer()` uses them.
 
 ## Install it
 
@@ -16,13 +19,20 @@ jade pkg add openai --url 'https://www.jadelang.org/openai-{platform}.so' --vers
 
 ```jade
 use openai
-let reply = openai.complete([{ "role": "user", "content": "Hi" }], { "temperature": 0.2 })
-print(openai.text(reply))
+
+openai.configure({ "temperature": 0.2, "system": "Be terse.",
+    "tools": [ openai.tool("get_time", "Current time in a city",
+                 { "type": "object", "properties": { "city": { "type": "string" } } }) ],
+    "tool_choice": openai.choice_auto() })
+
+let frames = openai.infer({ "prompt": "What time is it in Tokyo?" })
+// -> [ Token?, Json(tool_calls)?, Done ]   or   [ Error ]
+
+openai.set_tools([])                          // mutate at runtime; next infer() reflects it
+let more = openai.infer({ "prompt": "Thanks!" })
 ```
 
 ## Use from source (dev)
-
-Or register the directory as a library in your project's `jade.toml`:
 
 ```toml
 [lib.openai]
@@ -30,57 +40,38 @@ path  = "path/to/dovata/openai"
 files = ["openai.jde"]
 ```
 
-```jade
-use openai::openai
-
-let reply = openai.complete(
-    [{ "role": "user", "content": "What time is it in Tokyo?" }],
-    { "temperature": 0.2 })
-print(openai.text(reply))
-```
-
 ## API key
 
-`api_key()` resolves the key in this order:
-
-1. **`OPENAI_API_KEY`** in the environment (wins if set).
-2. the `"api_key"` field of **`~/.jade/providers/openai.json`** — the config file
-   written when you install the provider. Configure it with:
-
-   ```sh
-   scripts/configure-provider.sh openai             # prompts for the key (mode 0600)
-   ```
-
-Point **`OPENAI_BASE_URL`** at a gateway/proxy or an OpenAI-compatible host to
-override the endpoint (also how the mock-server tests run).
+`api_key()` resolves in order: `configure({api_key})`, then **`OPENAI_API_KEY`**, then
+the `"api_key"` field of **`~/.jade/providers/openai.json`** (written by
+`scripts/configure-provider.sh openai`, mode 0600). A missing key surfaces as an `Error`
+frame, not a raise. Set **`OPENAI_BASE_URL`** (or `configure({base_url})`) to point at a
+gateway/proxy or OpenAI-compatible host.
 
 ## Shipping as a native `.so`
 
-`jade build openai.jde --lib -o openai.so` compiles this library to a native package
-(`jade_pkg_init` ABI) that the Jade runtime loads without the source. The `packaging`
-xtask does this and drops `openai.so` into the release bundle (`dist/`, listed under
-`jade_providers` in the manifest); register that `.so` as the `[lib]` file in
-production instead of the `.jde`.
+`jade build openai.jde --lib -o openai.so` compiles this to a native package the Jade
+runtime loads without the source; the publish-providers workflow builds it per platform
+and serves it at jadelang.org.
 
 ## Surface
 
-**Call**
-- `complete(messages, opts) -> reply` — the Chat Completions call; returns the parsed response dict. `messages` is `[{ role, content }, ...]`; pass `{}` for no options.
-- `ask(content, opts) -> str` — one-shot sugar: `complete` + `text`.
+**Configure (the profile's fixed params — runtime-mutable)**
+- `configure(opts)` — set any subset; validates (e.g. `temperature` 0–2). Keys: `api_key`,
+  `base_url`, `model`, `max_tokens`, `temperature`, `top_p`, `frequency_penalty`,
+  `presence_penalty`, `stop`, `seed`, `n`, `system`, `tools`, `tool_choice`,
+  `response_format`, `metadata`.
+- `set_tools(tools)` — convenience for the common runtime mutation.
+- Builders: `tool(name, description, schema)`, `choice_auto()` / `choice_none()` /
+  `choice_required()` / `choice_tool(name)`, `json_object()` / `json_schema(name, schema)`.
 
-**opts** (only keys you set are sent; the rest take the API default)
-`model`, `max_tokens`, `system` (prepended as a system message), `temperature`
-(validated 0–2), `top_p`, `frequency_penalty`, `presence_penalty`, `stop`, `seed`,
-`n`, `tools`, `tool_choice`, `response_format`, `metadata`.
+**Infer (the protocol-pure interface)**
+- `infer(request) -> [Frame]` — `request` is an ovata `InferenceRequest` (`prompt`,
+  `model`, `max_tokens`, `grammar`, …). Returns `Token`(s) then `Done`, tool calls in a
+  `Json` frame, or a single `Error`. The **host** emits `Meta`. `rlm`/`grammar`/`count_only`
+  requests return `Error`.
 
-**Tool / format helpers**
-- `tool(name, description, schema)` — a function-tool definition.
-- `choice_auto()` / `choice_none()` / `choice_required()` / `choice_tool(name)` — `tool_choice` values.
-- `json_object()` / `json_schema(name, schema)` — `response_format` values.
-
-**Parse the reply**
-- `text(reply) -> str` — assistant text (`""` when the turn is only tool calls).
-- `tool_calls(reply) -> [{ id, name, args }]` / `tool_call(reply) -> {…} | nil`.
-  `args` is the raw JSON **string** arguments — `json.parse` it to get a dict.
-- `finish_reason(reply) -> str` — `stop` / `length` / `tool_calls` / `content_filter`.
-- `usage(reply) -> { prompt_tokens, completion_tokens, total_tokens }`.
+**Frame values** (mirror `ovata-infer-protocol` `response.rs`)
+- `{ "type": "Token", "text": str }` · `{ "type": "Done", "tokens_used": int }`
+- `{ "type": "Json",  "json": str }` (`{ tool_calls: [{ id, name, arguments }], finish_reason }`; `arguments` is a JSON **string**)
+- `{ "type": "Error", "message": str }`

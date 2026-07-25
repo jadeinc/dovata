@@ -57,4 +57,4 @@ fi
 
 echo ""
 ok "Dev environment ready"
-info "Run: bash scripts/ec2/start.sh"
+info "Run: bash tests/ec2/start.sh"

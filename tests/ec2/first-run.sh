@@ -6,10 +6,10 @@
 # downloads Qwen3-Coder-30B-A3B-Instruct-Q4_K_M model to /jade/inference/model.gguf.
 #
 # Run from your local machine:
-#   bash scripts/ec2/first-run.sh
+#   bash tests/ec2/first-run.sh
 #
 # Or directly on the instance:
-#   bash ~/jade-os/scripts/ec2/first-run.sh --local
+#   bash ~/jade-os/tests/ec2/first-run.sh --local
 set -euo pipefail
 
 info() { echo "==> $*"; }
@@ -53,7 +53,7 @@ if [[ "$LOCAL" -eq 0 ]]; then
 
     info "Uploading setup script to $HOST..."
     scp -o StrictHostKeyChecking=no -i "$KEY" \
-        "$ROOT/scripts/ec2/first-run.sh" \
+        "$ROOT/tests/ec2/first-run.sh" \
         "$JADE_SSH_USER@$HOST:~/ec2-first-run.sh"
 
     info "Running first-run setup on instance (this takes ~10 minutes)..."
@@ -226,4 +226,4 @@ fi
 
 echo ""
 info "First-run setup complete"
-info "Next: bash scripts/ec2/deploy.sh"
+info "Next: bash tests/ec2/deploy.sh"

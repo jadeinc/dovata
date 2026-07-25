@@ -5,8 +5,8 @@
 # REPO is derived from the script's own location so it works regardless of $HOME.
 #
 # Usage:
-#   bash scripts/ec2/run-tests.sh           # binaries must already be built
-#   bash scripts/ec2/run-tests.sh --build   # cargo-build jadec + dovata first
+#   bash tests/ec2/run-tests.sh           # binaries must already be built
+#   bash tests/ec2/run-tests.sh --build   # cargo-build jadec + dovata first
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,7 +55,7 @@ if [[ "$BUILD" -eq 1 ]]; then
 fi
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
-[[ -x "$JADE" ]]        || die "jade not found at $JADE — run: bash scripts/ec2/deploy.sh"
+[[ -x "$JADE" ]]        || die "jade not found at $JADE — run: bash tests/ec2/deploy.sh"
 [[ -f "$JADED" ]]   || die "dovata not found: $JADED"
 [[ -f "$MODEL_PATH" ]]  || die "model not found: $MODEL_PATH (run ec2-first-run.sh first)"
 

@@ -4,7 +4,7 @@
 # published to s3://jade-os-release-bucket/models/model.gguf. Everything is
 # pinned so a build is byte-for-byte reproducible. Bumping a value here is the
 # intended way to cut a new model release; then run the pipeline by hand on the
-# EC2 GPU box: `bash scripts/ec2/quantize.sh` (drives scripts/quantize-model.sh).
+# EC2 GPU box: `bash tests/ec2/quantize.sh` (drives scripts/quantize-model.sh).
 #
 # It is plain `KEY=VALUE` (no spaces, no quotes) so it can be `source`d by
 # scripts/quantize-model.sh AND read line-by-line by the workflow.
