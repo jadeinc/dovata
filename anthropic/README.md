@@ -24,9 +24,28 @@ let reply = anthropic.complete(
 print(anthropic.text(reply))
 ```
 
-The API key is read from **`ANTHROPIC_API_KEY`** in the calling program's
-environment. Point **`ANTHROPIC_BASE_URL`** at a gateway/proxy to override the
-endpoint (also how the mock-server tests run).
+## API key
+
+`api_key()` resolves the key in this order:
+
+1. **`ANTHROPIC_API_KEY`** in the environment (wins if set).
+2. the `"api_key"` field of **`~/.jade/providers/anthropic.json`** — the config file
+   written when you install the provider. Configure it with:
+
+   ```sh
+   scripts/configure-provider.sh anthropic          # prompts for the key (mode 0600)
+   ```
+
+Point **`ANTHROPIC_BASE_URL`** at a gateway/proxy to override the endpoint (also how
+the mock-server tests run).
+
+## Shipping as a native `.so`
+
+`jade build anthropic.jde --lib -o anthropic.so` compiles this library to a native
+package (`jade_pkg_init` ABI) that the Jade runtime loads without the source. The
+`packaging` xtask does this and drops `anthropic.so` into the release bundle
+(`dist/`, listed under `jade_providers` in the manifest); register that `.so` as the
+`[lib]` file in production instead of the `.jde`.
 
 ## Surface
 

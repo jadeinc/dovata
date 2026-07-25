@@ -16,12 +16,15 @@
 //     let call = anthropic.tool_call(reply)   // { id, name, args } or nil
 //     print(anthropic.text(reply))            // assistant text
 //
-// The API key is read from ANTHROPIC_API_KEY in the calling program's environment.
-// Point ANTHROPIC_BASE_URL at a gateway/proxy to override the endpoint.
+// The API key is resolved by api_key(): the ANTHROPIC_API_KEY env var if set,
+// otherwise the "api_key" field of ~/.jade/providers/anthropic.json — the config
+// file written when this provider package is installed. Point ANTHROPIC_BASE_URL at
+// a gateway/proxy to override the endpoint.
 
 use std::http
 use std::json
 use std::env
+use std::fs
 
 // Claude models this library targets (one Messages-API shape covers them all).
 let MODELS = ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]
@@ -38,6 +41,28 @@ fn base_url() {
         return "https://api.anthropic.com"
     }
     return b
+}
+
+// config_path() -> the per-provider config file written at install time.
+fn config_path() {
+    return env.get("HOME") + "/.jade/providers/anthropic.json"
+}
+
+// api_key() -> the API key: ANTHROPIC_API_KEY if set, else the "api_key" field of
+// the installed config file. Raises if neither is present.
+fn api_key() {
+    let e = env.get("ANTHROPIC_API_KEY")
+    if e != nil {
+        return e
+    }
+    let path = config_path()
+    if fs.exists(path) {
+        let cfg = json.parse(fs.read(path))
+        if cfg.has("api_key") {
+            return cfg["api_key"]
+        }
+    }
+    raise "anthropic: no API key — set ANTHROPIC_API_KEY or add api_key to ~/.jade/providers/anthropic.json"
 }
 
 // ── Request building ─────────────────────────────────────────────────────────
@@ -87,10 +112,7 @@ fn build_body(messages, opts) {
 // [ { "role": str, "content": str }, ... ]; pass `{}` for no options. Raises on a
 // missing key or a non-200 response. Feed the result to text()/tool_call()/etc.
 fn complete(messages, opts) {
-    let key = env.get("ANTHROPIC_API_KEY")
-    if key == nil {
-        raise "anthropic: ANTHROPIC_API_KEY is not set in the environment"
-    }
+    let key = api_key()
     let body = build_body(messages, opts)
     let resp = http.post(base_url() + "/v1/messages", body, {
         "x-api-key": key,
