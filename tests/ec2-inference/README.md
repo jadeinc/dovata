@@ -13,7 +13,7 @@ deterministic by construction.
 ## Convention
 
 Each `.jde` prints exactly one line `PASS: <description>` when its assertions hold.
-The harness (`scripts/ec2/run-tests.sh`) greps for `^PASS:`; any other outcome is a
+The harness (`tests/ec2/run-tests.sh`) greps for `^PASS:`; any other outcome is a
 FAIL and the program's last output line is shown as the diagnostic.
 
 ## Coverage
@@ -49,8 +49,8 @@ FAIL and the program's last output line is shown as the diagnostic.
 On the EC2 GPU instance, with `dovata` built (`--features cuda`) and a model present:
 
 ```bash
-bash scripts/ec2/run-tests.sh           # binaries already built
-bash scripts/ec2/run-tests.sh --build   # build dovata + jade runtime first
+bash tests/ec2/run-tests.sh           # binaries already built
+bash tests/ec2/run-tests.sh --build   # build dovata + jade runtime first
 ```
 
 The harness starts `dovata`, waits for `dovata: listening on …`, runs every

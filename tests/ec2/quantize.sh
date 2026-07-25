@@ -6,7 +6,7 @@
 # the jade-os S3 contract:
 #   s3://jade-os-release-bucket/models/model.gguf (+ .gguf.sha256)
 #
-# It: starts the box (scripts/ec2/start.sh), rsyncs THIS repo to
+# It: starts the box (tests/ec2/start.sh), rsyncs THIS repo to
 # ~/jade-inference-daemon, then runs scripts/quantize-model.sh over SSH with the
 # CUDA toolchain on PATH and your AWS creds (from .env) forwarded so the upload
 # happens in-region from the box (no 18 GB round-trip through your laptop).
@@ -15,11 +15,11 @@
 # box needs ~150 GB free disk; the underlying script preflights and fails fast.
 #
 # Usage:
-#   bash scripts/ec2/quantize.sh                 # start, sync, build, upload
-#   bash scripts/ec2/quantize.sh --no-upload     # build + verify only (no S3)
-#   bash scripts/ec2/quantize.sh --stop          # also stop the box when done
-#   bash scripts/ec2/quantize.sh --no-start      # assume the box is already up
-#   bash scripts/ec2/quantize.sh -- --local-dir ~/merged   # pass-through to the
+#   bash tests/ec2/quantize.sh                 # start, sync, build, upload
+#   bash tests/ec2/quantize.sh --no-upload     # build + verify only (no S3)
+#   bash tests/ec2/quantize.sh --stop          # also stop the box when done
+#   bash tests/ec2/quantize.sh --no-start      # assume the box is already up
+#   bash tests/ec2/quantize.sh -- --local-dir ~/merged   # pass-through to the
 #                                                # pipeline (e.g. merged LoRA weights
 #                                                # already present on the box)
 set -euo pipefail
@@ -72,7 +72,7 @@ elif [[ -n "$AWS_LOCAL" ]]; then
     HOST=$("$AWS_LOCAL" ec2 describe-instances --instance-ids "$JADE_INSTANCE_ID" \
         --region "$JADE_REGION" --query 'Reservations[0].Instances[0].PublicDnsName' --output text)
 fi
-[[ -n "${HOST:-}" ]] || die "could not resolve host — run scripts/ec2/start.sh first (or drop --no-start)"
+[[ -n "${HOST:-}" ]] || die "could not resolve host — run tests/ec2/start.sh first (or drop --no-start)"
 KEY="$ROOT/$JADE_SSH_KEY"
 SSH=(ssh -o StrictHostKeyChecking=no -i "$KEY" "$JADE_SSH_USER@$HOST")
 
@@ -167,8 +167,8 @@ if [[ "$DETACHED" -eq 1 ]]; then
     "${SSH[@]}" "setsid nohup bash ~/$REMOTE_RUNNER > ~/$REMOTE_LOG 2>&1 </dev/null & echo \"started pid \$!\""
     echo ""
     ok "detached build started on $HOST"
-    echo "    follow:  bash scripts/ec2/quantize.sh --no-start --follow"
-    echo "    or:      bash scripts/ec2/ssh.sh 'tail -f ~/$REMOTE_LOG'"
+    echo "    follow:  bash tests/ec2/quantize.sh --no-start --follow"
+    echo "    or:      bash tests/ec2/ssh.sh 'tail -f ~/$REMOTE_LOG'"
     echo "    done when the log shows: JADE_QUANTIZE_DONE rc=0"
     exit 0
 fi

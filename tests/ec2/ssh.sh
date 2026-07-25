@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# JADE OS — Interactive jade repl on EC2 with live LLM inference
+# JADE OS — Open an interactive SSH session on the EC2 instance
 #
-# jade-tree is started by deploy.sh and stays running persistently.
-# This script just opens an SSH PTY and execs into `jade repl`.
-#
-# Usage: bash scripts/ec2/repl.sh
+# Usage:
+#   bash tests/ec2/ssh.sh           # interactive shell
+#   bash tests/ec2/ssh.sh <cmd>     # run a single command and exit
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,26 +31,4 @@ fi
 [[ -n "$HOST" ]] || { echo "ERROR: could not resolve hostname — run ec2-start.sh first" >&2; exit 1; }
 
 KEY="$ROOT/$JADE_SSH_KEY"
-
-echo "==> Connecting to $HOST ..."
-
-ssh -t -o StrictHostKeyChecking=no -i "$KEY" "$JADE_SSH_USER@$HOST" "
-set -e
-
-JADE=\"/usr/bin/jade\"
-SOCK=\"\$HOME/.jade/llm.sock\"
-
-[[ -x \"\$JADE\" ]] || { echo 'ERROR: jade not installed — run: bash scripts/ec2/deploy.sh'; exit 1; }
-
-if [[ ! -S \"\$SOCK\" ]]; then
-    echo 'ERROR: jade-tree not running — run: bash scripts/ec2/deploy.sh'
-    exit 1
-fi
-
-echo ''
-echo 'JADE REPL  (Qwen3-Coder-30B-A3B-Instruct-Q4_K_M  •  live inference via Unix socket)'
-echo 'Try:  prompt p = \"What is Rust?\"   then: ?p'
-echo 'Exit: Ctrl-D'
-echo ''
-exec \"\$JADE\" repl
-"
+exec ssh -o StrictHostKeyChecking=no -i "$KEY" "$JADE_SSH_USER@$HOST" "$@"

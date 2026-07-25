@@ -16,7 +16,7 @@
 #
 # Heavy host required: peak ~150 GB disk (safetensors ~60 + f16 GGUF ~60 +
 # Q4_K_M ~18) and a CUDA GPU for the imatrix pass — it can't run on a laptop or a
-# GitHub-hosted runner. Run it on the EC2 GPU box; scripts/ec2/quantize.sh is the
+# GitHub-hosted runner. Run it on the EC2 GPU box; tests/ec2/quantize.sh is the
 # one-command driver (start box -> sync repo -> run this -> upload in-region).
 #
 # Usage:
