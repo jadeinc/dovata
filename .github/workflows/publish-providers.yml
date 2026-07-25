@@ -66,6 +66,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The prebuilt jade macOS binary is dynamically linked against Homebrew's
+      # llvm@18 libunwind (/opt/homebrew/opt/llvm@18/lib/libunwind.1.dylib), which the
+      # runner doesn't have — jade aborts on load without it. (Upstream: the macOS
+      # release should bundle/static-link this; until then, provide it here.)
+      - name: Install llvm@18 (macOS — jade links its libunwind)
+        if: runner.os == 'macOS'
+        run: brew install llvm@18
+
       # Install the pinned jade toolchain (binary + lib/*.a runtime archives that
       # `jade build` links) under a prefix so jade resolves <prefix>/lib/jade.
       - name: Install jade ${{ env.JADE_VERSION }}
