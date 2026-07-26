@@ -68,6 +68,47 @@ fn select_provider_index(model: &str, routes: &[(String, usize)], default_idx: u
     default_idx
 }
 
+/// Read the local model's GGUF header, pick its profile, and publish the choice for the
+/// engine — or refuse the boot with a message that names the fix.
+///
+/// Only the engine's own `Config` knows where the model is, so this reads it from the
+/// same place. `JADE_ALLOW_UNPROFILED=1` turns the no-profile refusal into a warning;
+/// everything else here is a hard failure, because every one of them is a failure
+/// llama.cpp would hit anyway, later and with a worse message.
+///
+/// Not gated to Linux even though its only caller is: nothing in here touches the
+/// engine, so leaving it compiled everywhere means the macOS build type-checks it
+/// instead of letting it rot behind a `cfg` until a GPU box finds the mistake.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn preflight_local_model() -> Result<(), String> {
+    let cfg = dovata::config::Config::from_env();
+    let allow_unprofiled = std::env::var("JADE_ALLOW_UNPROFILED")
+        .map(|v| matches!(v.trim(), "1" | "on" | "true"))
+        .unwrap_or(false);
+
+    let pf = dovata::preflight::Preflight::read(
+        &cfg.model_path,
+        &dovata::profile::Registry::builtin(),
+        allow_unprofiled,
+    )
+    .map_err(|e| format!("model preflight failed\n  {e}"))?;
+
+    for line in pf.summary() {
+        eprintln!("{line}");
+    }
+    if pf.ctx_exceeds_native(cfg.ctx_size) {
+        eprintln!(
+            "dovata: WARNING JADE_CTX_SIZE={} exceeds the model's native window of {}",
+            cfg.ctx_size,
+            pf.context_length.unwrap_or(0)
+        );
+    }
+
+    // Hand the decision to the engine so it serves the same profile the boot approved.
+    dovata::preflight::publish(&pf);
+    Ok(())
+}
+
 /// The loaded providers plus routing rules.
 pub struct Router {
     providers: Vec<ProviderHandle>,
@@ -91,6 +132,13 @@ impl Router {
                 .unwrap_or(true);
             if local_on {
                 use ovata_infer_protocol::Provider;
+
+                // Vet the model file before llama.cpp spends minutes loading it. This
+                // reads the GGUF header only, so a bad path, an unusable file, or a
+                // model with no profile costs a second instead of a full load. See
+                // dovata::preflight for the policy.
+                preflight_local_model()?;
+
                 let engine = dovata::engine::Dovata::from_config(b"{}")
                     .map_err(|e| format!("loading local engine: {e}"))?;
                 let name = <dovata::engine::Dovata as Provider>::NAME;

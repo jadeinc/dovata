@@ -398,13 +398,26 @@ pub(crate) fn build_formatted_prompt(prompt_str: &str, tmpl: &ChatTemplate) -> R
     Ok(crate::prompt::format_prompt(prompt_str, tmpl))
 }
 
+/// The profile the daemon is serving.
+///
+/// The startup preflight already chose one — from the same GGUF, before the load, and
+/// keyed on architecture as well as name — so read its decision rather than making a
+/// second one that could differ. The name-glob path stays as the fallback for the cases
+/// where the preflight never ran: unit tests, and the `JADE_*` self-test hijacks that
+/// construct an engine directly without going through the host.
+fn active_profile(model_name: &str) -> Option<&'static crate::profile::ModelProfile> {
+    crate::preflight::selected().or_else(|| {
+        // Leaked deliberately: the builtin registry is process-lifetime data, and this
+        // fallback runs at most once per process.
+        let reg: &'static crate::profile::Registry = Box::leak(Box::new(crate::profile::Registry::builtin()));
+        reg.select(model_name)
+    })
+}
+
 /// The chat template for the active model: the matching profile's `[chat_template]`
 /// block, else the ChatML default.
 fn resolve_chat_template(model_name: &str) -> ChatTemplate {
-    crate::profile::Registry::builtin()
-        .select(model_name)
-        .map(|p| p.chat_template.clone())
-        .unwrap_or_default()
+    active_profile(model_name).map(|p| p.chat_template.clone()).unwrap_or_default()
 }
 
 /// The RLM efficient-frontier limit (max corpus tokens) for the active model.
@@ -414,7 +427,7 @@ fn rlm_max_context(model_name: &str, ctx_size: u32) -> u32 {
             return n;
         }
     }
-    if let Some(p) = crate::profile::Registry::builtin().select(model_name) {
+    if let Some(p) = active_profile(model_name) {
         if let Some(m) = p.limits.rlm_max_context() {
             return m;
         }

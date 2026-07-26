@@ -18,6 +18,7 @@
 pub mod cache; // bounded LRU cache of past responses (skip the model on repeats)
 pub mod config; // env-var parsing + validation into a Config struct
 pub mod control; // the constrained-decoding state machine (anchors/grammar/stops)
+pub mod preflight; // reads the GGUF header at boot: profile selection + fail-fast checks
 pub mod prompt; // turns a request prompt string into chat messages for the model
 pub mod profile; // per-model token/turn profiles + chat templates (was jade-model-profile)
 pub mod providers; // host-side loader that dlopens remote provider .so packages (C-ABI)

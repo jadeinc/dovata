@@ -23,6 +23,9 @@ members = [
     "src/infer-engine/ffi",
     # Build/packaging xtask: assembles the provider .so bundles into dist/.
     "src/packaging",
+    # GGUF header tooling: reads a model file's metadata without llama.cpp, so a model
+    # can be vetted on a laptop (or over a range request) before a GPU box ever sees it.
+    "src/gguf",
 ]
 resolver = "2"
 

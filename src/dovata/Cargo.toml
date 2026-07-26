@@ -22,6 +22,9 @@ cuda = ["llama-cpp-2/cuda"]
 
 [dependencies]
 ovata-infer-protocol = { path = "../protocol" }
+# GGUF header reader for the startup preflight (src/preflight.rs). Pure and
+# dependency-free, so it does not drag llama.cpp into the non-Linux build.
+gguf = { path = "../gguf" }
 serde_json = { version = "1", features = ["std"] }
 # The folded-in model profile module (was the jade-model-profile crate): TOML profiles.
 serde = { version = "1", features = ["derive"] }

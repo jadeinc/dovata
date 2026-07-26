@@ -77,6 +77,11 @@ tricky parts.
   data, so swapping a `.gguf` does not break tool calling. `mod.rs` is the typed schema
   and the registry of bundled profiles; `stream.rs` is the profile-driven parser that
   splits a token stream into content and complete tool calls.
+- `src/preflight.rs` — the startup gate. Reads the model's GGUF header with the `gguf`
+  crate *before* llama.cpp loads it, checks the metadata llama.cpp requires, selects the
+  profile on architecture as well as name, and refuses the boot with a specific message
+  when something is wrong. Pure apart from one file read, so it is unit-tested on macOS
+  against synthetic headers.
 
 **The Linux engine**
 
@@ -112,9 +117,28 @@ All environment, all `JADE_*`. The host reads:
 - `JADE_MODEL_ROUTES` — `prefix=provider,...`; a request whose `model` starts with
   `prefix` goes to that provider, first match wins.
 
+- `JADE_ALLOW_UNPROFILED` — boot even when no profile matches the model. Off by default:
+  an unprofiled model runs on bare ChatML, which generates text fine and mis-parses every
+  tool call, so the daemon refuses rather than fail silently. Set it when you are
+  deliberately serving a model for plain completion.
+
 The engine's own settings (`JADE_MODEL_PATH`, `JADE_CTX_SIZE`, `JADE_KV_TYPE_*`,
 `JADE_MOE_*`, …) are parsed in `src/config.rs` — read that file for the current list and
 defaults rather than trusting a copy here.
+
+## Booting against a new model
+
+`JADE_MODEL_PATH` is the only thing that has to change, but the preflight decides whether
+the boot proceeds. It refuses a model whose metadata is incomplete, and refuses one no
+profile matches. To see what it will say before you restart the daemon:
+
+```sh
+cargo run -p gguf --bin gguf-inspect -- /path/to/model.gguf
+```
+
+If it reports no profile match, `--profile-stub` writes the starter TOML. See
+[`src/gguf/README.md`](../gguf/README.md) for what llama.cpp requires of a model file and
+why architecture, not name, is the identifier that matters.
 
 ## Building and testing
 

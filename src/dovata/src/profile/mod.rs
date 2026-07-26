@@ -12,10 +12,20 @@
 //! protocol stays model-agnostic (it carries opaque text + frames) — and as of
 //! protocol v3 it no longer reports a model name at all: the `Meta` frame names
 //! the *provider*, not the model. So the profile is selected where the model
-//! identity is actually known — daemon-side, keyed on the name the daemon reads
-//! from the loaded `.gguf` — and used to construct requests and interpret the
-//! streamed special tokens. Swap the model → swap the profile file → no Jade
-//! program changes.
+//! identity is actually known — daemon-side, from the `.gguf`'s own metadata —
+//! and used to construct requests and interpret the streamed special tokens.
+//! Swap the model → swap the profile file → no Jade program changes.
+//!
+//! ## Two identifiers, in that order
+//!
+//! Selection happens at boot in [`crate::preflight`], which reads the GGUF header
+//! before the model loads and calls [`Registry::select_for`] with both identifiers
+//! the file carries. `general.name` is tried first: it is free text, but a name glob
+//! names one model, so it is the specific answer. `general.architecture` is tried
+//! second: it is the controlled vocabulary llama.cpp itself dispatches on, stable
+//! across publishers and requants, so it catches a model nobody has written a profile
+//! for and lands it on its family's conventions. Matching nothing is a refused boot,
+//! not a silent fallback — see the preflight docs.
 //!
 //! ## Format
 //!
@@ -40,6 +50,15 @@ pub struct ModelProfile {
     /// applies to. `*` matches any sequence. First matching profile wins.
     #[serde(default, rename = "match")]
     pub match_patterns: Vec<String>,
+    /// GGUF `general.architecture` strings this profile serves, e.g. `qwen3moe`.
+    ///
+    /// This is the *family* fallback, tried only after every profile's name globs
+    /// have missed. Architecture is a controlled vocabulary llama.cpp dispatches on
+    /// and is stable across publishers and requants, where `general.name` is free
+    /// text — so a model nobody has written a profile for still lands on its
+    /// family's conventions instead of on bare ChatML. Exact matching, no globs.
+    #[serde(default)]
+    pub arch: Vec<String>,
     /// How the model emits a tool invocation.
     pub tool_call: ToolCall,
     /// How a tool result is rendered back into the conversation.
@@ -282,6 +301,51 @@ impl Registry {
         // first match wins; since push() inserts at the front, user-added profiles
         // are checked before builtins.
         self.profiles.iter().find(|p| p.matches(model_name))
+    }
+
+    /// Select on the two identifiers a GGUF actually carries: `general.name` and
+    /// `general.architecture`.
+    ///
+    /// Name first, architecture second, and the order is the whole point. A name glob
+    /// is specific — it names one model — while an architecture names a whole family,
+    /// so trying arch first would let a family profile shadow the exact profile written
+    /// for the model in hand. Falling back to the family is still much better than the
+    /// alternative: bare ChatML with no tool-call delimiters, which fails silently at
+    /// the first tool call rather than loudly at boot.
+    ///
+    /// Returns the profile and which identifier picked it, so the daemon can say so.
+    pub fn select_for(&self, name: Option<&str>, arch: Option<&str>) -> Option<(&ModelProfile, Selector)> {
+        if let Some(n) = name {
+            if let Some(p) = self.profiles.iter().find(|p| p.matches(n)) {
+                return Some((p, Selector::Name));
+            }
+        }
+        if let Some(a) = arch {
+            if let Some(p) = self.profiles.iter().find(|p| p.arch.iter().any(|x| x == a)) {
+                return Some((p, Selector::Architecture));
+            }
+        }
+        None
+    }
+}
+
+/// Which GGUF identifier picked a profile in [`Registry::select_for`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selector {
+    /// `general.name` matched the profile's `model` or one of its `match` globs.
+    Name,
+    /// `general.architecture` matched one of the profile's `arch` entries — the
+    /// family fallback.
+    Architecture,
+}
+
+impl Selector {
+    /// A phrase for a startup log line.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Selector::Name => "matched general.name",
+            Selector::Architecture => "matched general.architecture (family fallback)",
+        }
     }
 }
 

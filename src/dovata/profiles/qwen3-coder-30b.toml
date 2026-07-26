@@ -8,9 +8,15 @@
 schema_version = 1
 model = "Qwen3-Coder-30B"
 
-# Model names (as reported by the daemon's Meta frame) this profile applies to.
-# `*` is a wildcard; the first matching profile wins.
+# Model names (GGUF `general.name`) this profile applies to. `*` is a wildcard;
+# the first matching profile wins.
 match = ["Qwen3-Coder*", "qwen3-coder*"]
+
+# GGUF `general.architecture` values this profile serves. Tried only after every
+# profile's name globs miss, so this is the family safety net: a Qwen3-family MoE
+# nobody has written a profile for lands here rather than on bare ChatML. The
+# production model reports `qwen3moe` — see src/gguf/sample-qwen3-coder-30b.txt.
+arch = ["qwen3moe"]
 
 [tool_call]
 # Delimiters the model emits around a tool invocation. The daemon makes the close

@@ -30,6 +30,7 @@ reference native provider, `anthropic/` and `openai/` are providers written in J
 | `anthropic/`, `openai/` | Remote-API providers, written in Jade (`.jde`), published as `.so` packages to jadelang.org. Not workspace members. |
 | `infer-engine/` | The vendored llama.cpp bindings fork (`api/` safe wrapper, `ffi/` sys crate) plus `moe-driver/`, our C++/CUDA expert-offload driver. |
 | `packaging/` | Build/packaging xtask — assembles the daemon and provider `.so`s into `dist/`. |
+| `gguf/` | GGUF header reader + `gguf-inspect`. Vets a model file — architecture, hparams, profile match — without llama.cpp, on any machine. |
 | `jade-gpu-mon/` | Standalone terminal VRAM/bandwidth monitor. Its own tiny workspace. |
 | `scripts/` | Python developer tooling: model download, quantization, provider key setup, dev env. |
 | `ec2-tests/` | Python harness that drives the EC2 GPU box (start, sync, build, run evals). |

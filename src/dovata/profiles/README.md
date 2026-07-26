@@ -60,8 +60,11 @@ platform and serves it from jadelang.org.
   (`Registry::builtin()`), so the daemon ships with them.
 - The daemon can also load external profiles at runtime and `Registry::push`
   them to override a builtin (e.g. ship a profile next to a custom model).
-- Selection is by the daemon-read model name against each profile's `match`
-  globs (first match wins; a pushed profile beats a builtin).
+- Selection happens at boot in `dovata::preflight`, from the GGUF header, before the
+  model loads. `general.name` is matched against each profile's `match` globs first
+  (first match wins; a pushed profile beats a builtin); `general.architecture` is then
+  matched against each profile's `arch` list as a family fallback. Matching neither is a
+  refused boot unless `JADE_ALLOW_UNPROFILED=1`.
 
 ## Schema
 
@@ -72,7 +75,16 @@ entries (`tag`, `open`, `close`) for extra special-token spans.
 
 ## Adding a model
 
-1. Copy `qwen3-coder-30b.toml`, rename for the new model.
-2. Set `model`, `match`, and the model's real tool/turn-taking tokens.
-3. Add it to `BUILTIN_PROFILES` in `../src/profile/mod.rs` if it should ship by default.
-4. `cargo test -p dovata` validates every bundled profile.
+1. Generate the skeleton from the model file itself, which fills in `model`, `match`,
+   and `[limits] context_window` and appends the model's chat template as a comment:
+
+   ```sh
+   cargo run -p gguf --bin gguf-inspect -- new-model.gguf --profile-stub > new-model.toml
+   ```
+
+2. Fill in the tool-call and tool-result tokens. These cannot be read out of a GGUF —
+   they are a training convention — so the chat template in the comments is the source.
+3. Set `arch` to the file's `general.architecture` so later models in the same family
+   fall back here instead of onto bare ChatML.
+4. Add it to `BUILTIN_PROFILES` in `../src/profile/mod.rs` if it should ship by default.
+5. `cargo test -p dovata` validates every bundled profile.
