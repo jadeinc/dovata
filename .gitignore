@@ -51,6 +51,7 @@ keys/
 jade.toml
 .env
 .env.ec2
+.ec2.env
 .ec2-host
 .venv/
 # Python bytecode cache (the src/scripts/ and src/ec2-tests/ tooling is Python)
