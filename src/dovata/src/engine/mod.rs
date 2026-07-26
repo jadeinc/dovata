@@ -1,10 +1,11 @@
-//! `provider-dovata` — the local llama.cpp inference backend as a loadable provider.
+//! The local llama.cpp inference backend — the daemon's in-process provider.
 //!
-//! This is the daemon's original in-process llama engine, extracted into a provider
-//! `cdylib` (`.so`) that implements [`Provider`] and is `dlopen`ed by the `dovata`
-//! host. It owns the model/context lifecycle and request dispatch; the host owns the
-//! Unix socket, framing, `health`/`stats`, and the `Meta` frame. The decode engines
-//! live in focused submodules:
+//! [`Dovata`] implements [`Provider`] like any other backend, but it is compiled
+//! *into* the daemon rather than shipped as a `.so`: the host holds it as
+//! `ProviderHandle::Local` and calls it directly, with no `dlopen` and no FFI hop.
+//! It owns the model/context lifecycle and request dispatch; the host owns the Unix
+//! socket, framing, `health`/`stats`, and the `Meta` frame. The decode engines live
+//! in focused submodules:
 //!
 //! * [`kv`]          — KV-cache optimizations (cache-type mapping, prefix reuse).
 //! * [`standard`]    — single-shot inference (one sequence, constrained decode).
@@ -19,11 +20,12 @@
 //!
 //! ## Linux-only / verification note
 //!
-//! This crate links vendored llama.cpp and does not build on macOS. It was extracted
-//! by moving the daemon's `inference*.rs` here and swapping the socket/io_uring output
-//! boundary for a [`FrameSink`]; it has NOT been compiled. Points to check on a Linux
-//! build: the `unsafe impl Send/Sync for Dovata` justification, the `Box::leak`
-//! `'static` model/backend, and the llama-cpp-2 API surface.
+//! This module links vendored llama.cpp and does not build on macOS, so it is behind
+//! `#[cfg(target_os = "linux")]` and nothing here is exercised by a Mac `cargo test`.
+//! It reached its current shape by moving the daemon's old `inference*.rs` here and
+//! swapping the socket/io_uring output boundary for a [`FrameSink`]. Points to
+//! re-check on a Linux build: the `unsafe impl Send/Sync for Dovata` justification,
+//! the `Box::leak` `'static` model/backend, and the llama-cpp-2 API surface.
 
 // concurrency + bench are retained infrastructure exercised by selftests, not by the
 // request path, so they read as dead code to the request-path build.

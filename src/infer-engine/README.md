@@ -1,4 +1,64 @@
+# infer-engine — the vendored llama.cpp bindings
+
+This subtree is our in-tree fork of [utilityai/llama-cpp-rs][readme] (at 0.1.150), plus
+one component that is entirely ours. It is what makes the daemon able to run a model.
+
+> The upstream project's own README is preserved below the line, and still describes the
+> `api/` and `ffi/` crates accurately. Read this section first for what is different here.
+
+## Why it is vendored
+
+The daemon needs to reach below the stock llama.cpp API. The KV-composition engine
+splices precomputed K/V from separate blocks into one attention window; the MoE work
+pages expert weights between host RAM and VRAM during graph build. Neither is expressible
+through the crates.io bindings, and both need matching changes in llama.cpp itself.
+
+So `ffi/llama.cpp` points at **our fork** (`joericks1998/llama.cpp`) at a pinned commit,
+not upstream, and the bindings crates live here where they can be edited. This is also a
+compatibility contract: the model GGUF is quantized with the *exact* llama.cpp commit the
+daemon links, which is why `ci/model-version.lock` records that SHA and explains how to
+re-derive it. Bumping one without the other is how you get a GGUF the daemon refuses to
+load.
+
+These crates used to be their own cargo workspace with a separate lockfile. They are now
+members of the one root workspace, so there is a single `Cargo.lock` and you can edit them
+in place without path-dependency games.
+
+## What is here
+
+| Directory | What it is |
+|---|---|
+| `ffi/` | `llama-cpp-sys-2` — raw bindgen bindings, the C++ wrapper shims, and the `llama.cpp` submodule itself. Building this compiles llama.cpp from source. |
+| `api/` | `llama-cpp-2` — the safe(-ish) Rust wrapper over `ffi`: model, context, batch, sampling, tokens, GGUF, grammar. |
+| `moe-driver/` | **Ours, not upstream.** The C++/CUDA expert-offload driver. See its [README](moe-driver/README.md). |
+
+## Who uses it
+
+Only `src/dovata/src/engine/` — and only on Linux, where the daemon declares
+`llama-cpp-2` and `llama-cpp-sys-2` as target-specific dependencies. Nothing else in the
+repo links it. `ci/model-version.lock` and `src/scripts/quantize-model.py` depend on the
+pinned commit rather than on the code.
+
+## Building
+
+This is the expensive part of the tree and the reason `cargo build --workspace` is a
+Linux operation. It needs the nested submodule checked out, plus cmake and clang:
+
+```sh
+git submodule update --init --recursive
+```
+
+On macOS, build the pure crates by name (`-p dovata`, `-p ovata-infer-protocol`, …) and
+leave these alone. Forgetting the submodule gives you a build that fails against an empty
+directory, which is what the `submodules: recursive` line in the release workflow guards
+against.
+
+---
+
 # 🦙 [llama-cpp-rs][readme] &emsp; [![Docs]][docs.rs] [![Latest Version]][crates.io] [![Lisence]][crates.io]
+
+*Upstream README, retained for reference. The clone instructions below refer to the
+upstream repository, not this vendored copy.*
 
 [Docs]: https://img.shields.io/docsrs/llama-cpp-2.svg
 

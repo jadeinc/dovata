@@ -32,6 +32,27 @@ matching profile → no Jade program changes.**
   (The import name is a valid identifier of your choice; the `.so` filename keeps the
   hyphenated model name.)
 
+Both artifacts describe the same model, so they must agree on the delimiters and the
+tool-name field. They are separate files because they are consumed by different
+runtimes, not because they are allowed to differ.
+
+## The files here
+
+| File | What it is |
+|---|---|
+| `qwen3-coder-30b.toml` | The daemon-side profile: delimiters, tool-result wrapping, the ChatML template markers, and the `[limits]` block (native `context_window`, `rlm_max_context`). |
+| `qwen3-coder-30b.jde` | The language-side profile: `find_tool_call` / `find_tool_calls` over a reply. |
+| `qwen3-coder-30b.expert-order.json` | Not a profile — the per-layer MoE expert ranking, measured offline, loaded by `dovata::moe` and handed to the C driver. Lives here because it is model-specific data. |
+
+## Who reads them
+
+The **daemon** compiles the TOMLs in via `dovata::profile::Registry::builtin()` and uses
+the selected one to render prompts (`dovata::prompt`) and to parse the token stream
+(`dovata::profile::stream`). A **Jade program** installs the `.jde` package to parse tool
+calls out of a reply it received over the socket. The **publish-providers workflow**
+(`.github/workflows/publish-providers.yml`) builds the `.jde` to a native `.so` per
+platform and serves it from jadelang.org.
+
 ## Packaging
 
 - One TOML file per model, named for the model (`qwen3-coder-30b.toml`).

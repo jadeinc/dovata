@@ -10,6 +10,24 @@ model's factual accuracy. Sampling is non-greedy, so phrase any value checks
 loosely; structural checks (a struct decoded, a grammar matched, JSON parsed) are
 deterministic by construction.
 
+## Why they are written in Jade
+
+The daemon's own `cargo test` covers the pure core thoroughly, but it can only ever test
+the daemon against itself. These evals come in through the front door: a real Jade VM,
+the real socket, the real wire protocol, a real model. If the daemon and the language
+disagree about what a frame means, or a profile's delimiters are wrong, or the grammar
+never reaches the sampler, this is where it shows up and nothing else will catch it.
+
+That is also why they live in the daemon repo rather than the language repo — they are
+the daemon's acceptance criteria, expressed in the client's language.
+
+## Who runs them
+
+`src/ec2-tests/run-tests.py` is the only harness. It starts `dovata`, waits for the
+listening line, runs each `.jde` here, and greps the output. They depend on a live daemon,
+a model on disk, and the Jade runtime being installed on the box — so they do not run
+locally and are not part of any `cargo test`.
+
 ## Convention
 
 Each `.jde` prints exactly one line `PASS: <description>` when its assertions hold.
