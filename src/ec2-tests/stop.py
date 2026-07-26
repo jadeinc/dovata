@@ -9,14 +9,14 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _ec2 import info, ok, load_env, aws_bin, repo_root
+from _ec2 import info, ok, load_env, aws_bin, repo_root, env_required
 
 
 def main():
     load_env()
     aws = aws_bin()
-    instance = os.environ["JADE_INSTANCE_ID"]
-    region = os.environ["JADE_REGION"]
+    instance = env_required("INSTANCE_ID")
+    region = env_required("AWS_REGION")
 
     info(f"Stopping {instance}...")
     subprocess.run([aws, "ec2", "stop-instances", "--instance-ids", instance,

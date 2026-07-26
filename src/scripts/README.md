@@ -12,8 +12,12 @@ half-run. Python keeps the flow readable; nothing here is a library.
 ## What each script does
 
 - `_common.py` — shared helpers: the `info`/`ok`/`warn`/`die` logging, a `run` wrapper,
-  checksum and disk-usage utilities, `.env` loading. Every other script adds this
-  directory to `sys.path` and imports from it.
+  checksum and disk-usage utilities, `.env` loading, and `ENV_ALIASES` /
+  `normalize_env_aliases`, which reconcile the env file's variable names with the
+  older `JADE_`-prefixed ones and with the AWS CLI's own spellings. Every other script
+  adds this directory to `sys.path` and imports from it — including
+  `src/ec2-tests/_ec2.py`, which reaches over for the alias map specifically so there
+  is only one copy of it.
 - `setup-dev.py` — creates a project-local `.venv` and installs the AWS CLI into it.
   Writes nothing globally. Credentials come from the environment, not from a config file.
 - `download-model.py` — fetches a small CPU-capable GGUF (Llama-3.2-3B-Instruct-Q4_K_M,

@@ -46,15 +46,24 @@ the individual scripts are a dozen lines.
 `load_env` reads an optional `.env` then `.ec2.env` from the repo root, and the scripts
 then require these variables:
 
-| Variable | Used for |
-|---|---|
-| `JADE_INSTANCE_ID` | which instance to start/stop/describe |
-| `JADE_REGION` | its AWS region |
-| `JADE_SSH_KEY` | path to the `.pem`, relative to the repo root (see `keys/`) |
-| `JADE_SSH_USER` | SSH login user |
+| Variable | Used for | Also accepted as |
+|---|---|---|
+| `INSTANCE_ID` | which instance to start/stop/describe | `JADE_INSTANCE_ID` |
+| `AWS_REGION` | its AWS region | `JADE_REGION` |
+| `SSH_KEY` | path to the `.pem`, relative to the repo root (see `keys/`) | `JADE_SSH_KEY` |
+| `SSH_USER` | SSH login user | `JADE_SSH_USER` |
+| `AWS_ACCESS_KEY_ID` | credentials, and what the AWS CLI itself reads | `AWS_ACCESS_KEY` |
+| `AWS_SECRET_ACCESS_KEY` | ditto | — |
 
-Plus AWS credentials in the environment. All of it is gitignored — the env files, the
-`keys/` directory, and the `.ec2-host` hostname cache.
+Three naming conventions have to coexist: the short names the env file uses, the
+`JADE_`-prefixed ones the scripts used to read, and the AWS CLI's own spellings, which
+are not ours to rename. Rather than pick a winner, `_common.ENV_ALIASES` maps each name
+the code reads to the names accepted for it and `load_env` fills them in. Anything
+already exported in your shell wins over anything in a file. That map is the single
+definition — a second copy is how the code and the env file drifted apart before.
+
+All of it is gitignored — the env files, the `keys/` directory, and the `.ec2-host`
+hostname cache.
 
 The file was called `.env.ec2` until the rename to `.ec2.env`. If you have an old
 checkout that still dies with `.env.ec2 not found`, that is why; the contents did not

@@ -11,15 +11,15 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _ec2 import (info, ok, die, load_env, aws_bin, repo_root,
-                  ssh_key, ssh_user)
+                  ssh_key, ssh_user, env_required)
 
 
 def main():
     load_env()
     aws = aws_bin()
     root = repo_root()
-    instance = os.environ["JADE_INSTANCE_ID"]
-    region = os.environ["JADE_REGION"]
+    instance = env_required("INSTANCE_ID")
+    region = env_required("AWS_REGION")
 
     info(f"Starting {instance} in {region}...")
     subprocess.run([aws, "ec2", "start-instances", "--instance-ids", instance,

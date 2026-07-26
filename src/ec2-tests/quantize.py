@@ -33,7 +33,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 from _ec2 import (info, ok, die, load_env, aws_bin, resolve_host,
-                  ssh_key, ssh_cmd, repo_root)
+                  ssh_key, ssh_cmd, repo_root, env_required)
 
 REMOTE_DIR = "jade-inference-daemon"
 REMOTE_RUNNER = "quantize-run.py"
@@ -150,7 +150,7 @@ def main(argv):
 
     # --- sync this repo to the box ------------------------------------------
     root = repo_root()
-    user = os.environ["JADE_SSH_USER"]
+    user = env_required("SSH_USER")
     info(f"syncing repo to {host}:~/{REMOTE_DIR}")
     subprocess.run(
         ["rsync", "-az", "--delete", "--progress",
@@ -167,12 +167,13 @@ def main(argv):
     quant_args = []
     if opts["upload"]:
         if not (os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY")):
-            die("AWS creds not in .env — add AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or use --no-upload")
+            die("AWS creds not set — add AWS_ACCESS_KEY (or AWS_ACCESS_KEY_ID) and "
+                "AWS_SECRET_ACCESS_KEY to .ec2.env, or use --no-upload")
         quant_args.append("--upload")
     quant_args += opts["pass_args"]
 
     # --- stage the remote runner --------------------------------------------
-    region = os.environ.get("JADE_REGION", "us-east-1")
+    region = os.environ.get("AWS_REGION", "us-east-1")
     runner = build_runner(region, quant_args)
     info(f"staging remote runner ~/{REMOTE_RUNNER} on {host}")
     subprocess.run(ssh_cmd(host, remote=f"cat > ~/{REMOTE_RUNNER}"),

@@ -10,6 +10,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# The variable-name alias map lives in src/scripts/_common.py and is imported
+# rather than copied: two copies of it is precisely how the code and the env
+# file drifted apart in the first place.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from _common import env_required, normalize_env_aliases  # noqa: E402
+
 
 def info(msg):
     print(f"==> {msg}")
@@ -61,6 +67,8 @@ def load_env(require_ec2=True):
         _load_dotenv(root / ".env")
     if env_ec2.is_file():
         _load_dotenv(env_ec2)
+    # Reconcile the file's names with the ones the code and the AWS CLI read.
+    normalize_env_aliases()
 
 
 def aws_bin():
@@ -85,8 +93,8 @@ def resolve_host(aws=None):
     aws = aws or aws_bin()
     out = subprocess.run(
         [aws, "ec2", "describe-instances",
-         "--instance-ids", os.environ["JADE_INSTANCE_ID"],
-         "--region", os.environ["JADE_REGION"],
+         "--instance-ids", env_required("INSTANCE_ID"),
+         "--region", env_required("AWS_REGION"),
          "--query", "Reservations[0].Instances[0].PublicDnsName",
          "--output", "text"],
         capture_output=True, text=True,
@@ -98,11 +106,11 @@ def resolve_host(aws=None):
 
 
 def ssh_key():
-    return str(repo_root() / os.environ["JADE_SSH_KEY"])
+    return str(repo_root() / env_required("SSH_KEY"))
 
 
 def ssh_user():
-    return os.environ["JADE_SSH_USER"]
+    return env_required("SSH_USER")
 
 
 def ssh_cmd(host, remote=None, tty=False, extra_ssh_opts=None):

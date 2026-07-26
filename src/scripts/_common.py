@@ -82,3 +82,54 @@ def load_dotenv(path, override=True):
             val = val[1:-1]
         if override or key not in os.environ:
             os.environ[key] = val
+
+
+# ── Environment variable names ─────────────────────────────────────────────
+#
+# Three naming conventions have to coexist here. The env file uses short,
+# unprefixed names (INSTANCE_ID, AWS_REGION). The scripts used to read JADE_-
+# prefixed ones. And the AWS CLI, which every one of these scripts shells out
+# to, reads its own spellings and knows nothing about either of ours.
+#
+# So rather than pick a winner and break the other two, each name the code reads
+# is listed here with the names accepted for it, in priority order. This is the
+# single definition — a copy in the ec2-tests helper is exactly how the last
+# mismatch happened.
+ENV_ALIASES = {
+    "INSTANCE_ID": ("INSTANCE_ID", "JADE_INSTANCE_ID"),
+    "AWS_REGION": ("AWS_REGION", "JADE_REGION"),
+    "SSH_KEY": ("SSH_KEY", "JADE_SSH_KEY"),
+    "SSH_USER": ("SSH_USER", "JADE_SSH_USER"),
+    # Not ours to rename: the AWS CLI looks for these exact names, so a file
+    # written with AWS_ACCESS_KEY is copied across into the one it reads.
+    "AWS_ACCESS_KEY_ID": ("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY"),
+    "AWS_DEFAULT_REGION": ("AWS_DEFAULT_REGION", "AWS_REGION", "JADE_REGION"),
+}
+
+
+def normalize_env_aliases():
+    """Fill each canonical name from the first alias that is set.
+
+    Never overwrites a name that already has a value, so anything exported in
+    the shell beats anything read out of a file. Returns the (canonical, source)
+    pairs it filled, for logging.
+    """
+    filled = []
+    for canonical, names in ENV_ALIASES.items():
+        if os.environ.get(canonical):
+            continue
+        for name in names:
+            if os.environ.get(name):
+                os.environ[canonical] = os.environ[name]
+                filled.append((canonical, name))
+                break
+    return filled
+
+
+def env_required(name, source=".ec2.env"):
+    """A variable that must be set, or a message naming where to set it."""
+    val = os.environ.get(name)
+    if not val:
+        die(f"{name} not set — add it to {source} "
+            f"(see src/ec2-tests/README.md for the full list)")
+    return val
