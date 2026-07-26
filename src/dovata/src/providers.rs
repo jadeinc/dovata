@@ -226,7 +226,8 @@ mod tests {
     fn echo_fixture_path() -> std::path::PathBuf {
         let filename = libloading::library_filename("ovata_provider_echo");
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        p.pop(); // repo root (manifest dir is <repo>/dovata)
+        p.pop(); // <repo>/src   (manifest dir is <repo>/src/dovata)
+        p.pop(); // <repo>       — cargo's target/ stays at the workspace root
         p.push("target");
         p.push("debug");
         p.push(filename);

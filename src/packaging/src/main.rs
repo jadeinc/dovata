@@ -178,10 +178,12 @@ fn assemble(plan: &Plan) -> Result<(), String> {
     Ok(())
 }
 
-/// The workspace root (packaging lives at `<root>/packaging`).
+/// The workspace root. This crate lives at `<root>/src/packaging`, and cargo's
+/// `target/` plus the `dist/` bundle both sit at `<root>`, so pop twice.
 fn workspace_root() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
+    p.pop(); // <root>/src
+    p.pop(); // <root>
     p
 }
 
