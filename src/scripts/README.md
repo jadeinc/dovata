@@ -26,10 +26,33 @@ half-run. Python keeps the flow readable; nothing here is a library.
 - `quantize-model.py` — the production model pipeline, and the serious one. Downloads (or
   takes locally-merged) weights, converts to GGUF f16, builds a code-calibrated importance
   matrix, and quantizes to Q4_K_M. Emits the model, its `.sha256`, and a `.buildinfo`
-  provenance file into `dist/model`.
+  provenance file into `dist/model`. Its `--from-url` mode is the shortcut for a model
+  that is already quantized: it fetches a `.gguf` straight from a URL, verifies the
+  header, and publishes it to the same S3 contract — no GPU, no llama.cpp build, no
+  150 GB of scratch.
 - `configure-provider.py` — writes `~/.jade/providers/<name>.json` at mode 0600 with an
   API key, which is where the Anthropic and OpenAI providers look when the corresponding
   `*_API_KEY` env var is not set. Prompts hidden if the key is not given as an argument.
+
+## Two ways a model reaches S3
+
+Both land at `s3://jade-os-release-bucket/models/model.gguf` with a `.sha256` sidecar,
+so nothing downstream can tell them apart. What differs is provenance, and the
+`.buildinfo` file says which one you got.
+
+The pipeline is for a model we build: it pins every input through
+`ci/model-version.lock` and the result is reproducible. `--from-url` is for a model
+someone else already quantized — it downloads, verifies, and republishes, and its
+buildinfo records the source URL and states plainly that it is *not* reproducible from
+the lock. Reach for the pipeline whenever the weights are ours, which is every
+fine-tune; reach for `--from-url` when upstream has already shipped the exact GGUF you
+want and quantizing it again would just burn GPU hours to arrive at the same file.
+
+`--from-url` rewrites a HuggingFace `/blob/` link to `/resolve/`, so pasting the URL out
+of the browser works. It refuses a sharded GGUF, since the contract is one file, and it
+runs `gguf-inspect` before upload — an HTML error page saved as `model.gguf`, a
+truncated transfer, or an architecture the pinned engine cannot load all fail here
+rather than in S3.
 
 ## The quantization contract
 

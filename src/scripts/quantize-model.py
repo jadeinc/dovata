@@ -19,11 +19,20 @@ Q4_K_M ~18) and a CUDA GPU for the imatrix pass — it can't run on a laptop or 
 GitHub-hosted runner. Run it on the EC2 GPU box; src/ec2-tests/quantize.py is the
 one-command driver (start box -> sync repo -> run this -> upload in-region).
 
+There is also a shortcut for a model that is *already* quantized. `--from-url` takes
+any URL to a `.gguf` — a HuggingFace link pasted straight out of the browser is fine,
+`/blob/` is rewritten to `/resolve/` — downloads it, verifies the header with
+`gguf-inspect`, writes the same sha256 sidecar, and publishes it to the same S3
+contract. No GPU, no llama.cpp build, no 150 GB of scratch. Use it when upstream has
+already shipped a GGUF; use the pipeline above when they have not, which is every
+model we fine-tune ourselves.
+
 Usage:
   python3 src/scripts/quantize-model.py                       # pins from ci/model-version.lock
   python3 src/scripts/quantize-model.py --local-dir ./merged  # use locally-merged weights
   python3 src/scripts/quantize-model.py --upload              # also push to the S3 contract
   python3 src/scripts/quantize-model.py --out-dir /tmp/out
+  python3 src/scripts/quantize-model.py --from-url <url> --upload   # publish a prebuilt GGUF
 
 Key env overrides (defaults come from ci/model-version.lock):
   HF_REPO HF_REVISION QUANT IMATRIX_CHUNKS LLAMA_CPP_COMMIT CUDAARCHS
@@ -35,6 +44,7 @@ Key env overrides (defaults come from ci/model-version.lock):
 """
 import argparse
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -70,9 +80,130 @@ def load_lock(lock_path):
             os.environ[key] = val.strip()
 
 
+def resolve_aws(venv=None):
+    """Find an `aws` CLI, installing one into `venv` as a last resort."""
+    aws_cmd = shutil.which("aws")
+    if aws_cmd:
+        return aws_cmd
+    repo_venv = REPO_ROOT / ".venv" / "bin" / "aws"
+    if repo_venv.is_file():
+        return str(repo_venv)
+    if venv is not None:
+        info("aws CLI not found — installing awscli into the build venv")
+        pyinstall("awscli")
+        return str(venv / "bin" / "aws")
+    die("aws CLI not found — run `python3 src/scripts/setup-dev.py` to install it")
+
+
+def upload_model(aws_cmd, out_dir, bucket, prefix):
+    """Publish model.gguf + its sha256 sidecar to the cross-repo S3 contract."""
+    dest = f"s3://{bucket}/{prefix}"
+    info(f"uploading to {dest}/ (the jade-os contract)")
+    run([aws_cmd, "s3", "cp", str(out_dir / "model.gguf"), f"{dest}/model.gguf", "--no-progress"])
+    run([aws_cmd, "s3", "cp", str(out_dir / "model.gguf.sha256"),
+         f"{dest}/model.gguf.sha256", "--no-progress"])
+    ok(f"published {dest}/model.gguf (+ .sha256)")
+
+
+def normalize_gguf_url(url):
+    """Turn a HuggingFace page URL into a direct download URL.
+
+    Copying the link out of the browser gives you a `/blob/` URL, which serves an
+    HTML page — download it and you get a few KB of markup named model.gguf, which
+    then fails somewhere much less obvious. `/resolve/` is the actual file.
+    """
+    if "/blob/" in url:
+        url = url.replace("/blob/", "/resolve/", 1)
+    return url.split("?", 1)[0]
+
+
+def publish_from_url(url, out_dir, bucket, prefix, do_upload):
+    """Publish an already-quantized GGUF instead of building one.
+
+    The pipeline below this exists because a fine-tuned model has no community
+    GGUF. When one *does* exist — an upstream release, a new model we have not
+    fine-tuned yet — quantizing it ourselves reproduces work someone already did,
+    on a GPU box, for hours. This path just fetches the file and publishes it to
+    the same contract, with the same sidecar, so consumers cannot tell the
+    difference.
+
+    What it does not do is pretend the result is reproducible from
+    ci/model-version.lock. The buildinfo records the source URL and says so.
+    """
+    url = normalize_gguf_url(url)
+    name = url.rsplit("/", 1)[-1]
+    if not name.endswith(".gguf"):
+        die(f"not a .gguf URL: {url}")
+
+    # A sharded GGUF is several files; the contract is one model.gguf, and the
+    # daemon loads a single path. Catch it here rather than publishing part 1 of 2.
+    shard = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", name)
+    if shard and shard.group(2) != "00001":
+        die(f"{name} is shard {shard.group(1)} of {shard.group(2)} — the contract is a "
+            "single model.gguf.\n  Download every shard and merge them first:\n"
+            "    llama-gguf-split --merge <first-shard>.gguf model.gguf")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    final = out_dir / "model.gguf"
+
+    avail_gb = shutil.disk_usage(out_dir).free // (1024 ** 3)
+    min_gb = int(os.environ.get("MIN_DISK_GB", "30"))
+    info(f"free disk on {out_dir}: {avail_gb} GB (need >= {min_gb})")
+    if avail_gb < min_gb:
+        die(f"insufficient disk: {avail_gb} GB < {min_gb} GB (set MIN_DISK_GB to override)")
+
+    info(f"downloading {name}")
+    curl = ["curl", "-L", "--fail", "--progress-bar", "-C", "-", "-o", str(final)]
+    if os.environ.get("HF_TOKEN"):
+        # Gated repos. Passed as a header so the token never lands in the URL.
+        curl += ["-H", f"Authorization: Bearer {os.environ['HF_TOKEN']}"]
+    run(curl + [url])
+    ok(f"downloaded {du_sh(final)}  {final}")
+
+    # Verify with our own header reader rather than trusting the filename. It is a
+    # dependency-free crate in this repo, so this costs a one-second build and
+    # catches an HTML error page, a truncated transfer, or an architecture the
+    # pinned engine cannot load — before any of it reaches S3.
+    cargo = shutil.which("cargo")
+    if cargo:
+        info("verifying the GGUF header")
+        rc = subprocess.run(
+            [cargo, "run", "-q", "-p", "gguf", "--bin", "gguf-inspect", "--", str(final)],
+            cwd=str(REPO_ROOT),
+        ).returncode
+        if rc != 0:
+            die("gguf-inspect rejected this file — not uploading. See the report above.")
+    else:
+        print("    WARN: cargo not found — skipping header verification")
+
+    digest = sha256_file(final)
+    (out_dir / "model.gguf.sha256").write_text(f"{digest}  model.gguf\n")
+    (out_dir / "model.gguf.buildinfo").write_text(
+        f"model_sha256={digest}\n"
+        f"source_url={url}\n"
+        f"quant=prebuilt (not quantized here)\n"
+        f"provenance=downloaded as-is; NOT reproducible from ci/model-version.lock\n"
+        f"size_bytes={final.stat().st_size}\n"
+    )
+    ok(f"model.gguf      {du_sh(final)}  sha256={digest}")
+
+    if do_upload:
+        upload_model(resolve_aws(), out_dir, bucket, prefix)
+    else:
+        info("staged but not uploaded — pass --upload to publish")
+    return 0
+
+
 def main():
+    # This script is a console log punctuated by long subprocesses that write to the
+    # same terminal. Block-buffered stdout makes their output land before ours, so a
+    # verification report can appear above the banner explaining what is being
+    # verified. Line buffering keeps the transcript in the order things happened.
+    sys.stdout.reconfigure(line_buffering=True)
+
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--local-dir", default="")
+    ap.add_argument("--from-url", default="")
     ap.add_argument("--out-dir", default=str(REPO_ROOT / "dist" / "model"))
     ap.add_argument("--upload", action="store_true")
     ap.add_argument("-h", "--help", action="store_true")
@@ -106,6 +237,18 @@ def main():
     min_disk_gb = int(os.environ.get("MIN_DISK_GB", "150"))
     s3_bucket = os.environ.get("S3_BUCKET", "jade-os-release-bucket")
     s3_prefix = os.environ.get("S3_PREFIX", "models")
+
+    # Publishing an existing GGUF skips everything below: no weights download, no
+    # llama.cpp build, no imatrix, no GPU. It needs none of the pins either.
+    if args.from_url:
+        info("JADE OS model publish (prebuilt GGUF)")
+        print(f"    source   : {args.from_url}")
+        print(f"    out-dir  : {out_dir}")
+        print(f"    target   : s3://{s3_bucket}/{s3_prefix}/model.gguf")
+        print()
+        if local_dir:
+            die("--from-url and --local-dir are mutually exclusive")
+        return publish_from_url(args.from_url, out_dir, s3_bucket, s3_prefix, do_upload)
 
     info("JADE OS model quantization")
     print(f"    HF_REPO          : {hf_repo}")
@@ -308,17 +451,7 @@ print(f"    OK: GGUF v{ver}, architecture={arch}, tensors={len(r.tensors)}")
     if do_upload:
         # Prefer a system aws; otherwise install it into the build venv (rather
         # than depending on a system/monorepo aws) and call it by path.
-        aws_cmd = shutil.which("aws")
-        if not aws_cmd:
-            info("aws CLI not found — installing awscli into the build venv")
-            pyinstall("awscli")
-            aws_cmd = str(venv / "bin" / "aws")
-        dest = f"s3://{s3_bucket}/{s3_prefix}"
-        info(f"uploading to {dest}/ (the jade-os contract)")
-        run([aws_cmd, "s3", "cp", str(final), f"{dest}/model.gguf", "--no-progress"])
-        run([aws_cmd, "s3", "cp", str(out_dir / "model.gguf.sha256"),
-             f"{dest}/model.gguf.sha256", "--no-progress"])
-        ok(f"published {dest}/model.gguf (+ .sha256)")
+        upload_model(resolve_aws(venv), out_dir, s3_bucket, s3_prefix)
 
     print()
     ok(f"done. quantized with llama.cpp {llama_commit} "
