@@ -50,7 +50,6 @@ open-questions/
 keys/
 jade.toml
 .env
-.env.ec2
 .ec2.env
 .ec2-host
 .venv/

@@ -43,8 +43,8 @@ the individual scripts are a dozen lines.
 
 ## Configuration
 
-`load_env` reads an optional `.env` then an EC2 env file from the repo root, and the
-scripts then require these variables:
+`load_env` reads an optional `.env` then `.ec2.env` from the repo root, and the scripts
+then require these variables:
 
 | Variable | Used for |
 |---|---|
@@ -56,10 +56,9 @@ scripts then require these variables:
 Plus AWS credentials in the environment. All of it is gitignored — the env files, the
 `keys/` directory, and the `.ec2-host` hostname cache.
 
-> **Heads up:** `_ec2.py::load_env` currently looks for a file named `.env.ec2`, while the
-> repo's `.gitignore` was recently changed to `.ec2.env`. If a script dies with
-> `.env.ec2 not found`, that mismatch is why. Whichever name wins, the variables above are
-> what the code reads.
+The file was called `.env.ec2` until the rename to `.ec2.env`. If you have an old
+checkout that still dies with `.env.ec2 not found`, that is why; the contents did not
+change, only the name.
 
 ## Who uses it
 

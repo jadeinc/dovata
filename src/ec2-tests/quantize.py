@@ -155,7 +155,7 @@ def main(argv):
     subprocess.run(
         ["rsync", "-az", "--delete", "--progress",
          "--exclude", ".git/", "--exclude", "target/", "--exclude", "keys/",
-         "--exclude", ".env", "--exclude", ".env.ec2", "--exclude", ".ec2-host",
+         "--exclude", ".env", "--exclude", ".ec2.env", "--exclude", ".ec2-host",
          "--exclude", "dist/", "--exclude", "build/", "--exclude", "*.gguf",
          "-e", f"ssh -o StrictHostKeyChecking=no -i {key}",
          f"{root}/", f"{user}@{host}:~/{REMOTE_DIR}/"],

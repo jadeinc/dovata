@@ -53,11 +53,11 @@ def main():
 
     # ── Load credentials and config ────────────────────────────────────────
     env = ROOT / ".env"
-    env_ec2 = ROOT / ".env.ec2"
+    env_ec2 = ROOT / ".ec2.env"
     if env.is_file():
         load_dotenv(env)
     if not env_ec2.is_file():
-        die(".env.ec2 not found")
+        die(".ec2.env not found")
     load_dotenv(env_ec2)
 
     if not os.environ.get("AWS_ACCESS_KEY_ID"):

@@ -1,6 +1,6 @@
 """Shared helpers for the EC2 test harness (stdlib only; shells out to aws/ssh).
 
-The old bash scripts each re-derived the repo root, sourced .env/.env.ec2,
+The old bash scripts each re-derived the repo root, sourced .env/.ec2.env,
 located the aws CLI, and resolved the instance hostname. That boilerplate lives
 here now so the individual scripts stay small.
 """
@@ -52,11 +52,11 @@ def _load_dotenv(path):
 
 
 def load_env(require_ec2=True):
-    """Load .env (optional) then .env.ec2 into os.environ."""
+    """Load .env (optional) then .ec2.env into os.environ."""
     root = repo_root()
-    env_ec2 = root / ".env.ec2"
+    env_ec2 = root / ".ec2.env"
     if require_ec2 and not env_ec2.is_file():
-        die(".env.ec2 not found — copy from .env.ec2.example")
+        die(".ec2.env not found — see src/ec2-tests/README.md for the variables it needs")
     if (root / ".env").is_file():
         _load_dotenv(root / ".env")
     if env_ec2.is_file():
