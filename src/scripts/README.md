@@ -36,9 +36,11 @@ half-run. Python keeps the flow readable; nothing here is a library.
 
 ## Two ways a model reaches S3
 
-Both land at `s3://jade-os-release-bucket/models/model.gguf` with a `.sha256` sidecar,
-so nothing downstream can tell them apart. What differs is provenance, and the
-`.buildinfo` file says which one you got.
+Both land at `s3://jade-os-release-bucket/models/model.gguf` with two sidecars,
+`.sha256` and `.buildinfo`, so nothing downstream can tell them apart. What differs is
+provenance, and the `.buildinfo` says which one you got. It ships next to the model
+rather than staying on the build machine, because whoever ends up holding the file is
+the person who needs to know where it came from.
 
 The pipeline is for a model we build: it pins every input through
 `ci/model-version.lock` and the result is reproducible. `--from-url` is for a model
@@ -56,11 +58,15 @@ rather than in S3.
 
 ## The quantization contract
 
-`quantize-model.py` uses the **exact llama.cpp commit the daemon links**, taken from
-`ci/model-version.lock`. That is not a nicety — a GGUF written by a different commit can
-be rejected outright for quant-type or GGUF-version skew. `ci/model-version.lock` is the
-single source of truth for the model repo, revision, quant scheme, and toolchain commit;
-bumping a value there is the intended way to cut a new model release.
+`quantize-model.py` uses the **exact llama.cpp commit the daemon links**, read from the
+`src/infer-engine/ffi/llama.cpp` submodule with `git ls-tree`. That is not a nicety — a
+GGUF written by a different commit can be rejected outright for quant-type or
+GGUF-version skew. The commit is read from the submodule rather than recorded anywhere,
+so it cannot drift from what the daemon actually links; it used to be a hand-copied line
+in `ci/model-version.lock`, and by the time it was removed the copy was two weeks stale.
+
+`ci/model-version.lock` still holds the model repo, revision, and quant scheme. Bumping
+a value there is the intended way to cut a new model release.
 
 It also cannot run on a laptop. Peak disk is around 150 GB (safetensors ~60, f16 GGUF
 ~60, Q4_K_M ~18) and the imatrix pass needs a CUDA GPU. `src/ec2-tests/quantize.py` is

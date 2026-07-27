@@ -7,8 +7,8 @@ links, so the GGUF can never be rejected for quant-type / GGUF-version skew.
 Outputs (into --out-dir, default ./dist/model):
   model.gguf            the Q4_K_M quantized model
   model.gguf.sha256     `sha256sum model.gguf` output (jade-os reads field 1)
-  model.gguf.buildinfo  provenance (source rev, llama.cpp commit, sizes) — NOT
-                        uploaded to S3; for release notes / debugging only.
+  model.gguf.buildinfo  provenance (source rev, llama.cpp commit, sizes) — uploaded
+                        alongside the model, so the file carries its own history.
 
 This is the permanent self-quantization path: post-LoRA-fine-tune there is no
 community GGUF, so it accepts locally-merged weights too (--local-dir), not
@@ -125,13 +125,24 @@ def resolve_aws(venv=None):
 
 
 def upload_model(aws_cmd, out_dir, bucket, prefix):
-    """Publish model.gguf + its sha256 sidecar to the cross-repo S3 contract."""
+    """Publish model.gguf and its two sidecars to the cross-repo S3 contract.
+
+    The buildinfo goes up with the model on purpose. It is the only record of where
+    a given model.gguf came from — the source URL, or the pins it was built from —
+    and whoever is holding the file later is exactly the person who needs to know.
+    Leaving it on the build machine means the answer lives somewhere the file does
+    not.
+    """
     dest = f"s3://{bucket}/{prefix}"
     info(f"uploading to {dest}/ (the jade-os contract)")
     run([aws_cmd, "s3", "cp", str(out_dir / "model.gguf"), f"{dest}/model.gguf", "--no-progress"])
-    run([aws_cmd, "s3", "cp", str(out_dir / "model.gguf.sha256"),
-         f"{dest}/model.gguf.sha256", "--no-progress"])
-    ok(f"published {dest}/model.gguf (+ .sha256)")
+    for sidecar in ("model.gguf.sha256", "model.gguf.buildinfo"):
+        src = out_dir / sidecar
+        if not src.is_file():
+            print(f"    WARN: {sidecar} missing — not uploaded")
+            continue
+        run([aws_cmd, "s3", "cp", str(src), f"{dest}/{sidecar}", "--no-progress"])
+    ok(f"published {dest}/model.gguf (+ .sha256, .buildinfo)")
 
 
 def normalize_gguf_url(url):
