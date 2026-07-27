@@ -1,0 +1,75 @@
+# dovata inference eval suite
+
+End-to-end evals for the `dovata` inference daemon, written in Jade. Each program
+exercises one daemon capability through the real runtime: the Jade VM connects to
+`~/.jade/llm.sock` and every `?p` dereference is served by `dovata`.
+
+These are **integration/correctness** evals — they assert the daemon's *mechanics*
+(grammar validity, type coercion, anchor handling, multi-turn context), not the
+model's factual accuracy. Sampling is non-greedy, so phrase any value checks
+loosely; structural checks (a struct decoded, a grammar matched, JSON parsed) are
+deterministic by construction.
+
+## Why they are written in Jade
+
+The daemon's own `cargo test` covers the pure core thoroughly, but it can only ever test
+the daemon against itself. These evals come in through the front door: a real Jade VM,
+the real socket, the real wire protocol, a real model. If the daemon and the language
+disagree about what a frame means, or a profile's delimiters are wrong, or the grammar
+never reaches the sampler, this is where it shows up and nothing else will catch it.
+
+That is also why they live in the daemon repo rather than the language repo — they are
+the daemon's acceptance criteria, expressed in the client's language.
+
+## Who runs them
+
+`src/ec2-tests/run-tests.py` is the only harness. It starts `dovata`, waits for the
+listening line, runs each `.jde` here, and greps the output. They depend on a live daemon,
+a model on disk, and the Jade runtime being installed on the box — so they do not run
+locally and are not part of any `cargo test`.
+
+## Convention
+
+Each `.jde` prints exactly one line `PASS: <description>` when its assertions hold.
+The harness (`src/ec2-tests/run-tests.py`) greps for `^PASS:`; any other outcome is a
+FAIL and the program's last output line is shown as the diagnostic.
+
+## Coverage
+
+| File                  | Daemon path exercised                                            |
+|-----------------------|------------------------------------------------------------------|
+| `01_smoke.jde`        | socket connect + unconstrained generation                        |
+| `02_primitives.jde`   | full-primitive grammars (int/bool/float coercion), no anchor     |
+| `03_struct.jde`       | JSON object grammar (explicit GBNF) → parseable object           |
+| `04_collections.jde`  | JSON array grammar (explicit GBNF) → non-empty parsed array      |
+| `05_grammar.jde`      | explicit user GBNF via `Grammar.new`, enforced from token 1      |
+| `06_multiturn.jde`    | `_ovata_infer_protocol: messages` history threading (basis of KV reuse) |
+| `07_tool_anchor.jde`  | anchored grammar: deferred enforcement, depth retire, stop-strip |
+| `08_latency.jde`      | coarse end-to-end latency / throughput probe (Phase 0 bench)     |
+
+`07` maps directly onto the `control.rs` state machine refactored in Phase 0
+(anchor span + `</tool>` stop-anchor + JSON depth tracking).
+
+## Notes
+
+- **Imports use dot notation, no quotes** in this runtime (v1.1.8): `use llm`,
+  `use std.json`, `use std.time` — *not* `use "std/json"`.
+- These assert daemon *mechanics* (grammar validity, anchors, multi-turn), not the
+  runtime's typed struct coercion (`?p |> SomeStruct`), which is currently flaky on
+  the deployed daemon — the project's own `programs/lib/tests/test_gbnf.jde` fails
+  on struct decode identically. `03`/`04` therefore use explicit JSON GBNF +
+  `json.parse` instead of `|> Struct`.
+- Baseline observed on a `g5.xlarge` (A10G) with the 18 GB model:
+  **TTFT ≈ 57 ms, decode ≈ 165 tok/s** (coarse, via `08_latency.jde`).
+
+## Running
+
+On the EC2 GPU instance, with `dovata` built (`--features cuda`) and a model present:
+
+```bash
+python3 src/ec2-tests/run-tests.py           # binaries already built
+python3 src/ec2-tests/run-tests.py --build   # build dovata + jade runtime first
+```
+
+The harness starts `dovata`, waits for `dovata: listening on …`, runs every
+`*.jde` here, and reports pass/fail.

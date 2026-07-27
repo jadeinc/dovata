@@ -41,9 +41,9 @@ env:
   # name (`use ...`) is the consumer's choice at `jade pkg add`. Includes the remote
   # providers and the dovata local-model profile (tool-call parsing).
   PACKAGES: |
-    anthropic anthropic/anthropic.jde
-    openai openai/openai.jde
-    qwen3-coder-30b dovata/profiles/qwen3-coder-30b.jde
+    anthropic src/anthropic/anthropic.jde
+    openai src/openai/openai.jde
+    qwen3-coder-30b src/dovata/profiles/qwen3-coder-30b.jde
   # Public repo whose GitHub Pages serves jadelang.org, and where the built .so's are
   # staged for the Pages deploy to inject.
   PAGES_REPO: "joericks1998/jade"
@@ -65,6 +65,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      # The prebuilt jade macOS binary is dynamically linked against Homebrew's
+      # llvm@18 libunwind (/opt/homebrew/opt/llvm@18/lib/libunwind.1.dylib), which the
+      # runner doesn't have — jade aborts on load without it. (Upstream: the macOS
+      # release should bundle/static-link this; until then, provide it here.)
+      - name: Install llvm@18 (macOS — jade links its libunwind)
+        if: runner.os == 'macOS'
+        run: brew install llvm@18
 
       # Install the pinned jade toolchain (binary + lib/*.a runtime archives that
       # `jade build` links) under a prefix so jade resolves <prefix>/lib/jade.

@@ -108,7 +108,7 @@ can't reliably pick among near-duplicate facts), **not** a length frontier — s
 excluded from the frontier min rather than dragging it to zero.
 
 **Documented frontier:** `rlm_max_context = 262144` tokens (8×), set in the model profile
-(`dovata/profiles/qwen3-coder-30b.toml`, `[limits]`). Beyond it the daemon
+(`src/dovata/profiles/qwen3-coder-30b.toml`, `[limits]`). Beyond it the daemon
 hard-rejects (untested territory). This is the **validated** ceiling, not a proven breaking
 point — pushing 16×/32× to find the true edge is future work.
 

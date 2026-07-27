@@ -1,25 +1,31 @@
 [workspace]
+# All first-party software lives under src/ (crates + the protocol submodule + the
+# Jade provider packages). Non-source dirs (tests/, scripts/, ci/, docs/, dist/)
+# stay at the repo root.
 members = [
-    # The wire protocol lives in its own public repo (git submodule at protocol/) so
-    # the Jade language, which is public, can depend on it too — a public repo cannot
-    # take a git dependency on this private one. Both sides build the same definition.
-    "protocol",
+    # The wire protocol lives in its own public repo (git submodule at src/protocol/)
+    # so the Jade language, which is public, can depend on it too — a public repo
+    # cannot take a git dependency on this private one. Both sides build the same definition.
+    "src/protocol",
     # The inference daemon: host + the in-process local llama.cpp engine + the folded-in
     # model-profile module (Linux engine gated; the host builds on any platform).
-    "dovata",
+    "src/dovata",
     # Remote-API providers (anthropic, openai) are pure-Jade libraries that call
-    # their HTTP APIs directly (see anthropic/anthropic.jde, openai/openai.jde) —
+    # their HTTP APIs directly (see src/anthropic/anthropic.jde, src/openai/openai.jde) —
     # not daemon .so plugins, so they are not workspace members. `echo` remains the
     # reference native provider + the host loader's dlopen fixture.
-    "echo",
+    "src/echo",
     # The inference engine — the vendored/forked llama.cpp bindings, now first-class
     # members of the one workspace (single lockfile, editable). Heavy: building these
-    # needs the nested infer-engine/ffi/llama.cpp submodule + cmake, so bare
+    # needs the nested src/infer-engine/ffi/llama.cpp submodule + cmake, so bare
     # `cargo build --workspace` is a Linux operation; on macOS use targeted `-p` builds.
-    "infer-engine/api",
-    "infer-engine/ffi",
+    "src/infer-engine/api",
+    "src/infer-engine/ffi",
     # Build/packaging xtask: assembles the provider .so bundles into dist/.
-    "packaging",
+    "src/packaging",
+    # GGUF header tooling: reads a model file's metadata without llama.cpp, so a model
+    # can be vetted on a laptop (or over a range request) before a GPU box ever sees it.
+    "src/gguf",
 ]
 resolver = "2"
 
