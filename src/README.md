@@ -10,26 +10,26 @@ and the Python tooling. Non-source directories stay at the repo root (`ci/`, `do
 The tree used to nest by kind — a `crates/` folder, a separate `llama-cpp/`
 sub-workspace with its own lockfile, a `providers/` folder, a `scripts/` folder of bash.
 That made simple questions hard: which lockfile governs this build, is this provider a
-`.so` or a library, why does the daemon depend on a crate two levels up. The flattening
+`.so` or a library, why does this crate depend on one two levels up. The flattening
 put every unit of software as a direct child of `src/`, named for itself, and folded the
 inference-engine sub-workspace into the one root workspace so there is a single
 `Cargo.lock`.
 
-The organizing idea is **provider-first**. The daemon is a host that routes a request to
-a provider; each provider is a peer directory here, whatever language it happens to be
-written in. `dovata/` is the host plus the one provider compiled into it, `echo/` is the
-reference native provider, `anthropic/` and `openai/` are providers written in Jade.
+The organizing idea is *provider-first*. A Jade program loads a provider `.so` and calls
+`infer` in-process; each provider is a peer directory here, whatever language it happens
+to be written in. `dovata/` is the local llama.cpp engine, `echo/` is the reference
+native provider, `anthropic/` and `openai/` are providers written in Jade.
 
 ## What each subtree is
 
 | Directory | What it is |
 |---|---|
-| `protocol/` | **Git submodule.** `ovata-infer-protocol` — the request/response types and frame codec both this daemon and the Jade language speak. Its own public repo. |
-| `dovata/` | The inference daemon: socket host, routing, and the in-process llama.cpp engine. The main crate. |
-| `echo/` | Smallest possible native provider. Doubles as the host loader's test fixture. |
+| `protocol/` | *Git submodule.* `ovata-infer-protocol` — the request/response types, the frame codec, and the `Provider` trait plus its C ABI. Its own public repo. |
+| `dovata/` | The local llama.cpp inference engine, shipped as a provider `.so` a Jade program loads in-process. The main crate. |
+| `echo/` | Smallest possible native provider. The worked example you copy when writing one. |
 | `anthropic/`, `openai/` | Remote-API providers, written in Jade (`.jde`), published as `.so` packages to jadelang.org. Not workspace members. |
 | `infer-engine/` | The vendored llama.cpp bindings fork (`api/` safe wrapper, `ffi/` sys crate) plus `moe-driver/`, our C++/CUDA expert-offload driver. |
-| `packaging/` | Build/packaging xtask — assembles the daemon and provider `.so`s into `dist/`. |
+| `packaging/` | Build/packaging xtask — assembles the engine and provider `.so`s into `dist/`. |
 | `gguf/` | GGUF header reader + `gguf-inspect`. Vets a model file — architecture, hparams, profile match — without llama.cpp, on any machine. |
 | `jade-gpu-mon/` | Standalone terminal VRAM/bandwidth monitor. Its own tiny workspace. |
 | `scripts/` | Python developer tooling: model download, quantization, provider key setup, dev env. |
@@ -39,8 +39,9 @@ reference native provider, `anthropic/` and `openai/` are providers written in J
 ## How they depend on each other
 
 `protocol/` sits at the bottom and depends on nothing but serde; every other Rust piece
-depends on it. `dovata/` depends on `protocol/` always, and on `infer-engine/api` +
-`infer-engine/ffi` only on Linux. `echo/` and `packaging/` depend on `protocol/`.
+depends on it. `dovata/` depends on `protocol/` and `gguf/` always, and on
+`infer-engine/api` + `infer-engine/ffi` only on Linux. `echo/` and `packaging/` depend on
+`protocol/`.
 `infer-engine/` depends on nothing here — it is vendored upstream code plus our driver.
 The Jade packages depend on nothing in Rust; they conform to the protocol by matching its
 frame shapes, and are checked by the evals in `ec2-jade-tests/`.

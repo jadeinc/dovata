@@ -4,19 +4,15 @@ version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "JADE OS inference daemon — host + local llama.cpp engine, serving ovata-infer-protocol over a Unix socket"
+description = "JADE OS inference engine — the local llama.cpp provider, loaded in-process as an ovata-infer-protocol provider .so"
 
 [lib]
 name = "dovata"
 path = "src/lib.rs"
-# cdylib so the engine can be loaded straight into a Jade program as a provider
-# package, the same way `echo` is; rlib so the daemon binary can still link it.
-# One `impl Provider`, two delivery shapes — see the crate docs.
+# cdylib is what ships: the engine loaded straight into a Jade program as a provider
+# package, the same way `echo` is. rlib so the tests and the packaging xtask can link
+# the same code.
 crate-type = ["cdylib", "rlib"]
-
-[[bin]]
-name = "dovata"
-path = "src/main.rs"
 
 [features]
 default = []
@@ -33,12 +29,9 @@ serde_json = { version = "1", features = ["std"] }
 # The folded-in model profile module (was the jade-model-profile crate): TOML profiles.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-# Host-side loading of the remote provider .so packages (anthropic/openai). The local
-# llama.cpp backend is compiled in (see the Linux target deps below), not dlopened.
-libloading = "0.8"
 
 # The local llama.cpp engine (src/engine) is Linux-only: it links the vendored
-# infer-engine. Gated so the host still builds on macOS without a model backend.
+# infer-engine. Gated so the pure core still builds and tests on macOS.
 [target.'cfg(target_os = "linux")'.dependencies]
 llama-cpp-2 = { path = "../infer-engine/api" }
 llama-cpp-sys-2 = { path = "../infer-engine/ffi" }

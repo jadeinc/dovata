@@ -1,24 +1,22 @@
-//! packaging — build the ovata daemon + provider `.so` packages and assemble a `dist/`
-//! bundle. This is the single source of truth for how a release is built and staged;
-//! CI (`.github/workflows/release.yml`) is a thin wrapper that sets up the environment
-//! and calls into here.
+//! packaging — build the dovata engine `.so` + the native provider packages and
+//! assemble a `dist/` bundle. This is the single source of truth for how a release is
+//! built and staged; CI (`.github/workflows/release.yml`) is a thin wrapper that sets up
+//! the environment and calls into here.
 //!
 //! Usage:
-//!   cargo run -p packaging -- build [--release]     # dev bundle (daemon copied as `dovata`)
-//!   cargo run -p packaging -- release [--cuda]      # release bundle: `dovata-<arch>` + sha256
+//!   cargo run -p packaging -- build [--release]     # dev bundle
+//!   cargo run -p packaging -- release [--cuda]      # release bundle: assets + sha256
 //!
-//! Both modes build every native provider cdylib (currently just `echo`), read each
-//! one's advertised name + provider-ABI version through its exported C symbols (which
-//! also validates the `.so` is a real `export_provider!` plugin), copy the `.so` into
-//! `dist/`, and write `dist/manifest.json`. The local `dovata` engine is compiled *into*
-//! the daemon (it's not a `.so`), so the daemon binary is staged as-is. The remote
-//! providers (anthropic/openai) are pure-Jade `.so` packages published separately to
-//! jadelang.org (see the publish-providers workflow); they are not part of this bundle.
+//! What ships is libraries, not a binary. `dovata` is an `impl Provider` exported across
+//! the C ABI and built as a cdylib, so a Jade program loads it and calls `infer`
+//! in-process — there is no daemon and no socket. `echo` is the native reference
+//! provider. The remote providers (anthropic/openai) are pure-Jade `.so` packages
+//! published separately to jadelang.org (see the publish-providers workflow) and are not
+//! part of this bundle.
 //!
-//! `release` builds the release profile, stages the daemon under its canonical,
-//! bootloader-facing asset name `dovata-<arch>` with a `.sha256` sidecar, and (with
-//! `--cuda`) builds the daemon's GPU backend. Signing / config bundles come later.
-
+//! Every provider `.so` except the engine is validated by reading its exported name/ABI
+//! symbols, which proves it is a real `export_provider!` plugin. The engine is exempt
+//! because that check `dlopen`s the library and the engine links CUDA — see step 4.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -37,26 +35,23 @@ const PROVIDER_CRATES: &[&str] = &[
 // workflow). They are NOT part of this OS bundle, which ships only the daemon (+ the
 // native `echo` reference provider) to S3.
 
-/// The daemon binary (host + the in-process local llama.cpp engine).
-const DAEMON_CRATE: &str = "dovata";
+/// The engine crate: the local llama.cpp provider, shipped as a cdylib.
+const ENGINE_CRATE: &str = "dovata";
 
-/// How the bundle is built and how the daemon binary is staged.
+/// How the bundle is built and how the engine library is staged.
 struct Plan {
     /// Release profile (`target/release`) vs dev (`target/debug`).
     release: bool,
-    /// Build the daemon's `cuda` feature (GPU offload). Release/Linux only.
+    /// Build the engine's `cuda` feature (GPU offload). Release/Linux only.
     cuda: bool,
-    /// Stage the daemon under its canonical `dovata-<arch>` asset name + a `.sha256`
-    /// sidecar (release), rather than copying it as plain `dovata` (dev).
-    stage_asset: bool,
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let has = |flag: &str| args.iter().any(|a| a == flag);
     let plan = match args.first().map(String::as_str) {
-        Some("build") => Plan { release: has("--release") || has("-r"), cuda: false, stage_asset: false },
-        Some("release") => Plan { release: true, cuda: has("--cuda"), stage_asset: true },
+        Some("build") => Plan { release: has("--release") || has("-r"), cuda: false },
+        Some("release") => Plan { release: true, cuda: has("--cuda") },
         _ => {
             eprintln!("usage: cargo run -p packaging -- <build [--release] | release [--cuda]>");
             std::process::exit(2);
@@ -74,14 +69,14 @@ fn assemble(plan: &Plan) -> Result<(), String> {
     let target_dir = root.join("target").join(profile);
     let dist = root.join("dist");
 
-    // 1. Build the daemon + every provider cdylib in one cargo invocation.
+    // 1. Build the engine + every provider cdylib in one cargo invocation.
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let mut cmd = Command::new(&cargo);
     cmd.arg("build").current_dir(&root);
     if plan.release {
         cmd.arg("--release");
     }
-    cmd.args(["-p", DAEMON_CRATE]);
+    cmd.args(["-p", ENGINE_CRATE]);
     if plan.cuda {
         cmd.args(["--features", "cuda"]);
     }
@@ -89,7 +84,7 @@ fn assemble(plan: &Plan) -> Result<(), String> {
         cmd.args(["-p", c]);
     }
     eprintln!(
-        "packaging: building {DAEMON_CRATE}{} + {} providers ({profile})",
+        "packaging: building {ENGINE_CRATE}{} + {} providers ({profile})",
         if plan.cuda { " (cuda)" } else { "" },
         PROVIDER_CRATES.len()
     );
@@ -134,50 +129,28 @@ fn assemble(plan: &Plan) -> Result<(), String> {
         }));
     }
 
-    // 4. Stage the daemon binary.
-    let daemon_src = target_dir.join(DAEMON_CRATE);
-    let daemon = if !daemon_src.exists() {
-        // The daemon builds on any platform, so this is unexpected — warn, don't fail,
-        // so provider packaging still succeeds.
-        eprintln!("packaging: WARNING daemon binary not found at {}", daemon_src.display());
-        serde_json::Value::Null
-    } else if plan.stage_asset {
-        // Release: canonical, bootloader-facing asset name + a sha256 sidecar.
-        let asset = format!("{DAEMON_CRATE}-{}", std::env::consts::ARCH);
-        let dest = dist.join(&asset);
-        std::fs::copy(&daemon_src, &dest).map_err(|e| format!("staging daemon: {e}"))?;
-        let sha = sha256_file(&dest)?;
-        let sha_file = format!("{asset}.sha256");
-        std::fs::write(dist.join(&sha_file), format!("{sha}  {asset}\n"))
-            .map_err(|e| format!("writing {sha_file}: {e}"))?;
-        eprintln!("packaging:   daemon -> dist/{asset} (+ .sha256)");
-        serde_json::json!({ "asset": asset, "sha256": sha, "sha256_file": sha_file })
-    } else {
-        // Dev: plain copy.
-        std::fs::copy(&daemon_src, dist.join(DAEMON_CRATE))
-            .map_err(|e| format!("copying daemon: {e}"))?;
-        eprintln!("packaging:   daemon '{DAEMON_CRATE}' -> dist/{DAEMON_CRATE}");
-        serde_json::json!({ "asset": DAEMON_CRATE })
-    };
-
-    // 4b. Stage the engine cdylib — the same `impl Provider` as the daemon serves, in
-    // the shape a Jade program loads directly (jadelang -> dovata.so -> nvidia.ko).
+    // 4. Stage the engine cdylib — the artifact that ships.
     //
-    // Deliberately NOT run through `read_provider_meta`: that dlopens the library, and
-    // this one links CUDA, so it cannot load on a builder with no NVIDIA driver — the
-    // release runner has none. Validating it here would fail every release. Its ABI is
-    // guaranteed by construction instead: it comes from the same `export_provider!` on
-    // the same trait impl the daemon links.
+    // dovata used to build a daemon binary too, served over a Unix socket. That is
+    // gone: the engine is loaded in-process by the Jade program, so a library is the
+    // whole product. GPU health checking, the one job that genuinely wants a resident
+    // process, lives in its own daemon now.
+    //
+    // Deliberately NOT run through `read_provider_meta` like the other providers: that
+    // dlopens the library, and this one links CUDA, so it cannot load on a builder with
+    // no NVIDIA driver — which the release runner is. Validating it here would fail
+    // every release. Its ABI holds by construction instead, from the same
+    // `export_provider!` on the same trait impl.
     //
     // Linux-only because the engine is. Elsewhere the cdylib is an empty stub, and
     // shipping something that looks like a provider but exports nothing is worse than
     // shipping nothing.
-    let engine_lib = if cfg!(target_os = "linux") {
-        let lib_src = target_dir.join(libloading::library_filename(DAEMON_CRATE));
+    let engine = if cfg!(target_os = "linux") {
+        let lib_src = target_dir.join(libloading::library_filename(ENGINE_CRATE));
         if !lib_src.exists() {
             return Err(format!("expected engine cdylib missing: {}", lib_src.display()));
         }
-        let asset = format!("{DAEMON_CRATE}-{}.so", std::env::consts::ARCH);
+        let asset = format!("{ENGINE_CRATE}-{}.so", std::env::consts::ARCH);
         let dest = dist.join(&asset);
         std::fs::copy(&lib_src, &dest).map_err(|e| format!("staging engine library: {e}"))?;
         let sha = sha256_file(&dest)?;
@@ -202,8 +175,7 @@ fn assemble(plan: &Plan) -> Result<(), String> {
         "provider_abi_version": PROVIDER_ABI_VERSION,
         "profile": profile,
         "arch": std::env::consts::ARCH,
-        "daemon": daemon,
-        "engine_library": engine_lib,
+        "engine": engine,
         "providers": providers,
     });
     let manifest_path = dist.join("manifest.json");

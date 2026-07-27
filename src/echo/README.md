@@ -5,18 +5,19 @@ token, and completes. No config, no network, no model.
 
 ## Why it exists
 
-Two jobs, both worth keeping it around for.
-
-It is the **worked example**. The provider boundary is a C ABI with six exported
-symbols, an ABI version check, and panic containment at the crossing — all of which the
+It is the *worked example*. The provider boundary is a C ABI with six exported symbols,
+an ABI version check, and panic containment at the crossing, all of which the
 `export_provider!` macro generates. `src/lib.rs` shows exactly how little you write on
 top of that: name the provider, accept a config, implement `infer`. Copy this directory
 when adding a native provider.
 
-It is also the **test fixture**. `dovata::providers` needs something real to `dlopen` to
-prove the loader round-trips frames across the boundary, and using a genuine provider
-rather than a mock means the test also checks that `export_provider!` emits what the
-loader looks for. That is why the crate builds as both `cdylib` and `rlib`.
+It also gives the packaging path something real to check. `src/packaging/` reads every
+provider `.so`'s exported name and ABI version to prove it is a genuine plugin, and `echo`
+is the one it can always build and read on any machine, with no model and no GPU.
+
+It used to be this repo's `dlopen` test fixture as well. The host that loaded providers
+is gone, and so is that test, but the crate still builds as both `cdylib` and `rlib`,
+which is what a provider package has to do.
 
 ## Files
 
@@ -26,11 +27,8 @@ loader looks for. That is why the crate builds as both `cdylib` and `rlib`.
 
 ## Who uses it
 
-`dovata::providers::tests` loads the built library out of `target/debug/`, so
-`cargo test -p dovata` fails with a clear message unless you have run
-`cargo build -p ovata-provider-echo` first. `src/packaging/` includes it in every
-bundle, reading its exported name and ABI version to validate the packaging path
-end to end. It depends only on `ovata-infer-protocol`.
+`src/packaging/` includes it in every bundle and validates it on the way in. Anyone
+writing a native provider reads it. It depends only on `ovata-infer-protocol`.
 
 ## Building
 
@@ -38,5 +36,4 @@ end to end. It depends only on `ovata-infer-protocol`.
 cargo build -p ovata-provider-echo
 ```
 
-Producing `target/debug/libovata_provider_echo.{so,dylib}`. To watch a live daemon load
-it, point `JADE_PROVIDERS` at that path.
+Producing `target/debug/libovata_provider_echo.{so,dylib}`.

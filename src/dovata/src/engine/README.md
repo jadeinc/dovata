@@ -1,16 +1,16 @@
 # engine/ — the local llama.cpp backend
 
-This is the half of the daemon that actually runs a model. `Dovata` implements the
-protocol's `Provider` trait, owns the llama.cpp backend, model, and context, and serves
-requests in-process — the host holds it as `ProviderHandle::Local` and calls it directly,
-with no `dlopen` and no FFI hop.
+This is the half of the crate that actually runs a model. `Dovata` implements the
+protocol's `Provider` trait and owns the llama.cpp backend, model, and context. It is what
+`export_provider!` exports across the C ABI, so a Jade program that loads `dovata.so` is
+calling straight into this code, in its own process.
 
 Everything here links vendored llama.cpp, so the whole module is behind
-`#[cfg(target_os = "linux")]`. On macOS the daemon builds without it.
+`#[cfg(target_os = "linux")]`. On macOS the crate builds without it, as an empty cdylib.
 
 ## Why the split from the rest of the crate
 
-The daemon's logic used to live in one large `inference.rs` where the decode loop, the
+The old logic used to live in one large `inference.rs` where the decode loop, the
 grammar handling, the scheduling, and the llama.cpp calls were interleaved. That made the
 interesting parts impossible to test — you needed a GPU and a model file to check whether
 a stop sequence split across two tokens was handled correctly.
@@ -42,6 +42,10 @@ A request lands in one of three places depending on its shape:
 
 - `mod.rs` — `Dovata` itself: model/context lifecycle, the `Provider` impl, request
   dispatch to one of the paths above, and the FFI declaration for `moe_driver_init`.
+  `from_config` is the load-time gate: environment into `Config`, validate, preflight the
+  GGUF, pick the profile, then build the model and context. It is the only entry point, so
+  anything that must happen before the first request happens there, and an `Err` fails the
+  library load instead of producing a half-built provider.
 - `kv.rs` — the KV-cache primitives the paths share. `kv_cache_type` maps our pure
   `KvType` onto llama.cpp's enum; `reuse_prefix` keeps the leading tokens a new prompt
   shares with the resident one and evicts the rest; `prefill_shared` prefills a common
@@ -55,37 +59,41 @@ A request lands in one of three places depending on its shape:
 - `concurrency.rs` — the continuous-batching driver over `crate::sched`.
 - `bench.rs` — developer self-tests and benchmarks, *not* a request path.
 
-## The self-tests are a startup hijack
+## The self-tests are currently unreachable
 
-`bench.rs::dispatch` runs once at the end of daemon startup. If any of its `JADE_*`
-variables is set it runs that one routine, prints to stderr, and the daemon **exits
-without binding the socket**. With none set it returns `false` and the normal server path
-proceeds.
+`bench.rs::dispatch` used to run once at the end of daemon startup. If one of its `JADE_*`
+variables was set it ran that routine, printed to stderr, and the daemon exited without
+binding the socket.
 
-That is worth knowing before you debug a daemon that "starts and immediately dies" — a
-stray `JADE_KV_BENCH` in the environment does exactly that. The gates are
-`JADE_RLM_SELFTEST`, `JADE_KV_ROUNDTRIP`, `JADE_KV_COMPOSE`, `JADE_COMPOSE_DEMO`,
-`JADE_COMPOSE_MULTI`, `JADE_KV_BENCH`, `JADE_COMPOSE_CACHE`, `JADE_GEN_BENCH`,
-`JADE_RLM_OVERWINDOW`, `JADE_BLENDED`, and `JADE_FRONTIER`, checked in that order.
+There is no startup phase to hang that off now: the library is loaded and the provider
+built in one step, and exiting the process would take the caller's program with it. So
+`dispatch` is defined and never called, and setting `JADE_KV_BENCH` or any of its siblings
+does nothing. The routines themselves still compile and are still the fastest way to
+measure the KV paths, so if you want one back, wire it to an explicit entry point rather
+than to a load-time hijack. The gates it checks are `JADE_RLM_SELFTEST`,
+`JADE_KV_ROUNDTRIP`, `JADE_KV_COMPOSE`, `JADE_COMPOSE_DEMO`, `JADE_COMPOSE_MULTI`,
+`JADE_KV_BENCH`, `JADE_COMPOSE_CACHE`, `JADE_GEN_BENCH`, `JADE_RLM_OVERWINDOW`,
+`JADE_BLENDED`, and `JADE_FRONTIER`, in that order.
 
 ## Who uses it, and what it uses
 
-Only `crate::host` constructs it, through `ProviderHandle::Local`. It uses the pure
-modules in the crate root (`control`, `sched`, `cache`, `config`, `profile`, `route`,
-`moe`), `ovata-infer-protocol` for `Frame`/`FrameSink`/`InferenceRequest`, and
-`llama-cpp-2` + `llama-cpp-sys-2` from `src/infer-engine/`. The MoE paging machinery it
-calls over FFI lives in `src/infer-engine/moe-driver/`.
+`export_provider!` in `src/lib.rs` constructs it, on behalf of whoever loads the library.
+It uses the pure modules in the crate root (`control`, `sched`, `cache`, `config`,
+`profile`, `route`, `moe`, `preflight`), `ovata-infer-protocol` for
+`Frame`/`FrameSink`/`InferenceRequest`, and `llama-cpp-2` + `llama-cpp-sys-2` from
+`src/infer-engine/`. The MoE paging machinery it calls over FFI lives in
+`src/infer-engine/moe-driver/`.
 
 ## Building and gotchas
 
-There is no way to compile this on a Mac. It builds as part of the daemon on Linux:
+There is no way to compile this on a Mac. It builds as part of the crate on Linux:
 
 ```sh
 cargo build --release -p dovata --features cuda
 ```
 
-- `concurrency` and `bench` carry `#[allow(dead_code)]` — they are reached only from the
-  env-gated self-tests, so a request-path build sees them as unused.
+- `concurrency` and `bench` carry `#[allow(dead_code)]` — nothing on the request path
+  calls them, so the compiler sees them as unused.
 - `Dovata` carries a hand-written `unsafe impl Send/Sync` and leaks the model and backend
   to `'static` via `Box::leak`. Both are load-bearing for the context lifetime; re-read
   the justification in `mod.rs` before changing how the model is owned.

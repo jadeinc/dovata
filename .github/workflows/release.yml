@@ -1,9 +1,13 @@
 name: release-dovata
 
-# Builds the dovata inference daemon with the CUDA backend (Linux x86_64) and the
-# native `echo` reference provider, and publishes the bundle so the JADE OS bootloader
-# can install a prebuilt daemon at /jade/inference/ instead of compiling it on the
-# target. The remote providers (anthropic/openai) are NOT in this OS bundle — they are
+# Builds the dovata inference engine with the CUDA backend (Linux x86_64) and the
+# native `echo` reference provider, and publishes the bundle so the JADE OS image can
+# install a prebuilt engine instead of compiling it on the target.
+#
+# What ships is `dovata-<arch>.so`, a provider package a Jade program loads in-process
+# (jadelang -> dovata.so -> nvidia.ko). There is no daemon binary and no socket.
+#
+# The remote providers (anthropic/openai) are NOT in this OS bundle — they are
 # pure-Jade .so packages published separately to jadelang.org (see publish-providers.yml).
 #
 # The actual build + staging logic lives in the `packaging` xtask
@@ -17,7 +21,7 @@ name: release-dovata
 #     artifact only (no Release is created). Use for ad-hoc / test builds.
 #
 # Runtime requirements on the booted OS:
-#   The CUDA runtime (cudart/cublas) is linked STATICALLY into the daemon
+#   The CUDA runtime (cudart/cublas) is linked STATICALLY into the engine library
 #   (see llama-cpp-sys-2 build.rs), so the rootfs does NOT need the CUDA toolkit.
 #   It needs only: libcuda.so.1 (shipped by the NVIDIA driver), glibc,
 #   libstdc++.so.6, and libgomp.so.1 (OpenMP). The model is provided separately
@@ -120,15 +124,11 @@ jobs:
         run: |
           cargo test -p ovata-infer-protocol
           cargo test -p gguf
-          # The host's loader test dlopens the echo provider out of target/debug,
-          # so the fixture has to exist before the test runs. Missing this is what
-          # failed v1.3.1 through v1.3.3.
-          cargo build -p ovata-provider-echo
           cargo test -p dovata --lib
 
-      # Build the daemon (--features cuda) + the provider .so packages and stage the
-      # whole bundle into dist/ (daemon asset `dovata-<arch>` + .sha256, provider .so's,
-      # manifest.json). All the real logic lives in the packaging xtask.
+      # Build the engine (--features cuda) + the provider .so packages and stage the
+      # whole bundle into dist/ (engine asset `dovata-<arch>.so` + .sha256, provider
+      # .so's, manifest.json). All the real logic lives in the packaging xtask.
       - name: Build + package (packaging xtask)
         run: cargo run -p packaging -- release --cuda
 
@@ -136,8 +136,8 @@ jobs:
         id: bundle
         run: |
           test -f dist/manifest.json || { echo "::error::packaging produced no manifest"; exit 1; }
-          NAME="$(jq -r '.daemon.asset' dist/manifest.json)"
-          test -n "$NAME" && test "$NAME" != "null" || { echo "::error::no daemon asset in manifest"; exit 1; }
+          NAME="$(jq -r '.engine.asset' dist/manifest.json)"
+          test -n "$NAME" && test "$NAME" != "null" || { echo "::error::no engine asset in manifest"; exit 1; }
           echo "Bundle contents:"; ls -l dist
           echo "Linked runtime libs (target must provide these):"
           ldd "dist/$NAME" || true
@@ -181,8 +181,8 @@ jobs:
           test -n "$BUCKET" || { echo "::error::AWS_S3_BUCKET variable is not set"; exit 1; }
 
           # 1) Generic "latest" prefix — overwritten in place so consumers (the
-          #    bootloader / installer) can always pull the newest daemon + providers
-          #    from a stable path. The daemon lands at artifacts/dovata-<arch>. Safe
+          #    installer) can always pull the newest engine + providers from a stable
+          #    path. The engine lands at artifacts/dovata-<arch>.so. Safe
           #    to overwrite because every release is also archived immutably under
           #    artifacts/versions/<tag>/ below.
           aws s3 cp dist/ "s3://${BUCKET}/artifacts/" --recursive --no-progress

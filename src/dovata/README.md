@@ -1,54 +1,53 @@
-# dovata — the inference daemon
+# dovata — the inference engine
 
-`dovata` is the daemon a Jade program talks to when it wants a model to answer something.
-It binds a Unix socket at `~/.jade/llm.sock`, reads length-prefixed
-`InferenceRequest`s off the wire, picks a provider to serve each one, and streams back
-protocol frames until the request is done. It is both the library (`src/lib.rs`) and the
-binary (`src/main.rs`) — the library half is what the unit tests exercise.
+`dovata` is the library a Jade program loads when it wants a model to answer something.
+It is a *provider package*: an `impl Provider` from `ovata-infer-protocol`, exported
+across the C ABI and built as a `cdylib`. The program `dlopen`s it once and calls `infer`
+in-process. The chain is `jadelang -> dovata.so -> nvidia.ko`, which is the ordinary shape
+for GPU work.
 
-## The shape of it: a host plus providers
+## Why there is no daemon anymore
 
-The daemon is deliberately split into a *host* and a set of *providers*.
+`dovata` used to be a daemon. It bound a Unix socket at `~/.jade/llm.sock`, and a host
+inside it read framed requests and routed each one to a provider. That is gone, and so are
+`main.rs`, `host.rs`, and `providers.rs`.
 
-The **host** (`src/main.rs`, `src/host.rs`) owns everything that is true regardless of
-which model answers: the socket, the framing, the `health` and `stats` requests, the
-`Meta` frame that names the provider, and the routing rules that choose one. It never
-touches a model.
+The reason is that the work is almost entirely GPU-bound. Putting a socket, a framing
+layer, and a second process in front of it bought nothing and cost real time on every
+request, plus a second thing to install, supervise, and explain. The engine was already
+reachable in-process, because it implements `Provider` and that is all `export_provider!`
+needs, so the host came out without the engine changing at all.
 
-A **provider** is anything that implements `ovata_infer_protocol::Provider`. Two kinds
-exist, and the difference is only in how they are loaded:
+The one job that genuinely wants a resident process is checking whether the GPU is
+healthy. That is a separate concern and now lives in a separate daemon, outside this repo.
 
-- The **local** provider is the llama.cpp engine in `src/engine/`. It is compiled *into*
-  the daemon and called directly — the host holds it as `ProviderHandle::Local`, with no
-  `dlopen` and no FFI hop. It is Linux-only because it links vendored llama.cpp.
-- **Remote** providers are `.so` packages the host `dlopen`s through `src/providers.rs`,
-  driven over a small C ABI. `echo` is the native reference one; the Anthropic and OpenAI
-  providers are Jade packages that speak the same protocol.
+Dropping the process boundary does not mean every Jade program pays for its own copy of
+the model. Weights are `mmap`ed out of the GGUF, and the MoE cold experts sit in the CPU
+backend's default buffer type, so the kernel's page cache shares them across every process
+that maps the same `model.gguf`. The model costs the machine once, not once per program.
 
-That split is why the daemon builds on macOS at all. Everything except `src/engine/` is
-pure Rust with no llama.cpp dependency, so the host, the routing, the control machine,
-the scheduler, and the profiles all compile and unit-test on a laptop. On macOS you get a
-host with no local engine; remote providers still load and serve.
+## The shape of it: a thin llama.cpp edge over a large pure core
 
-## Why the pure core is so large
+Everything except `src/engine/` is pure Rust with no llama.cpp dependency, so the config
+parsing, the control machine, the scheduler, the routing, the preflight, and the profiles
+all compile and unit-test on a laptop. `src/engine/` is `#[cfg(target_os = "linux")]`,
+because it links vendored llama.cpp. On macOS the cdylib builds as an empty stub: there is
+no engine to export.
 
-Most of what looks like "inference logic" is not actually model-bound, and putting it in
-the pure half means it can be tested without a GPU, a model file, or Linux. Constrained
-decoding is a state machine over token text. Continuous batching is bookkeeping about
-which sequence feeds which token at which position. Over-context routing is string
-splitting. All of it was once tangled inside the generation loop and untestable; pulling
-it out is why `cargo test -p dovata` runs in well under a second and still covers the
-tricky parts.
+Most of what looks like "inference logic" is not actually model-bound, which is why the
+pure half is the big one. Constrained decoding is a state machine over token text.
+Continuous batching is bookkeeping about which sequence feeds which token at which
+position. Over-context routing is string splitting. All of it was once tangled inside the
+generation loop and untestable; pulling it out is why `cargo test -p dovata` runs in well
+under a second and still covers the tricky parts.
 
 ## What each file does
 
-**Entry points**
+**Entry point**
 
-- `src/main.rs` — the binary. Resolves the socket path under `$HOME` and calls `host::run`.
-- `src/host.rs` — the server loop: accept, decode a request, answer `health`/`stats`
-  directly, otherwise select a provider and stream its frames to the socket. Holds
-  `select_provider_index`, the pure routing rule, so routing is unit-tested on its own.
-- `src/lib.rs` — the library root; its module list is the map of the pure core.
+- `src/lib.rs` — the library root. Its module list is the map of the pure core, and on
+  Linux it ends with `export_provider!(engine::Dovata)`, which is what makes this crate's
+  cdylib a provider package.
 
 **The pure core** (no llama.cpp, tested everywhere)
 
@@ -70,80 +69,61 @@ tricky parts.
   *corpus* and a *question* for the KV-composition engine. No tokenizer needed.
 - `src/moe.rs` — loads and validates the per-layer `expert_order` asset and flattens it
   for hand-off to the C driver over FFI, so the C++ side never parses JSON.
-- `src/providers.rs` — the host half of the plugin boundary: `dlopen`s a provider `.so`,
-  checks its ABI version, and drives its C-ABI. Also defines `ProviderHandle`, the enum
-  that lets the host treat the local engine and a plugin the same way.
 - `src/profile/` — per-model token vocabulary (tool-call delimiters, turn markers) as
   data, so swapping a `.gguf` does not break tool calling. `mod.rs` is the typed schema
   and the registry of bundled profiles; `stream.rs` is the profile-driven parser that
   splits a token stream into content and complete tool calls.
-- `src/preflight.rs` — the startup gate. Reads the model's GGUF header with the `gguf`
+- `src/preflight.rs` — the load-time gate. Reads the model's GGUF header with the `gguf`
   crate *before* llama.cpp loads it, checks the metadata llama.cpp requires, selects the
-  profile on architecture as well as name, and refuses the boot with a specific message
-  when something is wrong. Pure apart from one file read, so it is unit-tested on macOS
-  against synthetic headers.
+  profile on architecture as well as name, and refuses with a specific message when
+  something is wrong. Pure apart from one file read, so it is unit-tested on macOS against
+  synthetic headers.
 
 **The Linux engine**
 
 - `src/engine/` — the llama.cpp-bound half. See its own [README](src/engine/README.md).
 
-**Two ways in**
+## Loading is where policy runs
 
-`Dovata` implements the protocol's `Provider` trait, and the crate builds as both an
-rlib and a cdylib, so that one impl is reachable two ways. The daemon binary serves it
-over the Unix socket. The cdylib exports it across the C ABI via `export_provider!`, so
-a Jade program can `dlopen` it and call `infer` in-process — no socket, no second
-process, the same shape as any GPU library sitting in front of a driver.
+`Dovata::from_config` in `src/engine/mod.rs` is the only entry point now. The library is
+loaded and the provider constructed in one step by whoever `dlopen`s it, so there is no
+earlier place to stand and no separate startup phase. Everything that used to happen
+before the socket opened happens there: read the environment into a `Config`, validate it,
+preflight the GGUF, select the profile, then load the model and build the context.
 
-The in-process path is the cheaper one and increasingly the main one. Weights are
-`mmap`ed from the GGUF and the MoE cold experts sit in the CPU backend's default buffer
-type, so the kernel's page cache shares them across every process that maps the same
-file — the model costs the machine once, not once per program.
-
-**Everything else**
-
-- `profiles/` — the bundled model profiles, one TOML per model plus a Jade counterpart.
-  See its [README](profiles/README.md).
-- `examples/` — socket clients you run against a live daemon: `smoke_client.rs` (one
-  plain request, proves the local path decodes), `rlm_client.rs` (upload a large context,
-  query it by handle and inline), `bench.rs` (TTFT and decode tok/s measured at the
-  protocol level, no Jade runtime in the path).
+A failure returns `Err`, which fails the load. The loader sees a null handle instead of a
+half-configured provider. That is a better outcome than the old one, where a bad model
+took down a running daemon.
 
 ## Who uses it, and what it uses
 
-Upstream, the **Jade language** is the client — a compiled Jade program opens the socket
-once and sends a request per `?p` dereference. The **JADE OS bootloader** installs the
-release binary at `/jade/inference/`. `src/packaging/` builds and stages it; the
-`ec2-tests` harness starts it and runs the `ec2-jade-tests` evals against it.
+Upstream, the **Jade language** is the client. A compiled Jade program loads the library
+and serves every `?p` dereference through it, in its own process. The **JADE OS
+bootloader** installs the release library at `/jade/inference/`. `src/packaging/` builds
+and stages it; the `ec2-tests` harness drives the `ec2-jade-tests` evals against it.
 
-Downstream, it depends on `src/protocol/` for every wire type (always) and on
-`src/infer-engine/{api,ffi}` for the model backend (Linux only).
+Downstream, it depends on `src/protocol/` for every wire type and the `Provider` trait
+(always), on `src/gguf/` for the preflight (always), and on `src/infer-engine/{api,ffi}`
+for the model backend (Linux only).
 
 ## Configuration
 
-All environment, all `JADE_*`. The host reads:
+All environment, all `JADE_*`, all read by `Config::from_env` when the library loads.
 
-- `JADE_LOCAL_ENGINE` — set `0`/`off`/`false` to disable the in-process engine.
-- `JADE_PROVIDERS` — comma-separated `.so` paths to load, each optionally
-  `path.so@config.json`.
-- `JADE_DEFAULT_PROVIDER` — who serves unrouted requests. Defaults to `dovata` if loaded.
-- `JADE_MODEL_ROUTES` — `prefix=provider,...`; a request whose `model` starts with
-  `prefix` goes to that provider, first match wins.
-
-- `JADE_ALLOW_UNPROFILED` — boot even when no profile matches the model. Off by default:
+- `JADE_ALLOW_UNPROFILED` — load even when no profile matches the model. Off by default:
   an unprofiled model runs on bare ChatML, which generates text fine and mis-parses every
-  tool call, so the daemon refuses rather than fail silently. Set it when you are
+  tool call, so the engine refuses rather than fail silently. Set it when you are
   deliberately serving a model for plain completion.
 
-The engine's own settings (`JADE_MODEL_PATH`, `JADE_CTX_SIZE`, `JADE_KV_TYPE_*`,
-`JADE_MOE_*`, …) are parsed in `src/config.rs` — read that file for the current list and
-defaults rather than trusting a copy here.
+The rest (`JADE_MODEL_PATH`, `JADE_CTX_SIZE`, `JADE_KV_TYPE_*`, `JADE_MOE_*`, …) are
+parsed in `src/config.rs`. Read that file for the current list and defaults rather than
+trusting a copy here.
 
-## Booting against a new model
+## Loading against a new model
 
 `JADE_MODEL_PATH` is the only thing that has to change, but the preflight decides whether
-the boot proceeds. It refuses a model whose metadata is incomplete, and refuses one no
-profile matches. To see what it will say before you restart the daemon:
+the load proceeds. It refuses a model whose metadata is incomplete, and refuses one no
+profile matches. To see what it will say before you run the program:
 
 ```sh
 cargo run -p gguf --bin gguf-inspect -- /path/to/model.gguf
@@ -157,19 +137,16 @@ why architecture, not name, is the identifier that matters.
 
 ```sh
 # Pure core — works on macOS and Linux, no model needed.
-cargo build -p ovata-provider-echo      # the loader test needs this fixture present
 cargo test -p dovata
 
 # One test
 cargo test -p dovata control::tests::stop_anchor_split_across_tokens
 
-# The full daemon with the local engine (Linux, GPU):
-JADE_MODEL_PATH=/jade/inference/model.gguf cargo run --release -p dovata --features cuda
+# The shipping library, with the GPU backend (Linux, NVIDIA):
+cargo build --release -p dovata --features cuda
 ```
 
-`cargo test -p dovata` on macOS compiles no llama.cpp and needs no model. One test does
-need a built artifact: `providers::tests::loads_echo_fixture_and_round_trips_frames`
-`dlopen`s the `echo` library out of `target/debug/`, so build that crate first.
+`cargo test -p dovata` on macOS compiles no llama.cpp and needs no model.
 
 ## Gotchas
 
@@ -180,3 +157,7 @@ need a built artifact: `providers::tests::loads_echo_fixture_and_round_trips_fra
 - Some engine submodules (`concurrency`, `bench`) carry `#[allow(dead_code)]`: they are
   reached from env-gated self-tests, not the request path, so the compiler sees them as
   unused in a normal build.
+- `examples/` still holds the old socket clients (`smoke_client.rs`, `rlm_client.rs`,
+  `bench.rs`). They connect to `~/.jade/llm.sock`, which nothing binds anymore, so they
+  have no server to talk to. Treat them as leftovers from the daemon era, not as a way to
+  exercise the library.

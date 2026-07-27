@@ -211,7 +211,6 @@ version = "0.1.0"
 dependencies = [
  "encoding_rs",
  "gguf",
- "libloading",
  "llama-cpp-2",
  "llama-cpp-sys-2",
  "ovata-infer-protocol",

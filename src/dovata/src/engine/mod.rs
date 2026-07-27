@@ -119,11 +119,17 @@ impl Provider for Dovata {
     const NAME: &'static str = "dovata";
 
     fn from_config(_config: &[u8]) -> Result<Self, String> {
-        // Config currently comes from the daemon's JADE_* environment (unchanged from
-        // the in-process daemon); the passed config bytes are reserved for future
-        // per-load overrides.
+        // Config comes from the JADE_* environment; the passed config bytes are
+        // reserved for future per-load overrides.
         let cfg = Config::from_env();
         cfg.validate().map_err(|e| e.to_string())?;
+
+        // Vet the model file before llama.cpp spends minutes on it, and pick the
+        // profile. This runs here because `from_config` is the only entry point — the
+        // library is loaded and constructed in one step by whoever dlopens it, so
+        // there is no earlier place to stand. Returning `Err` fails the load, which
+        // the loader surfaces as a null handle rather than a half-built provider.
+        preflight(&cfg)?;
         for (label, var) in [("K", "JADE_KV_TYPE_K"), ("V", "JADE_KV_TYPE_V")] {
             if let Ok(s) = std::env::var(var) {
                 if !KvType::is_known(&s) {
@@ -398,7 +404,41 @@ pub(crate) fn build_formatted_prompt(prompt_str: &str, tmpl: &ChatTemplate) -> R
     Ok(crate::prompt::format_prompt(prompt_str, tmpl))
 }
 
-/// The profile the daemon is serving.
+/// Read the model's GGUF header, pick its profile, and publish the choice — or refuse
+/// the load with a message that names the fix.
+///
+/// This moved out of the daemon's host when the socket went away. It is the same policy
+/// it always was: everything a GGUF can tell us is decided before llama.cpp touches the
+/// file, so a bad path, an unusable file, or a model no profile matches costs a second
+/// instead of a full load. `JADE_ALLOW_UNPROFILED=1` downgrades the no-profile refusal
+/// to a warning; see `crate::preflight`.
+fn preflight(cfg: &Config) -> Result<(), String> {
+    let allow_unprofiled = std::env::var("JADE_ALLOW_UNPROFILED")
+        .map(|v| matches!(v.trim(), "1" | "on" | "true"))
+        .unwrap_or(false);
+
+    let pf = crate::preflight::Preflight::read(
+        &cfg.model_path,
+        &crate::profile::Registry::builtin(),
+        allow_unprofiled,
+    )
+    .map_err(|e| format!("model preflight failed\n  {e}"))?;
+
+    for line in pf.summary() {
+        eprintln!("{line}");
+    }
+    if pf.ctx_exceeds_native(cfg.ctx_size) {
+        eprintln!(
+            "dovata: WARNING JADE_CTX_SIZE={} exceeds the model's native window of {}",
+            cfg.ctx_size,
+            pf.context_length.unwrap_or(0)
+        );
+    }
+    crate::preflight::publish(&pf);
+    Ok(())
+}
+
+/// The profile the engine is serving.
 ///
 /// The startup preflight already chose one — from the same GGUF, before the load, and
 /// keyed on architecture as well as name — so read its decision rather than making a
