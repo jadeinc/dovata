@@ -119,6 +119,11 @@ jobs:
       - name: Test pure crates
         run: |
           cargo test -p ovata-infer-protocol
+          cargo test -p gguf
+          # The host's loader test dlopens the echo provider out of target/debug,
+          # so the fixture has to exist before the test runs. Missing this is what
+          # failed v1.3.1 through v1.3.3.
+          cargo build -p ovata-provider-echo
           cargo test -p dovata --lib
 
       # Build the daemon (--features cuda) + the provider .so packages and stage the
