@@ -16,7 +16,7 @@
 // deployment-SPECIFIC seed (Jade + wire formats), kept small and committed so
 // the high-value signal is identical every build. src/scripts/quantize-model.py
 // then deterministically augments it with real source from the PINNED llama.cpp
-// checkout (diverse C/C++/Python/CUDA, fixed by LLAMA_CPP_COMMIT → reproducible,
+// checkout (diverse C/C++/Python/CUDA, fixed by the llama.cpp submodule pin → reproducible,
 // no repo bloat) to reach a production chunk count. Set JADE_CALIB_AUGMENT=0 to
 // calibrate on this file alone; append more real code here to grow the seed.
 

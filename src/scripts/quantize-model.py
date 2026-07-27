@@ -35,7 +35,9 @@ Usage:
   python3 src/scripts/quantize-model.py --from-url <url> --upload   # publish a prebuilt GGUF
 
 Key env overrides (defaults come from ci/model-version.lock):
-  HF_REPO HF_REVISION QUANT IMATRIX_CHUNKS LLAMA_CPP_COMMIT CUDAARCHS
+  HF_REPO HF_REVISION QUANT IMATRIX_CHUNKS CUDAARCHS
+  LLAMA_CPP_COMMIT        # not in the lock — read from the llama.cpp submodule;
+                          # set it only when there is no git checkout to read
   HF_TOKEN                 # for gated/private repos (Qwen3-Coder is ungated)
   JADE_QUANTIZE_WORKDIR    # persistent build/download cache (default ~/jade-quantize)
   JADE_IMATRIX_OFFLOAD     # llama-imatrix offload args (default: -ngl 99 --cpu-moe)
@@ -59,7 +61,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Pins loaded (as defaults) from the lock; env wins over the lock.
 LOCK_KEYS = [
     "HF_REPO", "HF_REVISION", "QUANT", "IMATRIX_CHUNKS",
-    "LLAMA_CPP_REPO", "LLAMA_CPP_COMMIT", "CUDAARCHS",
+    "LLAMA_CPP_REPO", "CUDAARCHS",
 ]
 
 
@@ -78,6 +80,33 @@ def load_lock(lock_path):
             continue
         if not os.environ.get(key):
             os.environ[key] = val.strip()
+
+
+LLAMA_SUBMODULE = "src/infer-engine/ffi/llama.cpp"
+
+
+def llama_cpp_pin():
+    """The llama.cpp commit the daemon links, read from the submodule itself.
+
+    This used to be a line in ci/model-version.lock, hand-copied from the submodule
+    and hand-updated alongside it. Nothing checked that the two agreed, and quantizing
+    with a different commit than the daemon links is how you publish a GGUF the daemon
+    cannot load. Reading it from git removes the copy, so the two cannot disagree.
+
+    Uses `ls-tree` rather than `rev-parse` inside the submodule: the gitlink is
+    recorded in the superproject's tree, so this works even when the submodule
+    contents were never checked out. Returns "" when there is no git checkout at all,
+    which is the rsynced-to-the-box case — see the caller.
+    """
+    out = subprocess.run(
+        ["git", "ls-tree", "HEAD", "--", LLAMA_SUBMODULE],
+        cwd=str(REPO_ROOT), capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        return ""
+    # "160000 commit <sha>\t<path>"
+    parts = out.stdout.split()
+    return parts[2] if len(parts) >= 3 and parts[1] == "commit" else ""
 
 
 def resolve_aws(venv=None):
@@ -225,7 +254,8 @@ def main():
     quant = os.environ["QUANT"]
     imatrix_chunks = os.environ["IMATRIX_CHUNKS"]
     llama_repo = os.environ.get("LLAMA_CPP_REPO") or "https://github.com/ggml-org/llama.cpp"
-    llama_commit = os.environ["LLAMA_CPP_COMMIT"]
+    # Resolved below, only on the quantize path — --from-url needs no toolchain.
+    llama_commit = ""
     cuda_archs = os.environ.get("CUDAARCHS") or "86"
 
     calib = Path(os.environ.get("CALIB", REPO_ROOT / "ci" / "calib-code.txt"))
@@ -249,6 +279,13 @@ def main():
         if local_dir:
             die("--from-url and --local-dir are mutually exclusive")
         return publish_from_url(args.from_url, out_dir, s3_bucket, s3_prefix, do_upload)
+
+    llama_commit = os.environ.get("LLAMA_CPP_COMMIT") or llama_cpp_pin()
+    if not llama_commit:
+        die("cannot determine which llama.cpp commit to quantize with.\n"
+            "  It is normally read from the src/infer-engine/ffi/llama.cpp submodule, which\n"
+            "  needs a git checkout. Running from an rsynced copy with no .git? Set\n"
+            "  LLAMA_CPP_COMMIT explicitly — src/ec2-tests/quantize.py does this for you.")
 
     info("JADE OS model quantization")
     print(f"    HF_REPO          : {hf_repo}")

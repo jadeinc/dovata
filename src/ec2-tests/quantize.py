@@ -68,6 +68,25 @@ def parse_args(argv):
     return opts
 
 
+def llama_cpp_pin():
+    """The llama.cpp commit the daemon links, from the submodule gitlink.
+
+    The box never sees it on its own: the rsync below excludes .git/, so
+    quantize-model.py cannot read the submodule pin there. We resolve it here,
+    where the git checkout is, and inject it into the generated runner.
+    """
+    out = subprocess.run(
+        ["git", "ls-tree", "HEAD", "--", "src/infer-engine/ffi/llama.cpp"],
+        cwd=str(repo_root()), capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        die("cannot read the llama.cpp submodule pin — is this a git checkout?")
+    parts = out.stdout.split()
+    if len(parts) < 3 or parts[1] != "commit":
+        die("src/infer-engine/ffi/llama.cpp is not a submodule gitlink")
+    return parts[2]
+
+
 def build_runner(region, quant_args):
     """Generate the self-contained Python runner staged on the box."""
     aws_id = os.environ.get("AWS_ACCESS_KEY_ID", "")
@@ -78,6 +97,7 @@ def build_runner(region, quant_args):
         f"os.environ['AWS_ACCESS_KEY_ID'] = {aws_id!r}\n"
         f"os.environ['AWS_SECRET_ACCESS_KEY'] = {aws_secret!r}\n"
         f"os.environ['AWS_DEFAULT_REGION'] = {region!r}\n"
+        f"os.environ['LLAMA_CPP_COMMIT'] = {llama_cpp_pin()!r}\n"
         f"REMOTE_DIR = {REMOTE_DIR!r}\n"
         f"QUANT_ARGS = {quant_args!r}\n"
     )

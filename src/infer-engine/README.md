@@ -16,9 +16,9 @@ through the crates.io bindings, and both need matching changes in llama.cpp itse
 So `ffi/llama.cpp` points at **our fork** (`joericks1998/llama.cpp`) at a pinned commit,
 not upstream, and the bindings crates live here where they can be edited. This is also a
 compatibility contract: the model GGUF is quantized with the *exact* llama.cpp commit the
-daemon links, which is why `ci/model-version.lock` records that SHA and explains how to
-re-derive it. Bumping one without the other is how you get a GGUF the daemon refuses to
-load.
+daemon links, or the daemon may refuse to load it. `src/scripts/quantize-model.py` reads
+that commit from this submodule with `git ls-tree`, so moving the submodule moves the
+quantizer with it and the two cannot drift apart.
 
 These crates used to be their own cargo workspace with a separate lockfile. They are now
 members of the one root workspace, so there is a single `Cargo.lock` and you can edit them
@@ -36,7 +36,7 @@ in place without path-dependency games.
 
 Only `src/dovata/src/engine/` — and only on Linux, where the daemon declares
 `llama-cpp-2` and `llama-cpp-sys-2` as target-specific dependencies. Nothing else in the
-repo links it. `ci/model-version.lock` and `src/scripts/quantize-model.py` depend on the
+repo links it. `src/scripts/quantize-model.py` depends on the
 pinned commit rather than on the code.
 
 ## Building

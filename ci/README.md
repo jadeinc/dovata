@@ -18,11 +18,10 @@ model release.
 
 ## Files
 
-- `model-version.lock` — the single source of truth for the published model. Records the
-  HF repo and a full commit SHA (not a branch, so "latest" cannot silently change what
-  ships), the quant scheme and imatrix chunk count, the llama.cpp repo and commit, and
-  the CUDA arch. Its comments carry the provenance of the llama.cpp pin and how to
-  re-derive it when the engine is bumped.
+- `model-version.lock` — the inputs to a model build. Records the HF repo and a full
+  commit SHA (not a branch, so "latest" cannot silently change what ships), the quant
+  scheme and imatrix chunk count, the llama.cpp repo, and the CUDA arch. It does *not*
+  record the llama.cpp commit — see below.
 - `calib-code.txt` — the calibration corpus for the importance matrix. Q4_K_M is driven
   by an imatrix calibrated on code, which meaningfully improves quality for a coder model.
 
@@ -33,9 +32,17 @@ model release.
 the GPU box. The output lands at
 `s3://jade-os-release-bucket/models/model.gguf`.
 
-## The one rule
+## Where the llama.cpp commit comes from
 
-`LLAMA_CPP_COMMIT` must match the commit the `src/infer-engine/ffi/llama.cpp` submodule
-is pinned at. Bumping the engine without bumping this — or the reverse — is how you ship
-a model the daemon cannot load. Nothing enforces the pairing automatically; check it by
-hand.
+Not from here. `quantize-model.py` reads it from the `src/infer-engine/ffi/llama.cpp`
+submodule, because that submodule is what the daemon links. Quantizing with a different
+commit than the daemon links can produce a GGUF the daemon refuses to load, so the two
+must agree — and the surest way to make them agree is to have only one of them.
+
+This file used to carry a `LLAMA_CPP_COMMIT` line copied from the submodule by hand.
+Nothing checked that the copy was current. It is gone.
+
+One wrinkle: `src/ec2-tests/quantize.py` rsyncs the repo to the GPU box without `.git`,
+so the box cannot read the submodule pin itself. The driver resolves it locally and
+passes it to the box as `LLAMA_CPP_COMMIT`. That env var is still the interface; it is
+just no longer a value anyone maintains.
