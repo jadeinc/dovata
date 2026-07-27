@@ -38,6 +38,25 @@ the same command locally and get the same bundle.
   `libloading` to read the symbols, and `sha2` so checksums are computed portably
   (the `release` path runs identically on macOS).
 
+## Two shapes of the same engine
+
+`dist/` carries the engine twice, and that is deliberate. `dovata-<arch>` is the daemon
+binary, which serves the engine over a Unix socket. `dovata-<arch>.so` is the same
+`impl Provider` exported across the C ABI, which a Jade program loads directly with no
+socket and no second process — the shape that matches how GPU work is normally reached
+(`jadelang -> dovata.so -> nvidia.ko`). The logic is identical; only the entry point
+differs.
+
+The `.so` is staged without the `read_provider_meta` check every other provider gets.
+That check `dlopen`s the library, and this one links CUDA, so it cannot load on a
+builder with no NVIDIA driver — which the release runner is. Validating it there would
+fail every release. Its ABI is guaranteed by construction instead: same
+`export_provider!`, same trait impl the daemon links. It is Linux-only, because the
+engine is; elsewhere the cdylib is an empty stub and is skipped rather than shipped.
+
+Read asset names out of `manifest.json` rather than hardcoding them. The OS install
+layer and the language both need to find these files, and the manifest is the contract.
+
 ## What ships and what does not
 
 Only the OS bundle is built here: the daemon plus the native `echo` provider. The

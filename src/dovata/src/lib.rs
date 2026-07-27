@@ -30,3 +30,18 @@ pub mod sched; // pure multi-sequence continuous-batching scheduler (RLM concurr
 // the vendored infer-engine (llama.cpp). Compiled out on other platforms.
 #[cfg(target_os = "linux")]
 pub mod engine;
+
+// Export the engine across the C ABI, so this crate's cdylib *is* a provider package.
+//
+// The daemon is not the only way to reach the engine, and increasingly not the main
+// one. A Jade program can load this library directly and call `infer` in-process,
+// which is the right shape for GPU work: the analogy is jadelang -> dovata.so ->
+// nvidia.ko, with no socket and no second process in the path. It costs nothing to
+// support both, because the delivery shape is not where the logic lives — `Dovata`
+// implements `Provider` once, the binary serves it over a socket, and this macro
+// serves the same impl over `dlopen`.
+//
+// Linux-gated because `engine` is: on macOS there is no llama.cpp and so nothing to
+// export, and the cdylib builds as an empty library rather than failing.
+#[cfg(target_os = "linux")]
+ovata_infer_protocol::export_provider!(engine::Dovata);

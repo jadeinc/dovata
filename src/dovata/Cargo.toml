@@ -9,6 +9,10 @@ description = "JADE OS inference daemon — host + local llama.cpp engine, servi
 [lib]
 name = "dovata"
 path = "src/lib.rs"
+# cdylib so the engine can be loaded straight into a Jade program as a provider
+# package, the same way `echo` is; rlib so the daemon binary can still link it.
+# One `impl Provider`, two delivery shapes — see the crate docs.
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "dovata"

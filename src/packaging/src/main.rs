@@ -160,12 +160,50 @@ fn assemble(plan: &Plan) -> Result<(), String> {
         serde_json::json!({ "asset": DAEMON_CRATE })
     };
 
-    // 5. Manifest.
+    // 4b. Stage the engine cdylib — the same `impl Provider` as the daemon serves, in
+    // the shape a Jade program loads directly (jadelang -> dovata.so -> nvidia.ko).
+    //
+    // Deliberately NOT run through `read_provider_meta`: that dlopens the library, and
+    // this one links CUDA, so it cannot load on a builder with no NVIDIA driver — the
+    // release runner has none. Validating it here would fail every release. Its ABI is
+    // guaranteed by construction instead: it comes from the same `export_provider!` on
+    // the same trait impl the daemon links.
+    //
+    // Linux-only because the engine is. Elsewhere the cdylib is an empty stub, and
+    // shipping something that looks like a provider but exports nothing is worse than
+    // shipping nothing.
+    let engine_lib = if cfg!(target_os = "linux") {
+        let lib_src = target_dir.join(libloading::library_filename(DAEMON_CRATE));
+        if !lib_src.exists() {
+            return Err(format!("expected engine cdylib missing: {}", lib_src.display()));
+        }
+        let asset = format!("{DAEMON_CRATE}-{}.so", std::env::consts::ARCH);
+        let dest = dist.join(&asset);
+        std::fs::copy(&lib_src, &dest).map_err(|e| format!("staging engine library: {e}"))?;
+        let sha = sha256_file(&dest)?;
+        let sha_file = format!("{asset}.sha256");
+        std::fs::write(dist.join(&sha_file), format!("{sha}  {asset}\n"))
+            .map_err(|e| format!("writing {sha_file}: {e}"))?;
+        eprintln!("packaging:   engine library -> dist/{asset} (+ .sha256)");
+        serde_json::json!({
+            "asset": asset,
+            "sha256": sha,
+            "sha256_file": sha_file,
+            "provider_name": "dovata",
+        })
+    } else {
+        eprintln!("packaging:   engine library skipped (engine is Linux-only)");
+        serde_json::Value::Null
+    };
+
+    // 5. Manifest. Consumers should read asset names from here rather than hardcoding
+    // them — the OS install layer and the language both need to find these files.
     let manifest = serde_json::json!({
         "provider_abi_version": PROVIDER_ABI_VERSION,
         "profile": profile,
         "arch": std::env::consts::ARCH,
         "daemon": daemon,
+        "engine_library": engine_lib,
         "providers": providers,
     });
     let manifest_path = dist.join("manifest.json");

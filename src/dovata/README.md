@@ -87,6 +87,19 @@ tricky parts.
 
 - `src/engine/` — the llama.cpp-bound half. See its own [README](src/engine/README.md).
 
+**Two ways in**
+
+`Dovata` implements the protocol's `Provider` trait, and the crate builds as both an
+rlib and a cdylib, so that one impl is reachable two ways. The daemon binary serves it
+over the Unix socket. The cdylib exports it across the C ABI via `export_provider!`, so
+a Jade program can `dlopen` it and call `infer` in-process — no socket, no second
+process, the same shape as any GPU library sitting in front of a driver.
+
+The in-process path is the cheaper one and increasingly the main one. Weights are
+`mmap`ed from the GGUF and the MoE cold experts sit in the CPU backend's default buffer
+type, so the kernel's page cache shares them across every process that maps the same
+file — the model costs the machine once, not once per program.
+
 **Everything else**
 
 - `profiles/` — the bundled model profiles, one TOML per model plus a Jade counterpart.
