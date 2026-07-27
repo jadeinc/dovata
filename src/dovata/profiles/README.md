@@ -42,6 +42,7 @@ runtimes, not because they are allowed to differ.
 |---|---|
 | `qwen3-coder-30b.toml` | The daemon-side profile: delimiters, tool-result wrapping, the ChatML template markers, and the `[limits]` block (native `context_window`, `rlm_max_context`). |
 | `qwen3-coder-30b.jde` | The language-side profile: `find_tool_call` / `find_tool_calls` over a reply. |
+| `qwen3.6-35b-a3b.toml` | The `qwen35moe` family: Qwen3.5-35B-A3B and Qwen3.6-35B-A3B. Same ChatML turns, but tool results come back on the `user` turn and the tool-call payload is nested XML rather than JSON. |
 | `qwen3-coder-30b.expert-order.json` | Not a profile — the per-layer MoE expert ranking, measured offline, loaded by `dovata::moe` and handed to the C driver. Lives here because it is model-specific data. |
 
 ## Who reads them

@@ -274,7 +274,10 @@ pub struct Registry {
 }
 
 /// Profiles compiled into the crate (the defaults shipped in `profiles/`).
-const BUILTIN_PROFILES: &[&str] = &[include_str!("../../profiles/qwen3-coder-30b.toml")];
+const BUILTIN_PROFILES: &[&str] = &[
+    include_str!("../../profiles/qwen3-coder-30b.toml"),
+    include_str!("../../profiles/qwen3.6-35b-a3b.toml"),
+];
 
 impl Registry {
     /// A registry of the profiles bundled with this crate.

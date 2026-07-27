@@ -367,6 +367,33 @@ mod tests {
     }
 
     #[test]
+    fn qwen35moe_selects_the_qwen3_6_profile_by_architecture() {
+        // Qwen3.5 and Qwen3.6 both declare qwen35moe but carry names no glob of
+        // ours anticipates, so the arch net is what has to catch them.
+        for name in ["Qwen3.6-35B-A3B", "Qwen3.5-35B-A3B", "Qwen3.6-35B-A3B-Some-Requant"] {
+            let bytes = header("qwen35moe", Some(name));
+            let pf = Preflight::evaluate(&bytes, &Registry::builtin(), false)
+                .unwrap_or_else(|e| panic!("{name} should preflight: {e}"));
+            let (profile, _) = pf.profile.expect("a profile was selected");
+            assert_eq!(profile.model, "Qwen3.6-35B-A3B", "for {name}");
+            assert_eq!(profile.tool_result.role, "user", "qwen3.6 returns results on the user turn");
+        }
+    }
+
+    #[test]
+    fn the_two_qwen_families_do_not_collide() {
+        // qwen3moe and qwen35moe are different architectures with different tool
+        // conventions; each must keep selecting its own profile.
+        let old = Preflight::evaluate(&header("qwen3moe", Some("Qwen3-Coder-30B-A3B-Instruct")),
+                                      &Registry::builtin(), false).unwrap();
+        assert_eq!(old.profile.unwrap().0.model, "Qwen3-Coder-30B");
+
+        let new = Preflight::evaluate(&header("qwen35moe", Some("Qwen3.6-35B-A3B")),
+                                      &Registry::builtin(), false).unwrap();
+        assert_eq!(new.profile.unwrap().0.model, "Qwen3.6-35B-A3B");
+    }
+
+    #[test]
     fn a_missing_file_names_the_variable_to_fix() {
         let err = Preflight::read("/nonexistent/model.gguf", &Registry::builtin(), false).unwrap_err();
         assert!(matches!(err, Error::Unreadable { .. }), "{err:?}");
