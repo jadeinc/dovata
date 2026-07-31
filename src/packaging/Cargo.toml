@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Host ABI version to validate each provider against.
-ovata-infer-protocol = { path = "../protocol" }
+ovata-infer-protocol = { path = "../protocol", version = ">=0.5.0" }
 # Read the provider .so's exported name/ABI symbols to validate + label it.
 libloading = "0.8"
 serde_json = "1"

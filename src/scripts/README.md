@@ -38,6 +38,14 @@ half-run. Python keeps the flow readable; nothing here is a library.
   `.jde` and leaves the hand-written parser body alone. `--check` writes nothing and
   exits non-zero if a package is stale, which is what `publish-providers` runs before it
   builds. Needs Python 3.11+ for `tomllib`.
+- `check-package-abi.py` — reads the Jade value ABI back out of a built `.so` and fails
+  if it is below a floor (default 2, which jade v1.1.31 introduced). The runtime refuses
+  a package built against an older ABI, and every package published from the old v1.1.23
+  toolchain pin carried the old one. `publish-providers` runs it right after `jade build`
+  so a pin drifting behind the runtime cannot ship packages that every consumer is
+  refused by. Reads `jade_pkg_abi_version` if the package has it, falling back to the
+  re-exported `jrt_abi_version` for packages built before that stamp existed; a library
+  with neither links no Jade runtime and is skipped.
 - `configure-provider.py` — writes `~/.jade/providers/<name>.json` at mode 0600 with an
   API key, which is where the Anthropic and OpenAI providers look when the corresponding
   `*_API_KEY` env var is not set. Prompts hidden if the key is not given as an argument.

@@ -10,4 +10,4 @@ description = "Minimal example/test provider — echoes the prompt. Doubles as t
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-ovata-infer-protocol = { path = "../protocol" }
+ovata-infer-protocol = { path = "../protocol", version = ">=0.5.0" }

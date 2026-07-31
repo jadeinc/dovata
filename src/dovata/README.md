@@ -106,6 +106,25 @@ Downstream, it depends on `src/protocol/` for every wire type and the `Provider`
 (always), on `src/gguf/` for the preflight (always), and on `src/infer-engine/{api,ffi}`
 for the model backend (Linux only).
 
+### The protocol floor is declared twice, for two different failures
+
+`src/protocol` is a submodule and the dependency is by path, so nothing about a path
+dep alone stops the pointer moving somewhere the engine does not work.
+
+`Cargo.toml` carries `version = ">=0.5.0"` next to the path. That is not redundant:
+cargo checks the requirement against the submodule's own version, so rolling the
+pointer *back* below the floor fails to resolve, with a message naming the versions,
+rather than failing to compile somewhere further in. 0.5.0 is the floor because the
+provider ABI gained `ovata_provider_protocol_version` there, which `packaging` reads
+off each provider `.so` to validate it.
+
+The tests in `protocol_compat` (`src/lib.rs`) pin the two numbers a semver bump would
+otherwise move silently: `PROTOCOL_VERSION`, the wire version the engine speaks, and
+`PROVIDER_ABI_VERSION`, what the shipped `.so` advertises. The crate's semver and the
+wire version move independently — 0.4.0 and 0.5.1 both speak wire 3 — so the floor
+cannot stand in for either. Changing one of those numbers should be deliberate, and
+the test is what makes it so.
+
 ## Configuration
 
 All environment, all `JADE_*`, all read by `Config::from_env` when the library loads.

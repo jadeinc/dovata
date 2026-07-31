@@ -54,6 +54,13 @@ gateway/proxy or OpenAI-compatible host.
 runtime loads without the source; the publish-providers workflow builds it per platform
 and serves it at jadelang.org.
 
+Build it with jade v1.1.32 or later. The runtime's value ABI went 1 to 2 in v1.1.31,
+when structs began crossing the native boundary, and a package carrying the old ABI is
+refused at load by v1.1.32 — it is not a source problem, so no edit here fixes it. The
+workflow pin is the floor, and `src/scripts/check-package-abi.py` reads the ABI back out
+of each built `.so` and fails the publish if it is short, so the pin cannot drift behind
+the runtime unnoticed again.
+
 ## Surface
 
 **Configure (the profile's fixed params — runtime-mutable)**

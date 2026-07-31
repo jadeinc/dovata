@@ -21,7 +21,11 @@ default = []
 cuda = ["llama-cpp-2/cuda"]
 
 [dependencies]
-ovata-infer-protocol = { path = "../protocol" }
+# `version` alongside `path` is not redundant: cargo checks the submodule's actual
+# version against it, so rolling src/protocol back below the floor fails to resolve
+# instead of failing to compile somewhere confusing. 0.5.0 is the floor because the
+# provider ABI gained `ovata_provider_protocol_version` there, which packaging reads.
+ovata-infer-protocol = { path = "../protocol", version = ">=0.5.0" }
 # GGUF header reader for the startup preflight (src/preflight.rs). Pure and
 # dependency-free, so it does not drag llama.cpp into the non-Linux build.
 gguf = { path = "../gguf" }

@@ -33,9 +33,19 @@ permissions:
   contents: read
 
 env:
-  # Jade toolchain used to compile the .jde libraries (kept in lock-step with the
-  # release workflow's pin).
-  JADE_VERSION: "v1.1.23"
+  # Jade toolchain used to compile the .jde libraries.
+  #
+  # This is a compatibility floor, not just a version. The Jade runtime's value ABI
+  # went 1 -> 2 in v1.1.31, when structs began crossing the native boundary. Every
+  # package published from the old v1.1.23 pin carries ABI 1, so a program on v1.1.31
+  # got "native function returned an unknown value tag" from inside the call, and one
+  # on v1.1.32 is refused at load. Rebuilding against v1.1.32 is the fix — see the
+  # ABI check step below, which will not let a stale package past again.
+  #
+  # MIN_PACKAGE_ABI must stay in step: it is the RUNTIME_ABI_VERSION this toolchain
+  # emits, and the check asserts the built packages carry at least it.
+  JADE_VERSION: "v1.1.32"
+  MIN_PACKAGE_ABI: "2"
   # Jade packages to publish, one "<name> <source.jde>" per line. <name> is the
   # published .so basename (served as jadelang.org/<name>-<platform>.so); the import
   # name (`use ...`) is the consumer's choice at `jade pkg add`. Includes the remote
@@ -95,6 +105,15 @@ jobs:
           if [ -d "${tmp}/lib" ]; then cp "${tmp}"/lib/*.a "${prefix}/lib/jade/"; fi
           echo "${prefix}/bin" >> "$GITHUB_PATH"
 
+      # A model profile is two files: the .toml compiled into the engine and the
+      # .jde published here. They share the tool-call delimiters and once drifted
+      # apart unnoticed, because nothing at runtime links them. The TOML is the
+      # source of truth now and the .jde's constants are generated from it, so
+      # refuse to publish a package that no longer matches the engine it parses
+      # for. `cargo test -p dovata` runs the same check.
+      - name: Check profile packages are in sync with their TOMLs
+        run: python3 src/scripts/gen-profile-package.py --check
+
       - name: Build Jade packages (${{ matrix.platform }})
         run: |
           set -euo pipefail
@@ -106,6 +125,13 @@ jobs:
             echo "built out/${name}-${{ matrix.platform }}.so"
           done
           ls -l out
+
+      # The pin above is a claim about the value ABI these packages carry; this is
+      # what checks it. Reads the ABI back out of each freshly built .so and fails
+      # the publish if it is below the floor, so a toolchain pin drifting behind the
+      # runtime cannot quietly ship packages that every consumer is refused by.
+      - name: Check package value ABI (${{ matrix.platform }})
+        run: python3 src/scripts/check-package-abi.py --min "$MIN_PACKAGE_ABI" out/*.so
 
       - uses: actions/upload-artifact@v4
         with:
