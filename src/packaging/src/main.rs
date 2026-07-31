@@ -110,7 +110,7 @@ fn assemble(plan: &Plan) -> Result<(), String> {
         }
 
         // SAFETY: reads only the zero-arg name/abi symbols; does not call `new`.
-        let (name, abi) = unsafe { read_provider_meta(&src) }
+        let (name, abi, protocol) = unsafe { read_provider_meta(&src) }
             .map_err(|e| format!("{crate_name}: not a valid provider .so: {e}"))?;
         if abi != PROVIDER_ABI_VERSION {
             eprintln!(
@@ -120,11 +120,16 @@ fn assemble(plan: &Plan) -> Result<(), String> {
 
         let dest = dist.join(&file_name);
         std::fs::copy(&src, &dest).map_err(|e| format!("copying {}: {e}", src.display()))?;
-        eprintln!("packaging:   provider '{name}' (abi {abi}) -> dist/{}", file_name.to_string_lossy());
+        eprintln!(
+            "packaging:   provider '{name}' (abi {abi}, protocol {}) -> dist/{}",
+            protocol.map_or_else(|| "?".to_string(), |v| v.to_string()),
+            file_name.to_string_lossy()
+        );
         providers.push(serde_json::json!({
             "crate": crate_name,
             "name": name,
             "abi_version": abi,
+            "protocol_version": protocol,
             "file": file_name.to_string_lossy(),
         }));
     }
@@ -163,6 +168,11 @@ fn assemble(plan: &Plan) -> Result<(), String> {
             "sha256": sha,
             "sha256_file": sha_file,
             "provider_name": "dovata",
+            // Not read from the library — it cannot be dlopened here (see above) —
+            // but from the same protocol crate it was compiled against, which this
+            // xtask links too. Same constants, same build.
+            "abi_version": PROVIDER_ABI_VERSION,
+            "protocol_version": ovata_infer_protocol::PROTOCOL_VERSION,
         })
     } else {
         eprintln!("packaging:   engine library skipped (engine is Linux-only)");
@@ -173,6 +183,7 @@ fn assemble(plan: &Plan) -> Result<(), String> {
     // them — the OS install layer and the language both need to find these files.
     let manifest = serde_json::json!({
         "provider_abi_version": PROVIDER_ABI_VERSION,
+        "protocol_version": ovata_infer_protocol::PROTOCOL_VERSION,
         "profile": profile,
         "arch": std::env::consts::ARCH,
         "engine": engine,
@@ -212,11 +223,15 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 /// # Safety
 /// `path` must be a provider library built with `export_provider!`; the metadata
 /// symbols must match the expected signatures.
-unsafe fn read_provider_meta(path: &Path) -> Result<(String, u32), String> {
+unsafe fn read_provider_meta(path: &Path) -> Result<(String, u32, Option<u32>), String> {
     let lib = libloading::Library::new(path).map_err(|e| e.to_string())?;
     let abi: libloading::Symbol<unsafe extern "C" fn() -> u32> = lib
         .get(b"ovata_provider_abi_version\0")
         .map_err(|e| e.to_string())?;
+    // Optional: libraries built before this symbol existed simply do not export it,
+    // and that is not a reason to reject an otherwise valid provider.
+    let proto: Option<libloading::Symbol<unsafe extern "C" fn() -> u32>> =
+        lib.get(b"ovata_provider_protocol_version\0").ok();
     let name_ptr: libloading::Symbol<unsafe extern "C" fn() -> *const u8> = lib
         .get(b"ovata_provider_name_ptr\0")
         .map_err(|e| e.to_string())?;
@@ -224,10 +239,11 @@ unsafe fn read_provider_meta(path: &Path) -> Result<(String, u32), String> {
         .get(b"ovata_provider_name_len\0")
         .map_err(|e| e.to_string())?;
     let version = abi();
+    let protocol = proto.map(|f| f());
     let name = {
         let p = name_ptr();
         let l = name_len();
         String::from_utf8_lossy(std::slice::from_raw_parts(p, l)).into_owned()
     };
-    Ok((name, version))
+    Ok((name, version, protocol))
 }
