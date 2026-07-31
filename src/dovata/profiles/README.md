@@ -36,6 +36,33 @@ Both artifacts describe the same model, so they must agree on the delimiters and
 tool-name field. They are separate files because they are consumed by different
 runtimes, not because they are allowed to differ.
 
+### The TOML is the source of truth
+
+They did differ. The TOML said the tool-name JSON key was `tool_name`, the `.jde` said
+`name`, and nothing could notice: the TOML is compiled into `dovata.so`, the `.jde` is
+published to jadelang.org off a different workflow, and no runtime link joins them.
+
+So the three shared values are generated now, not copied by hand:
+
+```sh
+python3 src/scripts/gen-profile-package.py            # rewrite every .jde in place
+python3 src/scripts/gen-profile-package.py --check    # fail if any is stale
+```
+
+The script rewrites only the `BEGIN GENERATED`/`END GENERATED` region of the `.jde` —
+`TOOL_OPEN`, `TOOL_CLOSE`, `NAME_FIELD`. Everything else stays hand-written, because the
+models really do differ there: Qwen3-Coder wraps a JSON object, while the `qwen35moe`
+family wraps nested XML and has no name field at all. One parser template cannot serve
+both. The delimiters are what drifted, and those are what is generated.
+
+Two gates catch a stale package. `cargo test -p dovata` runs
+`profile::tests::jade_packages_match_their_toml`, which reads the `.jde` off disk and
+compares it against the parsed TOML, so drift fails on any dev machine. The
+`publish-providers` workflow runs `--check` before `jade build`, so a stale package
+cannot reach jadelang.org.
+
+Edit the TOML, run the script, commit both files.
+
 ## The files here
 
 | File | What it is |

@@ -15,10 +15,19 @@
 use std::json
 
 // This model emits native Qwen/Hermes tool calls:
-//   <tool_call>{ "name": ..., "arguments": { ... } }</tool_call>
+//   <tool_call>{ "tool_name": ..., "arguments": { ... } }</tool_call>
+//
+// The delimiters and the name field are the engine's too — it splits the same
+// span out of the token stream as it arrives. They live in the sibling
+// `qwen3-coder-30b.toml`, which is compiled into the engine, and are copied down
+// here by the generator. Hand-editing them puts this package back out of step
+// with the engine that produced the text it parses.
+// ── BEGIN GENERATED — from qwen3-coder-30b.toml; run src/scripts/gen-profile-package.py
+// Model: Qwen3-Coder-30B. Edit the TOML, not these three lines.
 let TOOL_OPEN  = "<tool_call>"
 let TOOL_CLOSE = "</tool_call>"
-let NAME_FIELD = "name"
+let NAME_FIELD = "tool_name"
+// ── END GENERATED
 
 // find_tool_calls(text) -> [ { name, args } ], in order, empty when none.
 //

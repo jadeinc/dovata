@@ -433,6 +433,64 @@ mod tests {
         assert_eq!(p.tool_result.role, "tool");
     }
 
+    // A model profile is two files — this TOML, compiled into the engine, and a
+    // sibling `.jde` package published to jadelang.org that parses tool calls out
+    // of a reply. They ship on separate pipelines and nothing at runtime links
+    // them, so they drifted: this side said the tool-name key was `tool_name`,
+    // the Jade side said `name`. `src/scripts/gen-profile-package.py` now
+    // generates the Jade side's constants from here; this test is what makes
+    // forgetting to run it fail rather than ship.
+    #[test]
+    fn jade_packages_match_their_toml() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("profiles");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("profiles dir readable") {
+            let toml_path = entry.expect("dir entry").path();
+            if toml_path.extension().is_none_or(|e| e != "toml") {
+                continue;
+            }
+            // Not every model has a published language-side package, and the
+            // engine works fine without one.
+            let jde_path = toml_path.with_extension("jde");
+            if !jde_path.exists() {
+                continue;
+            }
+            checked += 1;
+
+            let raw = std::fs::read_to_string(&toml_path).expect("profile readable");
+            let p = ModelProfile::from_toml(&raw).expect("profile valid");
+            let jde = std::fs::read_to_string(&jde_path).expect("jade package readable");
+            let name = jde_path.file_name().unwrap().to_string_lossy();
+
+            for (konst, value) in [
+                ("TOOL_OPEN ", &p.tool_call.open),
+                ("TOOL_CLOSE", &p.tool_call.close),
+                ("NAME_FIELD", &p.tool_call.name_field),
+            ] {
+                let expected = format!("let {konst} = {}", jade_string(value));
+                assert!(
+                    jde.contains(&expected),
+                    "{name} is out of date with {}: expected `{expected}`.\n\
+                     Run src/scripts/gen-profile-package.py and commit the result.",
+                    toml_path.file_name().unwrap().to_string_lossy(),
+                );
+            }
+        }
+        assert!(checked > 0, "no profile had a sibling .jde — did the profiles move?");
+    }
+
+    /// A Jade double-quoted string literal, matching `jade_string` in
+    /// `src/scripts/gen-profile-package.py`.
+    fn jade_string(s: &str) -> String {
+        let escaped = s
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+            .replace('\t', "\\t")
+            .replace('\r', "\\r");
+        format!("\"{escaped}\"")
+    }
+
     #[test]
     fn qwen_wraps_tool_result() {
         let reg = Registry::builtin();

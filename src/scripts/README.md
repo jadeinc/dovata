@@ -30,6 +30,14 @@ half-run. Python keeps the flow readable; nothing here is a library.
   that is already quantized: it fetches a `.gguf` straight from a URL, verifies the
   header, and publishes it to the same S3 contract — no GPU, no llama.cpp build, no
   150 GB of scratch.
+- `gen-profile-package.py` — regenerates the Jade-side model profile
+  (`src/dovata/profiles/<model>.jde`) from the engine-side `<model>.toml`. A profile is
+  two files describing one model, shipped on two different pipelines with no runtime link
+  between them, and they drifted on the tool-call delimiters. The TOML is the source of
+  truth now; this copies the three shared constants down into the marked region of the
+  `.jde` and leaves the hand-written parser body alone. `--check` writes nothing and
+  exits non-zero if a package is stale, which is what `publish-providers` runs before it
+  builds. Needs Python 3.11+ for `tomllib`.
 - `configure-provider.py` — writes `~/.jade/providers/<name>.json` at mode 0600 with an
   API key, which is where the Anthropic and OpenAI providers look when the corresponding
   `*_API_KEY` env var is not set. Prompts hidden if the key is not given as an argument.
