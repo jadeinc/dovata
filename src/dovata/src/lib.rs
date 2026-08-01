@@ -38,6 +38,12 @@ pub mod sched; // pure multi-sequence continuous-batching scheduler (RLM concurr
 #[cfg(target_os = "linux")]
 pub mod engine;
 
+// The entry point the Jade compiler looks for. `export_provider!` below gives this
+// crate the C ABI a non-Jade host loads; the compiler uses its own native-package
+// machinery instead and looks for `jade_pkg_init`. Both live in one library over
+// one `Provider` impl. See the module docs for how the two drifted apart.
+pub mod jade_pkg;
+
 // Export the engine across the C ABI, so this crate's cdylib *is* a provider package.
 //
 // This is the whole product. A Jade program dlopens the library and calls `infer`

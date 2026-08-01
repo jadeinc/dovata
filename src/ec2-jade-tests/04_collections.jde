@@ -1,7 +1,7 @@
 // 04 — JSON array via explicit GBNF.
 // Exercises recursive grammar for a collection; asserts a non-empty parsed array.
 
-use std.json
+use std::json
 
 let ARR_GBNF = """root ::= "[" ws num (ws "," ws num)* ws "]"
 num  ::= "-"? [0-9]+

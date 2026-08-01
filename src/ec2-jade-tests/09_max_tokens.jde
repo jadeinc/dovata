@@ -1,0 +1,39 @@
+// 09 — max_tokens is enforced by the engine, not merely requested.
+// Exercises: the request field surviving the protocol into the sampler's stop
+// condition. A model asked for a long answer under a tight cap must come back
+// short; an uncapped one must come back longer. Comparing the two is the point —
+// a single short reply proves nothing, because the model might just be terse.
+
+use llm
+use std::time
+
+let nonce = time.now_ms()
+
+let ok = false
+let detail = ""
+try {
+    llm.set_max_tokens(8)
+    prompt tight = f"Write five long paragraphs about the history of the sea. ({nonce})"
+    let short_reply = ?tight
+
+    llm.set_max_tokens(160)
+    prompt loose = f"Write five long paragraphs about the history of the sea. ({nonce})"
+    let long_reply = ?loose
+
+    let short_len = short_reply.trim().len()
+    let long_len = long_reply.trim().len()
+
+    // Deliberately loose: the cap is in tokens and this counts characters, so the
+    // assertion is only that the cap bit at all and bit harder than the loose one.
+    // ~4 chars/token means 8 tokens should land well under 200 characters.
+    ok = short_len > 0 && short_len < 200 && long_len > short_len
+    detail = f"capped={short_len} chars, uncapped={long_len} chars"
+} catch e {
+    detail = f"raised: {e}"
+}
+
+if ok {
+    print(f"PASS: max_tokens bounded the generation  [{detail}]")
+} else {
+    print(f"FAIL: max_tokens — {detail}")
+}

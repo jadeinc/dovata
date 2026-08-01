@@ -559,6 +559,25 @@ fn main() {
 
     let mut config = Config::new(&llama_src);
 
+    // Everything llama.cpp builds ends up inside a shared object, so all of it has
+    // to be position-independent — including the thread-local storage.
+    //
+    // We link these static libs into `dovata`'s cdylib. llama.cpp only turns
+    // POSITION_INDEPENDENT_CODE on for `ggml-base` and `ggml`, and only under
+    // BUILD_SHARED_LIBS, which is off here; `ggml-cuda` never gets it. Without
+    // -fPIC the compiler picks the local-exec TLS model, whose R_X86_64_TPOFF32
+    // relocation is legal in an executable and illegal in a `-shared` link. The
+    // MoE pager (moe-driver/src/page.cu, compiled into ggml-cuda) has two
+    // function-local `thread_local` vectors, so the link failed on those and their
+    // guard variables.
+    //
+    // It only surfaced when the daemon went away. The old binary was an
+    // executable, where local-exec is fine; the cdylib is the first artifact to
+    // link this as `-shared`. Setting it here rather than in the fork is
+    // deliberate — the requirement comes from how *we* consume llama.cpp, not
+    // from llama.cpp itself.
+    config.define("CMAKE_POSITION_INDEPENDENT_CODE", "ON");
+
     // Would require extra source files to pointlessly
     // be included in what's uploaded to and downloaded from
     // crates.io, so deactivating these instead

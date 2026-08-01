@@ -7,7 +7,7 @@
 // A time-based nonce busts the daemon's response cache so each run measures real
 // inference rather than a cache replay.
 
-use std.time
+use std::time
 use llm
 
 let nonce = time.now_ms()

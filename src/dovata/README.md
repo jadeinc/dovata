@@ -48,6 +48,36 @@ under a second and still covers the tricky parts.
 - `src/lib.rs` — the library root. Its module list is the map of the pure core, and on
   Linux it ends with `export_provider!(engine::Dovata)`, which is what makes this crate's
   cdylib a provider package.
+- `src/jade_pkg.rs` — the *other* entry point, and the one a Jade program actually uses.
+  See below; it is easy to assume `export_provider!` is enough and it is not.
+
+### Two entry points, and only one of them reaches Jade
+
+`export_provider!` emits the `ovata_provider_*` C ABI. That is the right surface for a
+host that speaks plain C, and it is **not** what the Jade compiler calls. The compiler
+loads a provider through its own native-package machinery: `dlopen`, then
+`jade_pkg_init` to collect name-to-function-pointer bindings, then a binding called
+`infer` taking an `InferRequest` and returning an array of frames.
+
+The two drifted apart quietly. The compiler dropped its dependency on the protocol's
+Rust half in jade v1.1.30 and kept only `jade/infer.jde`, which declares the *messages*
+and says nothing about the entry point. So both sides agreed on `InferRequest`, `Token`,
+`Done` and `Error`, and disagreed on how to start the conversation — while the protocol's
+own docs still said a compiled Jade program calls `ovata_provider_new`. Loading the
+engine from Jade failed with "missing `jade_pkg_init` symbol", and the eval suite could
+not run at all. ovata-infer-protocol v0.5.2 now names the compiler's loader as the
+authority.
+
+`src/jade_pkg.rs` is the conforming half. Both entry points sit in one library over one
+`Provider` impl, so nothing about the engine changed and a non-Jade host keeps the ABI it
+already links. The marshalling is pure and unit-tested on any machine — it is only the
+engine call behind it that is Linux-only — and the tests pin the frame type names and
+field names, because a rename there decodes as a bag of nils rather than failing loudly.
+
+Two things in that file are load-bearing and easy to get wrong. Every byte of a returned
+tree must come from libc `malloc`, because the compiler frees it with libc `free` and the
+process holds two allocators. And `jade_pkg_abi_version` must report 2, the value ABI
+structs cross under since jade v1.1.31; the compiler refuses a package it cannot talk to.
 
 **The pure core** (no llama.cpp, tested everywhere)
 

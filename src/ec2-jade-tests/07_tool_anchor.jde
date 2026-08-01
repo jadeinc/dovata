@@ -5,7 +5,7 @@
 //   * "</tool>" stop-anchor stripped from the streamed output.
 // The GBNF below is the same one programs/lib/tools.jde uses in production.
 
-use std.json
+use std::json
 
 let _TOOL_GBNF = """root   ::= "{" ws toolkv (ws "," ws pair)* ws "}"
 toolkv ::= [\\x22] "tool_name" [\\x22] ws ":" ws str

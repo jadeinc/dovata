@@ -1,0 +1,49 @@
+// 11 — Concurrent dereferences against one in-process engine.
+//
+// This one exists because of the daemon removal. A socket serialised requests
+// whether or not the caller knew it; now every `?p` is a call into a library
+// living in the caller's own process, and two async derefs can be in flight at
+// once. Nothing else in this suite puts two requests in the engine together.
+//
+// It asserts correctness, not speed. Whether the engine truly overlaps the work
+// or quietly serialises it is an implementation choice, and timing assertions on
+// a shared box are flaky. What must hold is that concurrent calls do not corrupt
+// each other: two questions, two answers, each matching its own question.
+
+use llm
+use std::time
+
+let nonce = time.now_ms()
+
+// `?p` already yields the reply; the future is the async call itself, so the
+// await belongs at the call site rather than here.
+async fn ask(q) {
+    prompt p = q
+    return ?p
+}
+
+let ok = false
+let detail = ""
+try {
+    llm.set_max_tokens(16)
+
+    // Distinct answers, so a crossed reply is visible rather than plausible.
+    let a = ask(f"What is the capital of France? Reply with only the city name. ({nonce})")
+    let b = ask(f"What is the capital of Japan? Reply with only the city name. ({nonce})")
+
+    let ra = (await a).trim()
+    let rb = (await b).trim()
+    detail = f"france={ra} japan={rb}"
+
+    let a_ok = ra.upper().contains("PARIS")
+    let b_ok = rb.upper().contains("TOKYO")
+    ok = a_ok && b_ok
+} catch e {
+    detail = f"raised: {e}"
+}
+
+if ok {
+    print(f"PASS: concurrent derefs returned correct, uncrossed replies  [{detail}]")
+} else {
+    print(f"FAIL: concurrency — {detail}")
+}

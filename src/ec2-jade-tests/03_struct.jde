@@ -3,7 +3,7 @@
 // span close), asserting parseable JSON — independent of the runtime's struct
 // coercion layer (which is tested separately and currently flaky).
 
-use std.json
+use std::json
 
 let OBJ_GBNF = """root   ::= "{" ws pair (ws "," ws pair)* ws "}"
 pair   ::= str ws ":" ws val

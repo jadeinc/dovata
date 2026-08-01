@@ -5,7 +5,7 @@
 // (the basis for KV-prefix reuse across turns). Bare consecutive `?p` derefs do
 // NOT share history in this runtime, so the history is sent explicitly.
 
-use std.json
+use std::json
 
 let ok = false
 let detail = ""

@@ -29,6 +29,9 @@ ovata-infer-protocol = { path = "../protocol", version = ">=0.5.0" }
 # GGUF header reader for the startup preflight (src/preflight.rs). Pure and
 # dependency-free, so it does not drag llama.cpp into the non-Linux build.
 gguf = { path = "../gguf" }
+# Raw malloc/free for the Jade package boundary: the compiler frees the tree we
+# return, and its allocator is libc's, not Rust's. See src/jade_pkg.rs.
+libc = "0.2"
 serde_json = { version = "1", features = ["std"] }
 # The folded-in model profile module (was the jade-model-profile crate): TOML profiles.
 serde = { version = "1", features = ["derive"] }

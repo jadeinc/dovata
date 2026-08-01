@@ -1,0 +1,53 @@
+// 12 — The grammar retires when the anchored span closes.
+//
+// 07 proves the grammar switches ON at the open anchor and that the span parses.
+// This proves the other edge: once the JSON span closes, the constraint is
+// dropped and the model generates freely again. If the grammar never retired,
+// everything after the span would still be forced to match the JSON root and the
+// output would either stop dead at the closing brace or emit more JSON.
+//
+// The distinction matters for the chat loop, where a tool call is followed by
+// ordinary prose in the same turn. A grammar that never retires makes that
+// impossible and the failure looks like a truncated reply, not a sampler bug.
+
+use std::json
+
+let _TOOL_GBNF = """root   ::= "{" ws toolkv (ws "," ws pair)* ws "}"
+toolkv ::= [\\x22] "tool_name" [\\x22] ws ":" ws str
+pair   ::= str ws ":" ws val
+val    ::= str | num | obj | arr | "true" | "false" | "null"
+obj    ::= "{" ws (pair (ws "," ws pair)*)? ws "}"
+arr    ::= "[" ws (val (ws "," ws val)*)? ws "]"
+str    ::= [\\x22] ([^\\x22\\x5c] | [\\x5c] .)* [\\x22]
+num    ::= "-"? [0-9]+ ("." [0-9]+)?
+ws     ::= [ ]*"""
+
+let ok = false
+let detail = ""
+try {
+    let g = Grammar.new(_TOOL_GBNF, "<tool>", "</tool>")
+    prompt p = """You can call tools. Emit the tool call first, then explain yourself
+in one plain English sentence after the closing tag. To call one, emit:
+<tool>{"tool_name": "get_time"}</tool>
+Call the get_time tool now, then explain why."""
+    let resp = ?p |> g
+    detail = resp
+
+    if resp.contains("<tool>") && resp.contains("</tool>") {
+        let span = resp.split("<tool>")[1].split("</tool>")[0].trim()
+        let parsed = json.parse(span)
+        let tail = resp.split("</tool>")[1].trim()
+        // Free text after the span is the whole point: it can only exist if the
+        // grammar stopped constraining once the JSON closed.
+        ok = parsed.has("tool_name") && tail.len() > 0
+        detail = f"span={span} tail={tail}"
+    }
+} catch e {
+    detail = f"raised: {e}"
+}
+
+if ok {
+    print(f"PASS: grammar retired after the span, free text followed  [{detail}]")
+} else {
+    print(f"FAIL: grammar retirement — {detail}")
+}

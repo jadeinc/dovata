@@ -30,8 +30,9 @@ the individual scripts are a dozen lines.
 - `repl.py` — opens a PTY and execs `jade repl` on the box, checking first that `jade` is
   installed and the LLM socket is live. Gives you an interactive Jade session backed by
   real inference.
-- `run-tests.py` — the eval harness. Starts `dovata`, waits for its `listening on…` line,
-  runs every `.jde` in `src/ec2-jade-tests/`, and reports pass/fail. Runs *on* the box.
+- `run-tests.py` — the eval harness. Builds the engine `.so`, stages it into a scratch
+  provider slot, runs every `.jde` in `src/ec2-jade-tests/`, and reports pass/fail. Runs
+  *on* the box. See "There is no daemon to start" below.
 - `first-run.py` — one-time provisioning, idempotent. Installs CUDA, LLVM 18, Rust,
   musl-tools, and the NVIDIA driver, then downloads the 30B model to
   `/jade/inference/model.gguf`.
@@ -40,6 +41,31 @@ the individual scripts are a dozen lines.
   credentials forwarded, so the 18 GB upload to S3 happens in-region instead of round
   tripping through your laptop. Supports `--detached` (survives an SSH drop) and
   `--follow`.
+
+## There is no daemon to start
+
+`run-tests.py` used to build a `dovata` binary, spawn it, wait for a
+`dovata: listening on` line, and let the evals reach it over `~/.jade/llm.sock`. Dropping
+the daemon deleted all of that, and the harness sat broken until it was ported: it died
+at its own `dovata not found` check, because `cargo build -p dovata` emits
+`libdovata.so` and no binary at all.
+
+What replaces the daemon is a staging step. The Jade runtime loads exactly one provider
+library from the active slot, and `JADE_PROVIDER_ACTIVE` overrides that slot's path
+outright — the hook jadelang provides for dev and testing. So the harness copies the
+freshly built engine into `target/provider-active/` and points the evals there. The slot
+is rebuilt each run, since a leftover `.so` from an earlier build would be loaded ahead
+of the one just compiled.
+
+`JADE_PROVIDERS_DIR` is *not* the hook. That one feeds `jade register`'s discovery of
+installable providers; the runtime never reads it.
+
+The evals in `src/ec2-jade-tests/` needed no changes. They speak `use llm`, `prompt`, and
+`?p` — language surface, not transport.
+
+Note `repl.py` still checks for a live LLM socket and has the same daemon assumption
+baked in. It was not part of this port and will not work until it gets the same
+treatment.
 
 ## Configuration
 
