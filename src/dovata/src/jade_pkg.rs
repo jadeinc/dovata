@@ -261,6 +261,85 @@ fn engine() -> Result<&'static crate::engine::Dovata, String> {
     }
 }
 
+/// Read the leading chunk of a GGUF, enough to cover its metadata and tensor index.
+#[cfg(target_os = "linux")]
+fn read_header(path: &str) -> Option<Vec<u8>> {
+    use std::io::Read;
+    const HEADER_BUDGET: u64 = 64 * 1024 * 1024;
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(HEADER_BUDGET).read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// How many tokens to ask for when the caller cannot say.
+///
+/// `max_tokens` is not one of the four things a Jade program can express — the
+/// language dropped it along with the daemon, and `InferRequest` carries only
+/// `input`, `grammar`, `anchor` and `stop_anchor`. So nothing sets the field and
+/// `u32::default()` is 0, which is not "unlimited": the engine computes
+/// `max_new = (ctx_size - prompt_len).min(max_tokens)` in `engine/standard.rs`, so
+/// zero produces an empty reply. The model loads, the request logs, and the caller
+/// gets nothing — a silent failure, and exactly what an unset default looks like
+/// here. This module must therefore supply one.
+///
+/// The number is estimated rather than fixed: see [`crate::vram`]. A flat constant
+/// is wrong in both directions — too small on a card with room to spare, too large
+/// on one already full of weights — so the cap comes from how much KV cache actually
+/// fits after the weights, using the model's own shape from its GGUF header and an
+/// assumed card size. `JADE_MAX_TOKENS` overrides the estimate outright, which is
+/// what to reach for when MoE expert offload makes the file size a poor proxy for
+/// resident VRAM.
+///
+/// Computed once: it reads the model file's size and header, and neither changes
+/// while the process runs.
+#[cfg(target_os = "linux")]
+fn default_max_tokens() -> u32 {
+    static CAP: OnceLock<u32> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        if let Some(n) = std::env::var("JADE_MAX_TOKENS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .filter(|n| *n > 0)
+        {
+            return n;
+        }
+        let cfg = crate::config::Config::from_env();
+        let vram = std::env::var("JADE_VRAM_BYTES")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(crate::vram::DEFAULT_VRAM_BYTES);
+
+        let weights = std::fs::metadata(&cfg.model_path).map(|m| m.len()).unwrap_or(0);
+        // The header sits before the tensor data, so a bounded prefix is enough — the
+        // file itself may be 20 GB. Same budget preflight reads with.
+        let dims = read_header(&cfg.model_path)
+            .and_then(|b| gguf::Gguf::parse(&b).ok())
+            .and_then(|g| crate::vram::ModelDims::from_gguf(&g));
+
+        let Some(dims) = dims else {
+            // Unreadable header. Preflight already refuses a load for this, so
+            // reaching here means an override let it through; fall back rather than
+            // guess a shape.
+            return crate::vram::MIN_MAX_TOKENS;
+        };
+        let budget = crate::vram::Budget {
+            vram_bytes: vram,
+            weights_bytes: weights,
+            overhead_bytes: crate::vram::DEFAULT_OVERHEAD_BYTES,
+        };
+        let cap = crate::vram::estimate_max_tokens(dims, cfg.kv_type_k, cfg.kv_type_v, budget);
+        eprintln!(
+            "dovata: max_tokens={cap} (weights {} MiB, assumed VRAM {} MiB, {} B/token)",
+            weights / (1024 * 1024),
+            vram / (1024 * 1024),
+            dims.kv_bytes_per_token(cfg.kv_type_k, cfg.kv_type_v),
+        );
+        cap
+    })
+}
+
 /// One protocol frame as the struct the compiler reads.
 ///
 /// Pure: no engine, no llama.cpp, so it is unit-tested on any machine. The field
@@ -323,6 +402,7 @@ unsafe extern "C" fn jade_infer(argc: usize, argv: *const JadeVal, out: *mut Jad
             grammar: unsafe { field_str(arg, "grammar") },
             anchor: unsafe { field_str(arg, "anchor") },
             stop_anchor: unsafe { field_str(arg, "stop_anchor") },
+            max_tokens: default_max_tokens(),
             ..Default::default()
         };
 
@@ -388,10 +468,20 @@ pub extern "C" fn jade_pkg_abi_version() -> u32 {
 #[cfg(target_os = "linux")]
 #[no_mangle]
 pub unsafe extern "C" fn jade_pkg_init(out: *mut JadeNativePkg) -> i32 {
-    static BINDINGS: [JadeBinding; 2] = [
+    /// The table must outlive the return, so it is a `static` rather than a local.
+    /// A `static` has to be `Sync`, and `JadeBinding` holds a raw `*const c_char`,
+    /// which is not — even though sharing this one is safe.
+    struct Bindings([JadeBinding; 2]);
+    // SAFETY: every pointer in the table points into a `'static` immutable byte
+    // string in this library, and nothing writes through them or mutates the table
+    // after construction. Sharing it across threads is therefore sound; only the
+    // raw pointer's blanket `!Sync` stands in the way.
+    unsafe impl Sync for Bindings {}
+
+    static BINDINGS: Bindings = Bindings([
         JadeBinding { name: INFER_NAME.as_ptr().cast::<c_char>(), func: jade_infer },
         JadeBinding { name: CONFIGURE_NAME.as_ptr().cast::<c_char>(), func: jade_configure },
-    ];
+    ]);
     if out.is_null() {
         return 1;
     }
@@ -400,8 +490,8 @@ pub unsafe extern "C" fn jade_pkg_init(out: *mut JadeNativePkg) -> i32 {
             out,
             JadeNativePkg {
                 name: PKG_NAME.as_ptr().cast::<c_char>(),
-                bindings: BINDINGS.as_ptr(),
-                binding_count: BINDINGS.len(),
+                bindings: BINDINGS.0.as_ptr(),
+                binding_count: BINDINGS.0.len(),
             },
         );
     }

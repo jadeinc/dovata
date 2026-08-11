@@ -10,7 +10,6 @@
 // a shared box are flaky. What must hold is that concurrent calls do not corrupt
 // each other: two questions, two answers, each matching its own question.
 
-use llm
 use std::time
 
 let nonce = time.now_ms()
@@ -25,8 +24,6 @@ async fn ask(q) {
 let ok = false
 let detail = ""
 try {
-    llm.set_max_tokens(16)
-
     // Distinct answers, so a crossed reply is visible rather than plausible.
     let a = ask(f"What is the capital of France? Reply with only the city name. ({nonce})")
     let b = ask(f"What is the capital of Japan? Reply with only the city name. ({nonce})")

@@ -32,6 +32,7 @@ pub mod profile; // per-model token/turn profiles + chat templates (was jade-mod
 pub mod route; // over-context corpus/question split + text chunking for the RLM path
 pub mod moe; // MoE expert-offload glue: expert_order asset load + validation (pure half)
 pub mod sched; // pure multi-sequence continuous-batching scheduler (RLM concurrency core)
+pub mod vram; // sizes the generation cap from the VRAM left after the weights
 
 // The local llama.cpp inference engine — the in-process provider. Linux-only: it links
 // the vendored infer-engine (llama.cpp). Compiled out on other platforms.

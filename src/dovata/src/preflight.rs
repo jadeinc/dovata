@@ -225,12 +225,15 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A GGUF header carrying exactly the keys the required-key check demands, so the
     /// tests can vary the two identifiers without tripping the earlier gate.
-    fn header(arch: &str, name: Option<&str>) -> Vec<u8> {
+    ///
+    /// Shared with `crate::vram`'s tests: a second hand-rolled GGUF byte builder is
+    /// exactly the kind of duplicate that drifts from the real format silently.
+    pub(crate) fn header(arch: &str, name: Option<&str>) -> Vec<u8> {
         let mut kvs: Vec<(String, u32, Vec<u8>)> = Vec::new();
 
         let push_str = |kvs: &mut Vec<(String, u32, Vec<u8>)>, k: &str, v: &str| {

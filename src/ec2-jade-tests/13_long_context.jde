@@ -12,7 +12,6 @@
 // wants a harness that can sweep sizes; this just catches a long prompt being
 // silently truncated, which would otherwise look like the model forgetting.
 
-use llm
 use std::time
 
 let nonce = time.now_ms()
@@ -20,8 +19,6 @@ let nonce = time.now_ms()
 let ok = false
 let detail = ""
 try {
-    llm.set_max_tokens(16)
-
     // ~40 chars per line, 400 lines ≈ 16k chars ≈ 4k tokens.
     let filler = []
     let i = 0

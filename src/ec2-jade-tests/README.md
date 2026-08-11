@@ -51,7 +51,7 @@ to happen.
 | `06_multiturn.jde`      | `_ovata_infer_protocol: messages` history threading                |
 | `07_tool_anchor.jde`    | anchored grammar: deferred enforcement, depth retire, stop-strip   |
 | `08_latency.jde`        | coarse end-to-end latency / throughput probe                       |
-| `09_max_tokens.jde`     | `max_tokens` reaching the sampler's stop condition                 |
+| *(09 — removed)*        | *see below*                                                        |
 | `10_special_tokens.jde` | chat-template markers in user content stay data, not structure     |
 | `11_concurrency.jde`    | two derefs in flight against one in-process engine                 |
 | `12_grammar_retire.jde` | grammar drops after the anchored span closes; free text follows    |
@@ -62,18 +62,33 @@ to happen.
 `07` and `12` are the two halves of the `control.rs` state machine — one proves the
 grammar switches on at the anchor, the other that it switches off at the span close.
 
+`09` was a `max_tokens` test and is gone. It could not be written: the language has no
+way to cap a reply, so there was nothing for an eval at this layer to assert. The number
+is left as a gap rather than reused, so the removal stays visible instead of looking like
+a renumbering. Whether the engine honours a token cap is a dovata-side question and
+belongs in `cargo test -p dovata`.
+
 `11` exists because of the daemon removal specifically. A socket serialised requests
 whether or not the caller knew; an in-process library does not, and nothing else here
 puts two requests in the engine at once.
 
 ## Notes
 
-- **Imports use `::`**: `use llm`, `use std::json`, `use std::time`. Not `use std.json`
-  (the dot form this suite was originally written against, correct for the jade v1.1.8
-  that used to be on the box) and not `use "std/json"` (quoted file imports were removed
-  from the language). Run `jade check <file>` before committing an eval — the harness
-  reports a parse error as an ordinary FAIL, so a syntax slip looks like a failing
-  assertion rather than a broken file.
+- **Imports use `::`**: `use std::json`, `use std::time`. Not `use std.json` (the dot
+  form this suite was originally written against, correct for the jade v1.1.8 that used
+  to be on the box) and not `use "std/json"` (quoted file imports were removed from the
+  language).
+- **`jade check` does not validate imports.** `use totally_made_up_module` passes it and
+  then fails at run with "file not found". So checking a file proves it parses and
+  nothing more. Before committing an eval, actually run it, or at minimum confirm each
+  `use` resolves — the harness reports either failure as an ordinary FAIL, so a dead
+  import looks like a failing assertion rather than a broken file.
+- **There is no `llm` package, and no way to set `max_tokens`.** It was removed from the
+  language; `InferenceRequest` in the jade repo records that `model`, `max_tokens`,
+  `keep_anchors` and `trust` went with the daemon. A Jade program can express exactly
+  four things — the prompt, a grammar, and the two anchors — so an eval cannot cap reply
+  length. Ask for brevity in the prompt instead. Six evals called
+  `llm.set_max_tokens(...)` and failed at load until they were rewritten.
 - These assert engine *mechanics*, not the runtime's typed struct coercion
   (`?p |> SomeStruct`), which was flaky when the suite was written. `03`/`04` therefore
   use explicit JSON GBNF + `json.parse` instead of `|> Struct`.

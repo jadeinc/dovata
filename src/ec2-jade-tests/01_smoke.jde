@@ -1,10 +1,6 @@
 // 01 — Smoke: the daemon answers a plain prompt with non-empty text.
 // Exercises: socket connect, prompt formatting, unconstrained generation.
 
-use llm
-
-llm.set_max_tokens(64)
-
 let ok = false
 let detail = ""
 try {
