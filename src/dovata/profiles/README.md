@@ -45,8 +45,8 @@ published to jadelang.org off a different workflow, and no runtime link joins th
 So the three shared values are generated now, not copied by hand:
 
 ```sh
-python3 src/scripts/gen-profile-package.py            # rewrite every .jde in place
-python3 src/scripts/gen-profile-package.py --check    # fail if any is stale
+python3 tools/scripts/gen-profile-package.py            # rewrite every .jde in place
+python3 tools/scripts/gen-profile-package.py --check    # fail if any is stale
 ```
 
 The script rewrites only the `BEGIN GENERATED`/`END GENERATED` region of the `.jde` —

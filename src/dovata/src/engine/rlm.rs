@@ -14,8 +14,9 @@
 //! emitting frames to the host's [`FrameSink`].
 //!
 //! The continuous-batching engine ([`super::concurrency`]) is retained as general
-//! infrastructure for concurrent / mass prompting, independent of RLM; its self-test
-//! lives in [`super::bench`].
+//! infrastructure for concurrent / mass prompting, independent of RLM. Nothing calls
+//! it today — its only caller was the env-gated selftest module, deleted along with
+//! the daemon startup phase that dispatched it.
 
 use super::compose::{blended_compose_and_answer, BlockStore, KvBlockCache};
 use ovata_infer_protocol::{Frame, FrameSink, InferenceRequest};
@@ -167,9 +168,9 @@ pub(crate) fn handle_rlm(
 // ── Unit tests ──────────────────────────────────────────────────────────────
 //
 // These cover the PURE, model-free logic of this module: the upload payload parser.
-// The compose engine itself needs a real model and is exercised by the selftests in
-// `super::bench` + `examples/rlm_client.rs` on the box; its pure pieces (retrieval, KV
-// cache LRU) are unit-tested in `super::compose`. This whole module is behind the
+// The compose engine itself needs a real model and has no automated coverage left —
+// the selftests that drove it went away with the daemon. Its pure pieces (retrieval,
+// KV cache LRU) are unit-tested in `super::compose`. This whole module is behind the
 // Linux-only `inference` feature, so these run under `cargo test -p dovata --features
 // inference` (not the macOS pure suite).
 #[cfg(test)]

@@ -34,7 +34,7 @@ import ctypes
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from _common import die, info, ok, warn  # noqa: E402
 
 # The value ABI jade v1.1.31 introduced. A package below this is refused at load by

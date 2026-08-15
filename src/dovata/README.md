@@ -130,7 +130,8 @@ took down a running daemon.
 Upstream, the **Jade language** is the client. A compiled Jade program loads the library
 and serves every `?p` dereference through it, in its own process. The **JADE OS
 bootloader** installs the release library at `/jade/inference/`. `src/packaging/` builds
-and stages it; the `ec2-tests` harness drives the `ec2-jade-tests` evals against it.
+and stages it; the repo-root `tests/` suite is run against it on the GPU box, which
+`tools/ec2/` gets you onto.
 
 Downstream, it depends on `src/protocol/` for every wire type and the `Provider` trait
 (always), on `src/gguf/` for the preflight (always), and on `src/infer-engine/{api,ffi}`
@@ -203,10 +204,7 @@ cargo build --release -p dovata --features cuda
   Treat a green macOS test suite as saying nothing about the engine.
 - The `cuda` feature is a no-op off Linux — it forwards to the vendored llama-cpp-2,
   which is not compiled in on other targets.
-- Some engine submodules (`concurrency`, `bench`) carry `#[allow(dead_code)]`: they are
-  reached from env-gated self-tests, not the request path, so the compiler sees them as
-  unused in a normal build.
-- `examples/` still holds the old socket clients (`smoke_client.rs`, `rlm_client.rs`,
-  `bench.rs`). They connect to `~/.jade/llm.sock`, which nothing binds anymore, so they
-  have no server to talk to. Treat them as leftovers from the daemon era, not as a way to
-  exercise the library.
+- `src/engine/concurrency.rs` carries `#[allow(dead_code)]` and nothing calls it. Its
+  only caller was the env-gated selftest module, which is gone; the continuous-batching
+  driver is kept because the RLM fan-out design needs it, but treat it as unverified.
+  See the [engine README](src/engine/README.md).

@@ -131,5 +131,5 @@ def env_required(name, source=".ec2.env"):
     val = os.environ.get(name)
     if not val:
         die(f"{name} not set — add it to {source} "
-            f"(see src/ec2-tests/README.md for the full list)")
+            f"(see tools/ec2/README.md for the full list)")
     return val

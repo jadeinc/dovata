@@ -1,4 +1,4 @@
-# scripts — developer tooling
+# tools/scripts — the local half of the tooling
 
 Python scripts you run by hand to set up a machine, fetch or build a model, and configure
 provider credentials. Stdlib only, no dependencies to install; they shell out to the same
@@ -11,13 +11,12 @@ half-run. Python keeps the flow readable; nothing here is a library.
 
 ## What each script does
 
-- `_common.py` — shared helpers: the `info`/`ok`/`warn`/`die` logging, a `run` wrapper,
-  checksum and disk-usage utilities, `.env` loading, and `ENV_ALIASES` /
-  `normalize_env_aliases`, which reconcile the env file's variable names with the
-  older `JADE_`-prefixed ones and with the AWS CLI's own spellings. Every other script
-  adds this directory to `sys.path` and imports from it — including
-  `src/ec2-tests/_ec2.py`, which reaches over for the alias map specifically so there
-  is only one copy of it.
+The shared helpers are one level up, in [`tools/_common.py`](../README.md) — the
+`info`/`ok`/`warn`/`die` logging, the `run` wrapper, checksum and disk-usage utilities,
+`.env` loading, and the `ENV_ALIASES` map. They sit there rather than here because the
+`ec2/` half needs them too, and neither half should own what both use. Every script in
+this directory puts its parent on `sys.path` and imports from it.
+
 - `setup-dev.py` — creates a project-local `.venv` and installs the AWS CLI into it.
   Writes nothing globally. Credentials come from the environment, not from a config file.
 - `download-model.py` — fetches a small CPU-capable GGUF (Llama-3.2-3B-Instruct-Q4_K_M,
@@ -85,13 +84,13 @@ in `ci/model-version.lock`, and by the time it was removed the copy was two week
 a value there is the intended way to cut a new model release.
 
 It also cannot run on a laptop. Peak disk is around 150 GB (safetensors ~60, f16 GGUF
-~60, Q4_K_M ~18) and the imatrix pass needs a CUDA GPU. `src/ec2-tests/quantize.py` is
+~60, Q4_K_M ~18) and the imatrix pass needs a CUDA GPU. `tools/ec2/quantize.py` is
 the one-command driver that starts the GPU box, syncs the repo, runs this over SSH, and
 uploads in-region. The script preflights and fails fast rather than getting halfway.
 
 ## Who uses it
 
-Humans, mostly. `src/ec2-tests/quantize.py` and `src/ec2-tests/first-run.py` invoke
+Humans, mostly. `tools/ec2/quantize.py` and `tools/ec2/first-run.py` invoke
 `quantize-model.py` remotely. The provider READMEs in `src/anthropic/` and `src/openai/`
 point at `configure-provider.py` as the way to install a key. Nothing imports these as a
 library, and no build depends on them.
@@ -101,10 +100,10 @@ library, and no build depends on them.
 Always from the repo root, always with an explicit `python3`:
 
 ```sh
-python3 src/scripts/setup-dev.py
-python3 src/scripts/download-model.py
-python3 src/scripts/configure-provider.py anthropic     # prompts for the key
-python3 src/scripts/quantize-model.py --help
+python3 tools/scripts/setup-dev.py
+python3 tools/scripts/download-model.py
+python3 tools/scripts/configure-provider.py anthropic     # prompts for the key
+python3 tools/scripts/quantize-model.py --help
 ```
 
 Each script's module docstring carries its full option list — read that rather than

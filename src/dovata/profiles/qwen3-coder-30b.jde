@@ -22,7 +22,7 @@ use std::json
 // `qwen3-coder-30b.toml`, which is compiled into the engine, and are copied down
 // here by the generator. Hand-editing them puts this package back out of step
 // with the engine that produced the text it parses.
-// ── BEGIN GENERATED — from qwen3-coder-30b.toml; run src/scripts/gen-profile-package.py
+// ── BEGIN GENERATED — from qwen3-coder-30b.toml; run tools/scripts/gen-profile-package.py
 // Model: Qwen3-Coder-30B. Edit the TOML, not these three lines.
 let TOOL_OPEN  = "<tool_call>"
 let TOOL_CLOSE = "</tool_call>"

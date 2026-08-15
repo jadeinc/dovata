@@ -1,9 +1,9 @@
-# src/ — all first-party software
+# src/ — the software this repo ships
 
-Everything this project writes or vendors lives under this one directory: the Rust
-crates, the wire-protocol submodule, the Jade provider packages, the C++/CUDA driver,
-and the Python tooling. Non-source directories stay at the repo root (`ci/`, `docs/`,
-`dist/`, `.github/`).
+Everything this project ships or vendors lives under this one directory: the Rust
+crates, the wire-protocol submodule, the Jade provider packages, and the C++/CUDA
+driver. Things you *run* rather than ship live at the repo root — `tools/` for the
+Python tooling, `tests/` for the evals, plus `ci/`, `docs/`, `dist/`, and `.github/`.
 
 ## Why it is flat
 
@@ -14,6 +14,20 @@ That made simple questions hard: which lockfile governs this build, is this prov
 put every unit of software as a direct child of `src/`, named for itself, and folded the
 inference-engine sub-workspace into the one root workspace so there is a single
 `Cargo.lock`.
+
+## Why the tooling and the evals are not here
+
+They were, for a while, and the flattening is why: pulling `scripts/` out of a nested
+tree and dropping it next to the crates was the shortest move at the time. But it made
+`src/` mean two things at once. Six of its children were software that gets compiled and
+shipped; three were Python you run from a laptop and Jade files that only ever execute on
+a GPU box. A reader landing here could not tell which was which, and the doc comment at
+the top of `Cargo.toml` claimed a rule the tree did not follow.
+
+So the line is now what it says: `src/` is what ships, `tools/` is what you run, `tests/`
+is what you run it against. The move also let `_common.py` sit at the root of `tools/`,
+shared by both halves of the Python instead of owned by one of them and reached into by
+the other.
 
 The organizing idea is *provider-first*. A Jade program loads a provider `.so` and calls
 `infer` in-process; each provider is a peer directory here, whatever language it happens
@@ -31,10 +45,7 @@ native provider, `anthropic/` and `openai/` are providers written in Jade.
 | `infer-engine/` | The vendored llama.cpp bindings fork (`api/` safe wrapper, `ffi/` sys crate) plus `moe-driver/`, our C++/CUDA expert-offload driver. |
 | `packaging/` | Build/packaging xtask — assembles the engine and provider `.so`s into `dist/`. |
 | `gguf/` | GGUF header reader + `gguf-inspect`. Vets a model file — architecture, hparams, profile match — without llama.cpp, on any machine. |
-| `jade-gpu-mon/` | Standalone terminal VRAM/bandwidth monitor. Its own tiny workspace. |
-| `scripts/` | Python developer tooling: model download, quantization, provider key setup, dev env. |
-| `ec2-tests/` | Python harness that drives the EC2 GPU box (start, sync, build, run evals). |
-| `ec2-jade-tests/` | The evals themselves — Jade programs asserting daemon mechanics end to end. |
+| `jade-gpu-mon/` | Standalone terminal VRAM/bandwidth monitor. Its own tiny workspace, built by nothing here. |
 
 ## How they depend on each other
 
@@ -44,10 +55,11 @@ depends on it. `dovata/` depends on `protocol/` and `gguf/` always, and on
 `protocol/`.
 `infer-engine/` depends on nothing here — it is vendored upstream code plus our driver.
 The Jade packages depend on nothing in Rust; they conform to the protocol by matching its
-frame shapes, and are checked by the evals in `ec2-jade-tests/`.
+frame shapes, and are checked by the evals in the repo-root `tests/`.
 
-Nothing depends on `scripts/`, `ec2-tests/`, or `jade-gpu-mon/` — those are tools you run,
-not code that is linked.
+Nothing here depends on `tools/` or on `jade-gpu-mon/`. The arrow points the other way:
+`tools/` reads `dovata/profiles/` to regenerate the Jade profile packages, and reads the
+`infer-engine/ffi/llama.cpp` submodule pin when it quantizes a model.
 
 ## Building from here
 

@@ -1,18 +1,16 @@
-//! The local llama.cpp inference backend — the daemon's in-process provider.
+//! The llama.cpp inference backend — the half of this crate that touches the GPU.
 //!
-//! [`Dovata`] implements [`Provider`] like any other backend, but it is compiled
-//! *into* the daemon rather than shipped as a `.so`: the host holds it as
-//! `ProviderHandle::Local` and calls it directly, with no `dlopen` and no FFI hop.
-//! It owns the model/context lifecycle and request dispatch; the host owns the Unix
-//! socket, framing, `health`/`stats`, and the `Meta` frame. The decode engines live
-//! in focused submodules:
+//! [`Dovata`] implements [`Provider`], and the crate ships it as a `cdylib` that the
+//! calling program `dlopen`s once and then calls in-process. There is no host and no
+//! socket: this module owns the model and context lifecycle and dispatches requests
+//! straight onto them, and the caller owns everything around that. The decode engines
+//! live in focused submodules:
 //!
 //! * [`kv`]          — KV-cache optimizations (cache-type mapping, prefix reuse).
 //! * [`standard`]    — single-shot inference (one sequence, constrained decode).
 //! * [`concurrency`] — continuous-batching engine over the pure `crate::sched`.
 //! * [`compose`]     — RLM engine: tensor-level KV-cache composition.
 //! * [`rlm`]         — RLM request dispatch onto [`compose`].
-//! * [`bench`]       — env-gated developer self-tests (not a request path).
 //!
 //! The platform-independent logic (anchors/stop/grammar, config, response cache,
 //! scheduler) lives in the `dovata` library and is unit-tested on any platform;
@@ -27,16 +25,16 @@
 //! re-check on a Linux build: the `unsafe impl Send/Sync for Dovata` justification,
 //! the `Box::leak` `'static` model/backend, and the llama-cpp-2 API surface.
 
-// concurrency + bench are retained infrastructure exercised by selftests, not by the
-// request path, so they read as dead code to the request-path build.
 mod kv;
 mod standard;
+// The continuous-batching driver is retained as general infrastructure for concurrent
+// and mass prompting, but nothing reaches it any more. Its only caller was the
+// env-gated selftest module, which was deleted once dropping the daemon left it with
+// no startup phase to hang off. Wire it to an explicit entry point before relying on it.
 #[allow(dead_code)]
 mod concurrency;
 mod rlm;
 mod compose;
-#[allow(dead_code)]
-mod bench;
 
 use std::num::NonZeroU32;
 use std::sync::Mutex;
@@ -242,9 +240,6 @@ impl Provider for Dovata {
             .new_context(backend, ctx_params)
             .map_err(|e| format!("context init failed: {e}"))?;
         eprintln!("dovata: context ready (ctx_size={})", cfg.ctx_size);
-
-        // NOTE: the developer selftest entry (`bench::dispatch`, run-and-exit) is not
-        // wired in the provider model; re-expose it as a host-side flag if needed.
 
         let rlm_max = rlm_max_context(&model_name, cfg.ctx_size);
         eprintln!("dovata: rlm frontier (max corpus tokens) = {rlm_max}");

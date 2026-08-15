@@ -27,8 +27,8 @@ model release.
 
 ## Who reads them
 
-`src/scripts/quantize-model.py` reads `model-version.lock` for its env defaults and
-`calib-code.txt` for the imatrix pass. `src/ec2-tests/quantize.py` drives that script on
+`tools/scripts/quantize-model.py` reads `model-version.lock` for its env defaults and
+`calib-code.txt` for the imatrix pass. `tools/ec2/quantize.py` drives that script on
 the GPU box. The output lands at
 `s3://jade-os-release-bucket/models/model.gguf`.
 
@@ -42,7 +42,7 @@ must agree — and the surest way to make them agree is to have only one of them
 This file used to carry a `LLAMA_CPP_COMMIT` line copied from the submodule by hand.
 Nothing checked that the copy was current. It is gone.
 
-One wrinkle: `src/ec2-tests/quantize.py` rsyncs the repo to the GPU box without `.git`,
+One wrinkle: `tools/ec2/quantize.py` rsyncs the repo to the GPU box without `.git`,
 so the box cannot read the submodule pin itself. The driver resolves it locally and
 passes it to the box as `LLAMA_CPP_COMMIT`. That env var is still the interface; it is
 just no longer a value anyone maintains.

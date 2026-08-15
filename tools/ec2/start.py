@@ -2,7 +2,7 @@
 """JADE OS — Start EC2 inference instance and wait for SSH.
 
 Usage:
-  python3 src/ec2-tests/start.py
+  python3 tools/ec2/start.py
 """
 import os
 import subprocess

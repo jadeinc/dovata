@@ -2,7 +2,7 @@
 """JADE OS — Stop EC2 inference instance.
 
 Usage:
-  python3 src/ec2-tests/stop.py
+  python3 tools/ec2/stop.py
 """
 import os
 import subprocess

@@ -4,10 +4,10 @@
 # published to s3://jade-os-release-bucket/models/model.gguf. Everything is
 # pinned so a build is byte-for-byte reproducible. Bumping a value here is the
 # intended way to cut a new model release; then run the pipeline by hand on the
-# EC2 GPU box: `python3 src/ec2-tests/quantize.py` (drives src/scripts/quantize-model.py).
+# EC2 GPU box: `python3 tools/ec2/quantize.py` (drives tools/scripts/quantize-model.py).
 #
 # It is plain `KEY=VALUE` (no spaces, no quotes) so it can be parsed as env
-# defaults by src/scripts/quantize-model.py AND read line-by-line by the workflow.
+# defaults by tools/scripts/quantize-model.py AND read line-by-line by the workflow.
 
 # --- Source model -----------------------------------------------------------
 # Qwen3-Coder-30B-A3B-Instruct: a 30B-total / ~3B-active MoE coder model.

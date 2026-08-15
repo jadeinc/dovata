@@ -32,14 +32,14 @@ try:
 except ModuleNotFoundError:
     sys.exit(f"ERROR: needs Python 3.11+ for tomllib (running {sys.version.split()[0]})")
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from _common import die, info, ok, warn  # noqa: E402
 
-# <root>/src/scripts/this.py → <root>
+# <root>/tools/scripts/this.py → <root>
 ROOT = Path(__file__).resolve().parents[2]
 PROFILES = ROOT / "src" / "dovata" / "profiles"
 
-BEGIN = "// ── BEGIN GENERATED — from {toml}; run src/scripts/gen-profile-package.py"
+BEGIN = "// ── BEGIN GENERATED — from {toml}; run tools/scripts/gen-profile-package.py"
 END = "// ── END GENERATED"
 
 # Mirrors `default_name_field()` in src/dovata/src/profile/mod.rs. A profile that
@@ -133,7 +133,7 @@ def main():
         warn("no profiles had a sibling .jde — nothing to do")
     if stale:
         die(f"{len(stale)} profile package(s) out of date — "
-            f"run src/scripts/gen-profile-package.py and commit the result")
+            f"run tools/scripts/gen-profile-package.py and commit the result")
 
 
 if __name__ == "__main__":

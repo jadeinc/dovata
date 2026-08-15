@@ -16,7 +16,7 @@ just an HF download.
 
 Heavy host required: peak ~150 GB disk (safetensors ~60 + f16 GGUF ~60 +
 Q4_K_M ~18) and a CUDA GPU for the imatrix pass — it can't run on a laptop or a
-GitHub-hosted runner. Run it on the EC2 GPU box; src/ec2-tests/quantize.py is the
+GitHub-hosted runner. Run it on the EC2 GPU box; tools/ec2/quantize.py is the
 one-command driver (start box -> sync repo -> run this -> upload in-region).
 
 There is also a shortcut for a model that is *already* quantized. `--from-url` takes
@@ -28,11 +28,11 @@ already shipped a GGUF; use the pipeline above when they have not, which is ever
 model we fine-tune ourselves.
 
 Usage:
-  python3 src/scripts/quantize-model.py                       # pins from ci/model-version.lock
-  python3 src/scripts/quantize-model.py --local-dir ./merged  # use locally-merged weights
-  python3 src/scripts/quantize-model.py --upload              # also push to the S3 contract
-  python3 src/scripts/quantize-model.py --out-dir /tmp/out
-  python3 src/scripts/quantize-model.py --from-url <url> --upload   # publish a prebuilt GGUF
+  python3 tools/scripts/quantize-model.py                       # pins from ci/model-version.lock
+  python3 tools/scripts/quantize-model.py --local-dir ./merged  # use locally-merged weights
+  python3 tools/scripts/quantize-model.py --upload              # also push to the S3 contract
+  python3 tools/scripts/quantize-model.py --out-dir /tmp/out
+  python3 tools/scripts/quantize-model.py --from-url <url> --upload   # publish a prebuilt GGUF
 
 Key env overrides (defaults come from ci/model-version.lock):
   HF_REPO HF_REVISION QUANT IMATRIX_CHUNKS CUDAARCHS
@@ -53,7 +53,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from _common import info, ok, die, have, du_sh, run, sha256_file
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -121,7 +121,7 @@ def resolve_aws(venv=None):
         info("aws CLI not found — installing awscli into the build venv")
         pyinstall("awscli")
         return str(venv / "bin" / "aws")
-    die("aws CLI not found — run `python3 src/scripts/setup-dev.py` to install it")
+    die("aws CLI not found — run `python3 tools/scripts/setup-dev.py` to install it")
 
 
 def upload_model(aws_cmd, out_dir, bucket, prefix):
@@ -296,7 +296,7 @@ def main():
         die("cannot determine which llama.cpp commit to quantize with.\n"
             "  It is normally read from the src/infer-engine/ffi/llama.cpp submodule, which\n"
             "  needs a git checkout. Running from an rsynced copy with no .git? Set\n"
-            "  LLAMA_CPP_COMMIT explicitly — src/ec2-tests/quantize.py does this for you.")
+            "  LLAMA_CPP_COMMIT explicitly — tools/ec2/quantize.py does this for you.")
 
     info("JADE OS model quantization")
     print(f"    HF_REPO          : {hf_repo}")

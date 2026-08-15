@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """JADE OS — Run the model quantization pipeline on the EC2 GPU box, by hand.
 
-This is the manual driver for src/scripts/quantize-model.py (download Qwen3-Coder,
+This is the manual driver for tools/scripts/quantize-model.py (download Qwen3-Coder,
 convert -> f16 GGUF, code-calibrated imatrix, quantize Q4_K_M) and publish to
 the jade-os S3 contract:
   s3://jade-os-release-bucket/models/model.gguf (+ .gguf.sha256)
 
-It: starts the box (src/ec2-tests/start.py), rsyncs THIS repo to
-~/jade-inference-daemon, then runs src/scripts/quantize-model.py over SSH with the
+It: starts the box (tools/ec2/start.py), rsyncs THIS repo to
+~/jade-inference-daemon, then runs tools/scripts/quantize-model.py over SSH with the
 CUDA toolchain on PATH and your AWS creds (from .env) forwarded so the upload
 happens in-region from the box (no 18 GB round-trip through your laptop).
 
@@ -15,13 +15,13 @@ The job is long (60 GB download + convert + imatrix + quantize — hours) and th
 box needs ~150 GB free disk; the underlying script preflights and fails fast.
 
 Usage:
-  python3 src/ec2-tests/quantize.py                 # start, sync, build, upload
-  python3 src/ec2-tests/quantize.py --no-upload     # build + verify only (no S3)
-  python3 src/ec2-tests/quantize.py --stop          # also stop the box when done
-  python3 src/ec2-tests/quantize.py --no-start      # assume the box is already up
-  python3 src/ec2-tests/quantize.py --detached      # run under setsid; survives SSH drop
-  python3 src/ec2-tests/quantize.py --follow        # tail a detached run's log
-  python3 src/ec2-tests/quantize.py -- --local-dir ~/merged   # pass-through args to
+  python3 tools/ec2/quantize.py                 # start, sync, build, upload
+  python3 tools/ec2/quantize.py --no-upload     # build + verify only (no S3)
+  python3 tools/ec2/quantize.py --stop          # also stop the box when done
+  python3 tools/ec2/quantize.py --no-start      # assume the box is already up
+  python3 tools/ec2/quantize.py --detached      # run under setsid; survives SSH drop
+  python3 tools/ec2/quantize.py --follow        # tail a detached run's log
+  python3 tools/ec2/quantize.py -- --local-dir ~/merged   # pass-through args to
                                                 # the pipeline (e.g. merged LoRA
                                                 # weights already on the box)
 """
@@ -145,7 +145,7 @@ print("==> workdir (scratch): " + os.environ["JADE_QUANTIZE_WORKDIR"])
 subprocess.run(["df", "-h", SCRATCH])
 
 workdir = os.path.expanduser("~/" + REMOTE_DIR)
-rc = subprocess.run([sys.executable, "src/scripts/quantize-model.py"] + QUANT_ARGS,
+rc = subprocess.run([sys.executable, "tools/scripts/quantize-model.py"] + QUANT_ARGS,
                     cwd=workdir).returncode
 print(f"JADE_QUANTIZE_DONE rc={rc}")
 sys.exit(rc)
@@ -209,8 +209,8 @@ def main(argv):
             check=True)
         print()
         ok(f"detached build started on {host}")
-        print("    follow:  python3 src/ec2-tests/quantize.py --no-start --follow")
-        print(f"    or:      python3 src/ec2-tests/ssh.py 'tail -f ~/{REMOTE_LOG}'")
+        print("    follow:  python3 tools/ec2/quantize.py --no-start --follow")
+        print(f"    or:      python3 tools/ec2/ssh.py 'tail -f ~/{REMOTE_LOG}'")
         print("    done when the log shows: JADE_QUANTIZE_DONE rc=0")
         return 0
 

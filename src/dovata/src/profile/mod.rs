@@ -437,7 +437,7 @@ mod tests {
     // sibling `.jde` package published to jadelang.org that parses tool calls out
     // of a reply. They ship on separate pipelines and nothing at runtime links
     // them, so they drifted: this side said the tool-name key was `tool_name`,
-    // the Jade side said `name`. `src/scripts/gen-profile-package.py` now
+    // the Jade side said `name`. `tools/scripts/gen-profile-package.py` now
     // generates the Jade side's constants from here; this test is what makes
     // forgetting to run it fail rather than ship.
     #[test]
@@ -471,7 +471,7 @@ mod tests {
                 assert!(
                     jde.contains(&expected),
                     "{name} is out of date with {}: expected `{expected}`.\n\
-                     Run src/scripts/gen-profile-package.py and commit the result.",
+                     Run tools/scripts/gen-profile-package.py and commit the result.",
                     toml_path.file_name().unwrap().to_string_lossy(),
                 );
             }
@@ -480,7 +480,7 @@ mod tests {
     }
 
     /// A Jade double-quoted string literal, matching `jade_string` in
-    /// `src/scripts/gen-profile-package.py`.
+    /// `tools/scripts/gen-profile-package.py`.
     fn jade_string(s: &str) -> String {
         let escaped = s
             .replace('\\', "\\\\")

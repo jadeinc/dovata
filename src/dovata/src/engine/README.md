@@ -57,23 +57,22 @@ A request lands in one of three places depending on its shape:
 - `rlm.rs` — RLM request dispatch: `StoredContext`, the upload/handle lifecycle, and the
   host-RAM `KvBlockCache` so an uploaded context is tokenized only once.
 - `concurrency.rs` — the continuous-batching driver over `crate::sched`.
-- `bench.rs` — developer self-tests and benchmarks, *not* a request path.
 
-## The self-tests are currently unreachable
+## The self-tests are gone, and the JADE_* gates with them
 
-`bench.rs::dispatch` used to run once at the end of daemon startup. If one of its `JADE_*`
-variables was set it ran that routine, printed to stderr, and the daemon exited without
-binding the socket.
+There used to be a `bench.rs` here: a `dispatch` function that ran once at the end of
+daemon startup, checked a list of `JADE_*` variables, and if one was set ran that
+routine, printed to stderr, and exited before the socket was bound.
 
-There is no startup phase to hang that off now: the library is loaded and the provider
-built in one step, and exiting the process would take the caller's program with it. So
-`dispatch` is defined and never called, and setting `JADE_KV_BENCH` or any of its siblings
-does nothing. The routines themselves still compile and are still the fastest way to
-measure the KV paths, so if you want one back, wire it to an explicit entry point rather
-than to a load-time hijack. The gates it checks are `JADE_RLM_SELFTEST`,
-`JADE_KV_ROUNDTRIP`, `JADE_KV_COMPOSE`, `JADE_COMPOSE_DEMO`, `JADE_COMPOSE_MULTI`,
-`JADE_KV_BENCH`, `JADE_COMPOSE_CACHE`, `JADE_GEN_BENCH`, `JADE_RLM_OVERWINDOW`,
-`JADE_BLENDED`, and `JADE_FRONTIER`, in that order.
+Dropping the daemon left it with no startup phase to hang off, and exiting the process
+would now take the caller's program with it. So `dispatch` sat defined and never called,
+and `JADE_KV_BENCH` and its siblings did nothing — 903 lines the compiler kept alive and
+no path reached. It has been deleted. The measured numbers it produced are recorded in
+[`docs/blended-rag-rlm.md`](../../../../docs/blended-rag-rlm.md), and the routines
+themselves are recoverable from git history if you want to re-run one.
+
+If you do bring one back, wire it to an explicit entry point rather than to a load-time
+hijack. Deleting it also left `concurrency` with no caller at all — see the gotchas.
 
 ## Who uses it, and what it uses
 
@@ -92,8 +91,11 @@ There is no way to compile this on a Mac. It builds as part of the crate on Linu
 cargo build --release -p dovata --features cuda
 ```
 
-- `concurrency` and `bench` carry `#[allow(dead_code)]` — nothing on the request path
-  calls them, so the compiler sees them as unused.
+- `concurrency` carries `#[allow(dead_code)]` and is now genuinely unreachable. The
+  selftest module was its only caller, so deleting that left the continuous-batching
+  driver with nothing calling it. It is kept because the RLM fan-out design depends on
+  it and the pure scheduler underneath (`crate::sched`) is well covered, but treat it as
+  unverified code until something calls it again.
 - `Dovata` carries a hand-written `unsafe impl Send/Sync` and leaks the model and backend
   to `'static` via `Box::leak`. Both are load-bearing for the context lifetime; re-read
   the justification in `mod.rs` before changing how the model is owned.

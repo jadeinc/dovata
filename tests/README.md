@@ -1,8 +1,13 @@
-# dovata inference eval suite
+# tests/ — the dovata inference eval suite
 
-End-to-end evals for the `dovata` inference engine, written in Jade. Each program
-exercises one engine capability through the real runtime: a Jade program loads
-`dovata.so` as its provider and every `?p` dereference is served in-process.
+End-to-end evals for the `dovata` inference engine, written in Jade, plus the harness
+that runs them. Each program exercises one engine capability through the real runtime: a
+Jade program loads `dovata.so` as its provider and every `?p` dereference is served
+in-process.
+
+There is no Rust here. `cargo test` never looks in this directory — the pure-core unit
+tests live next to the code they cover, under `src/dovata/src/`. This is the other kind
+of testing: the engine as a black box, on a real GPU, driven by a real client.
 
 These are **integration/correctness** evals — they assert the engine's *mechanics*
 (grammar validity, type coercion, anchor handling, multi-turn context), not the
@@ -23,10 +28,36 @@ the engine's acceptance criteria, expressed in the client's language.
 
 ## Who runs them
 
-`src/ec2-tests/run-tests.py` is the only harness. It builds the engine `.so`, stages it
-into a scratch provider slot, runs each `.jde` here, and greps the output. They depend on
-a built engine, a model on disk, and a current Jade toolchain on the box — so they do not
-run locally and are not part of any `cargo test`.
+`run-tests.py`, right here, is the only harness. It builds the engine `.so`, stages it
+into a scratch provider slot, runs each `.jde` beside it, and greps the output. The evals
+depend on a built engine, a model on disk, and a current Jade toolchain — so they run on
+the GPU box, not on your laptop.
+
+The harness used to live in `tools/ec2/`. It moved here because it is the runner for this
+suite rather than a piece of box plumbing: it takes no AWS credentials, resolves no
+instance, and finds the repo from its own path. Getting *to* the box is
+[`tools/ec2/`](../tools/ec2/README.md)'s job; this script assumes it is already there.
+
+### There is no daemon to start
+
+`run-tests.py` used to build a `dovata` binary, spawn it, wait for a
+`dovata: listening on` line, and let the evals reach it over `~/.jade/llm.sock`. Dropping
+the daemon deleted all of that, and the harness sat broken until it was ported: it died
+at its own `dovata not found` check, because `cargo build -p dovata` emits `libdovata.so`
+and no binary at all.
+
+What replaces the daemon is a staging step. The Jade runtime loads exactly one provider
+library from the active slot, and `JADE_PROVIDER_ACTIVE` overrides that slot's path
+outright — the hook jadelang provides for dev and testing. So the harness copies the
+freshly built engine into `target/provider-active/` and points the evals there. The slot
+is rebuilt each run, since a leftover `.so` from an earlier build would be loaded ahead of
+the one just compiled.
+
+`JADE_PROVIDERS_DIR` is *not* the hook. That one feeds `jade register`'s discovery of
+installable providers; the runtime never reads it.
+
+The evals themselves needed no changes through any of it. They speak `use llm`, `prompt`,
+and `?p` — language surface, not transport.
 
 ## Convention
 
@@ -108,8 +139,8 @@ puts two requests in the engine at once.
 On the EC2 GPU instance, with a model present:
 
 ```bash
-python3 src/ec2-tests/run-tests.py           # engine already built
-python3 src/ec2-tests/run-tests.py --build   # build the engine first
+python3 tests/run-tests.py           # engine already built
+python3 tests/run-tests.py --build   # build the engine first
 ```
 
 The harness builds `libdovata.so`, copies it into `target/provider-active/`, points

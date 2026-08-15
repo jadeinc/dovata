@@ -10,10 +10,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-# The variable-name alias map lives in src/scripts/_common.py and is imported
-# rather than copied: two copies of it is precisely how the code and the env
-# file drifted apart in the first place.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+# The variable-name alias map lives in tools/_common.py and is imported rather
+# than copied: two copies of it is precisely how the code and the env file
+# drifted apart in the first place. It sits one level up, at the root of tools/,
+# because both halves of the tooling need it and neither one owns it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from _common import env_required, normalize_env_aliases  # noqa: E402
 
 
@@ -35,7 +36,7 @@ def die(msg, code=1):
 
 
 def repo_root():
-    # src/ec2-tests/_ec2.py -> repo root is two levels up.
+    # tools/ec2/_ec2.py -> repo root is two levels up.
     return Path(__file__).resolve().parents[2]
 
 
@@ -62,7 +63,7 @@ def load_env(require_ec2=True):
     root = repo_root()
     env_ec2 = root / ".ec2.env"
     if require_ec2 and not env_ec2.is_file():
-        die(".ec2.env not found — see src/ec2-tests/README.md for the variables it needs")
+        die(".ec2.env not found — see tools/ec2/README.md for the variables it needs")
     if (root / ".env").is_file():
         _load_dotenv(root / ".env")
     if env_ec2.is_file():
@@ -79,7 +80,7 @@ def aws_bin():
     found = shutil.which("aws")
     if found:
         return found
-    die("aws CLI not found — run: python3 src/scripts/setup-dev.py")
+    die("aws CLI not found — run: python3 tools/scripts/setup-dev.py")
 
 
 def resolve_host(aws=None):

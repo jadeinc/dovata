@@ -44,7 +44,7 @@ files = ["anthropic.jde"]
 
 `api_key()` resolves in order: `configure({api_key})`, then **`ANTHROPIC_API_KEY`**,
 then the `"api_key"` field of **`~/.jade/providers/anthropic.json`** (written by
-`src/scripts/configure-provider.py anthropic`, mode 0600). A missing key surfaces as an
+`tools/scripts/configure-provider.py anthropic`, mode 0600). A missing key surfaces as an
 `Error` frame, not a raise. Set **`ANTHROPIC_BASE_URL`** (or `configure({base_url})`) to
 point at a gateway/proxy.
 
@@ -57,7 +57,7 @@ platform and serves it at jadelang.org.
 Build it with jade v1.1.32 or later. The runtime's value ABI went 1 to 2 in v1.1.31,
 when structs began crossing the native boundary, and a package carrying the old ABI is
 refused at load by v1.1.32 — it is not a source problem, so no edit here fixes it. The
-workflow pin is the floor, and `src/scripts/check-package-abi.py` reads the ABI back out
+workflow pin is the floor, and `tools/scripts/check-package-abi.py` reads the ABI back out
 of each built `.so` and fails the publish if it is short, so the pin cannot drift behind
 the runtime unnoticed again.
 

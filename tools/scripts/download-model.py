@@ -5,10 +5,10 @@ Default: Llama-3.2-3B-Instruct-Q4_K_M (~2 GB, CPU-capable, Llama 3.x family)
 Downloads to models/model.gguf in the repo root (gitignored).
 
 Override at runtime:
-  MODEL_URL=<url>   MODEL_DEST=<path>   python3 src/scripts/download-model.py
+  MODEL_URL=<url>   MODEL_DEST=<path>   python3 tools/scripts/download-model.py
 
 Usage:
-  python3 src/scripts/download-model.py    # -> models/model.gguf
+  python3 tools/scripts/download-model.py    # -> models/model.gguf
 
 To run jade-tree against this local model:
   JADE_MODEL_PATH=models/model.gguf cargo run -p jade-tree --features inference
@@ -17,7 +17,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from _common import info, ok, die, have, du_sh, run
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

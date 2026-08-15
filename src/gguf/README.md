@@ -117,7 +117,7 @@ never claims otherwise, it just gets there first with a better error.
 
 Everything else is still humans at a terminal. The obvious next users are
 `src/packaging` (record the shipped model's arch and hyperparameters in
-`manifest.json`) and `src/scripts/quantize-model.py` (assert a freshly quantized GGUF
+`manifest.json`) and `tools/scripts/quantize-model.py` (assert a freshly quantized GGUF
 declares what the pinned engine expects before it is uploaded).
 
 The `KNOWN_PROFILE_GLOBS` constant in `src/main.rs` is a hand-copied mirror of the globs

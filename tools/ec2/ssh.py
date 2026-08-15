@@ -2,8 +2,8 @@
 """JADE OS — Open an interactive SSH session on the EC2 instance.
 
 Usage:
-  python3 src/ec2-tests/ssh.py           # interactive shell
-  python3 src/ec2-tests/ssh.py <cmd...>  # run a single command and exit
+  python3 tools/ec2/ssh.py           # interactive shell
+  python3 tools/ec2/ssh.py <cmd...>  # run a single command and exit
 """
 import os
 import sys

@@ -1,12 +1,17 @@
-# ec2-tests — the GPU box harness
+# tools/ec2 — getting work onto the GPU box
 
 Python scripts that drive the remote EC2 GPU instance from your laptop: start it, sync
-the repo up, build, run the evals, open a shell or a REPL, stop it again. Stdlib only;
-they shell out to `aws` and `ssh`.
+the repo up, build, open a shell or a REPL, stop it again. Stdlib only; they shell out to
+`aws` and `ssh`.
+
+The directory used to be called `ec2-tests`, which was misleading twice over — it holds
+no tests, and the harness that *does* run the tests now lives with them in the repo-root
+[`tests/`](../../tests/README.md). What is left here is plumbing: everything whose job is
+to get code onto a machine that can run it.
 
 ## Why it exists
 
-The daemon's interesting half does not run on a Mac. The local llama.cpp engine is
+The engine's interesting half does not run on a Mac. The llama.cpp backend is
 Linux-only, the model is 18 GB, and the CUDA paths need a real NVIDIA card — so the
 actual verification of anything in `src/dovata/src/engine/` happens on a `g5.xlarge`
 (A10G), not in a local test run. These scripts are the shortest path between an edit here
@@ -21,51 +26,36 @@ the individual scripts are a dozen lines.
 
 ## What each script does
 
-- `_ec2.py` — the shared helpers: env loading, `aws` binary discovery (prefers the
+- `_ec2.py` — the box-specific helpers: env loading, `aws` binary discovery (prefers the
   project `.venv`), hostname resolution with an `.ec2-host` cache, and `ssh` argv
-  construction. Not run directly.
+  construction. Not run directly. The generic logging and env-alias helpers it builds on
+  are one level up, in [`tools/_common.py`](../README.md).
 - `start.py` — starts the instance and blocks until SSH answers.
 - `stop.py` — stops it.
 - `ssh.py` — an interactive shell, or `ssh.py <cmd...>` to run one command and exit.
 - `repl.py` — opens a PTY and execs `jade repl` on the box, checking first that `jade` is
   installed and the LLM socket is live. Gives you an interactive Jade session backed by
-  real inference.
-- `run-tests.py` — the eval harness. Builds the engine `.so`, stages it into a scratch
-  provider slot, runs every `.jde` in `src/ec2-jade-tests/`, and reports pass/fail. Runs
-  *on* the box. See "There is no daemon to start" below.
+  real inference. See the note under Configuration: the socket check is stale.
 - `first-run.py` — one-time provisioning, idempotent. Installs CUDA, LLVM 18, Rust,
   musl-tools, and the NVIDIA driver, then downloads the 30B model to
-  `/jade/inference/model.gguf`.
-- `quantize.py` — the manual driver for `src/scripts/quantize-model.py`. Starts the box,
+  `/jade/inference/model.gguf`. Run from your laptop it uploads itself to the box and
+  re-execs there with `--local`.
+- `quantize.py` — the manual driver for `tools/scripts/quantize-model.py`. Starts the box,
   rsyncs this repo, and runs the pipeline over SSH with CUDA on `PATH` and your AWS
   credentials forwarded, so the 18 GB upload to S3 happens in-region instead of round
   tripping through your laptop. Supports `--detached` (survives an SSH drop) and
   `--follow`.
 
-## There is no daemon to start
+## Where the eval harness went
 
-`run-tests.py` used to build a `dovata` binary, spawn it, wait for a
-`dovata: listening on` line, and let the evals reach it over `~/.jade/llm.sock`. Dropping
-the daemon deleted all of that, and the harness sat broken until it was ported: it died
-at its own `dovata not found` check, because `cargo build -p dovata` emits
-`libdovata.so` and no binary at all.
+`run-tests.py` used to live here. It now sits in the repo-root
+[`tests/`](../../tests/README.md) next to the `.jde` files it runs, because it is the
+runner for that suite and not GPU-box plumbing: it takes no AWS credentials, resolves no
+instance, and derives everything from its own path. It still runs *on* the box — you just
+reach it through `ssh.py` like anything else.
 
-What replaces the daemon is a staging step. The Jade runtime loads exactly one provider
-library from the active slot, and `JADE_PROVIDER_ACTIVE` overrides that slot's path
-outright — the hook jadelang provides for dev and testing. So the harness copies the
-freshly built engine into `target/provider-active/` and points the evals there. The slot
-is rebuilt each run, since a leftover `.so` from an earlier build would be loaded ahead
-of the one just compiled.
-
-`JADE_PROVIDERS_DIR` is *not* the hook. That one feeds `jade register`'s discovery of
-installable providers; the runtime never reads it.
-
-The evals in `src/ec2-jade-tests/` needed no changes. They speak `use llm`, `prompt`, and
-`?p` — language surface, not transport.
-
-Note `repl.py` still checks for a live LLM socket and has the same daemon assumption
-baked in. It was not part of this port and will not work until it gets the same
-treatment.
+The write-up of how it stages a provider `.so` now that there is no daemon to start moved
+with it.
 
 ## Configuration
 
@@ -95,20 +85,25 @@ The file was called `.env.ec2` until the rename to `.ec2.env`. If you have an ol
 checkout that still dies with `.env.ec2 not found`, that is why; the contents did not
 change, only the name.
 
+### `repl.py` still assumes a daemon
+
+It checks that `~/.jade/llm.sock` is live before it execs `jade repl`. Nothing binds that
+socket any more — the engine is a library a Jade program `dlopen`s in-process — so the
+check can only fail. `run-tests.py` was ported off the same assumption; `repl.py` was not,
+and it needs the same treatment before it works again.
+
 ## Who uses it
 
-You do, by hand. `run-tests.py` is the consumer of `src/ec2-jade-tests/`; `quantize.py`
-is the consumer of `src/scripts/quantize-model.py`. Nothing in the build depends on this
-directory.
+You do, by hand. `quantize.py` is the consumer of `tools/scripts/quantize-model.py`.
+Nothing in the build depends on this directory.
 
 ## A typical session
 
 ```sh
-python3 src/ec2-tests/start.py
-python3 src/ec2-tests/ssh.py            # poke around, build
-python3 src/ec2-tests/run-tests.py --build
-python3 src/ec2-tests/repl.py           # interactive Jade against live inference
-python3 src/ec2-tests/stop.py
+python3 tools/ec2/start.py
+python3 tools/ec2/ssh.py            # poke around, build
+python3 tools/ec2/ssh.py 'cd ~/dovata && python3 tests/run-tests.py --build'
+python3 tools/ec2/stop.py
 ```
 
 `run-tests.py` derives the repo location from its own path, so it works the same whether

@@ -1,19 +1,20 @@
 [workspace]
-# All first-party software lives under src/ (crates + the protocol submodule + the
-# Jade provider packages). Non-source dirs (tests/, scripts/, ci/, docs/, dist/)
-# stay at the repo root.
+# src/ holds shipped software only: the crates, the protocol submodule, and the Jade
+# provider packages. Everything you run rather than ship lives at the repo root —
+# tools/ (Python), tests/ (the evals), ci/, docs/, dist/.
 members = [
     # The wire protocol lives in its own public repo (git submodule at src/protocol/)
     # so the Jade language, which is public, can depend on it too — a public repo
     # cannot take a git dependency on this private one. Both sides build the same definition.
     "src/protocol",
-    # The inference daemon: host + the in-process local llama.cpp engine + the folded-in
-    # model-profile module (Linux engine gated; the host builds on any platform).
+    # The inference engine: the llama.cpp backend plus the pure core and the folded-in
+    # model-profile module. Ships as a cdylib a Jade program dlopens. The Linux engine
+    # is cfg-gated; the pure half builds on any platform.
     "src/dovata",
     # Remote-API providers (anthropic, openai) are pure-Jade libraries that call
-    # their HTTP APIs directly (see src/anthropic/anthropic.jde, src/openai/openai.jde) —
-    # not daemon .so plugins, so they are not workspace members. `echo` remains the
-    # reference native provider + the host loader's dlopen fixture.
+    # their HTTP APIs directly (see src/anthropic/anthropic.jde, src/openai/openai.jde),
+    # so they are not workspace members. `echo` is the reference native provider and
+    # the dlopen fixture the packaging step validates against.
     "src/echo",
     # The inference engine — the vendored/forked llama.cpp bindings, now first-class
     # members of the one workspace (single lockfile, editable). Heavy: building these

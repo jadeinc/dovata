@@ -9,14 +9,14 @@ AWS credentials are read from environment variables — add to ~/.zshrc:
   export AWS_SECRET_ACCESS_KEY=...
 
 Usage:
-  python3 src/scripts/setup-dev.py
+  python3 tools/scripts/setup-dev.py
 """
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from _common import info, ok, die, load_dotenv, normalize_env_aliases
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -85,7 +85,7 @@ def main():
 
     print()
     ok("Dev environment ready")
-    info("Run: python3 src/ec2-tests/start.py")
+    info("Run: python3 tools/ec2/start.py")
     return 0
 
 

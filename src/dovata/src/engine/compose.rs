@@ -17,8 +17,10 @@
 //! fork surgery and no CUDA kernels — it is pure KV-cache cell management.
 //!
 //! Everything here requires the serving context to be created with `kv_unified=true`.
-//! The model-free pieces (retrieval, the LRU KV cache) are unit-tested at the bottom;
-//! the model-bound paths are exercised by the env-gated selftests in [`super::bench`].
+//! The model-free pieces (retrieval, the LRU KV cache) are unit-tested at the bottom.
+//! The model-bound paths have no automated coverage: they used to be driven by
+//! env-gated selftests, which went away with the daemon startup phase they hung off.
+//! Verifying a change to them means running a real prompt on the GPU box.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use llama_cpp_2::{

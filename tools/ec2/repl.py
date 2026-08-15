@@ -4,7 +4,7 @@
 jade-tree is started by the deploy step and stays running persistently.
 This script just opens an SSH PTY and execs into `jade repl`.
 
-Usage: python3 src/ec2-tests/repl.py
+Usage: python3 tools/ec2/repl.py
 """
 import os
 import sys

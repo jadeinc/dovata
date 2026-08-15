@@ -6,10 +6,10 @@ Installs: CUDA, LLVM 18, Rust toolchain, musl-tools, NVIDIA driver, and
 downloads Qwen3-Coder-30B-A3B-Instruct-Q4_K_M to /jade/inference/model.gguf.
 
 Run from your local machine:
-  python3 src/ec2-tests/first-run.py
+  python3 tools/ec2/first-run.py
 
 Or directly on the instance:
-  python3 ~/jade-os/src/ec2-tests/first-run.py --local
+  python3 ~/jade-os/tools/ec2/first-run.py --local
 """
 import glob
 import os
@@ -67,7 +67,7 @@ def dispatch_remote():
     info(f"Uploading setup script to {host}...")
     subprocess.run(
         ["scp", "-o", "StrictHostKeyChecking=no", "-i", key,
-         str(REPO_ROOT / "src" / "ec2-tests" / "first-run.py"),
+         str(REPO_ROOT / "tools" / "ec2" / "first-run.py"),
          f"{user}@{host}:~/ec2-first-run.py"],
         check=True,
     )

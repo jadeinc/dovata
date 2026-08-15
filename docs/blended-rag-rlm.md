@@ -3,7 +3,8 @@
 > Status: **the official over-context inference path**, validated end-to-end on EC2
 > (A10G), on branch `feat/rlm-phase0-fork-vendor`. A standard request over the context
 > window is auto-routed through this engine (see §1b); native full-context serves
-> everything that fits. Selftests/benches are env-gated in `dovata/src/inference/bench.rs`.
+> everything that fits. The env-gated selftests and benches that produced the numbers
+> below have since been deleted — see "A note on the benches" at the end.
 
 All numbers below were measured on the EC2 `g5.xlarge` (NVIDIA A10G, 23 GB), serving the
 deployed 30B-MoE Q4 model (~18.5 GB GGUF), `JADE_CTX_SIZE=32768`, `q4_0` K/V cache,
@@ -53,7 +54,7 @@ Three building blocks:
   Plus the pure (model-free) unit tests.
 - `bench.rs` — **all** env-gated developer selftests/benches and the single `dispatch()`
   entry point (`inference.rs::run` calls it once, then exits if a `JADE_*` var was set).
-  Not a request path.
+  Not a request path. *Deleted — see the note at the end of this document.*
 - `rlm.rs` — socket dispatch (`handle_rlm`) and the persistent handle store
   (`StoredContext` = `BlockStore` + `KvBlockCache`). Routes queries onto `compose`.
 - `concurrency.rs` + `sched.rs` — continuous-batching engine + pure scheduler. **Retained**
@@ -312,3 +313,21 @@ Still open (these are design decisions, not tidy-ups — deferred to implementat
 5. **Decode polish** — stop conditions / framing so answers aren't rambly.
 6. (Optional) **yes/no relevance-logit reranker** as an alternative to query-likelihood;
    batch the rerank scoring across candidates to cut its cost.
+
+## A note on the benches
+
+Every measured number in this document came out of `bench.rs`, the env-gated selftest
+module described in §2. That module no longer exists.
+
+It was dispatched once at the end of daemon startup: if a `JADE_*` variable was set it ran
+that routine, printed to stderr, and exited before the socket was bound. Dropping the
+daemon removed the startup phase it hung off, and exiting the process would now take the
+calling program with it — so `dispatch` sat defined and never called, and the variables did
+nothing. It was deleted in the 2026-08-15 reorganization: 903 lines the compiler kept alive
+that no path could reach.
+
+The numbers stand — they were real measurements on the A10G — but nothing reproduces them
+today. To re-run one, recover the module from git history and wire it to an explicit entry
+point rather than to a load-time hijack. The same deletion left
+`src/dovata/src/engine/concurrency.rs` with no caller at all, since the selftests were the
+only thing that ever drove the continuous-batching path.

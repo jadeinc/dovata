@@ -6,8 +6,8 @@ The anthropic/openai provider libraries resolve their API key from
 script writes that file — run it once when you install the provider .so package.
 
 Usage:
-  python3 src/scripts/configure-provider.py anthropic sk-ant-...   # key as an argument
-  python3 src/scripts/configure-provider.py openai                 # prompt (hidden)
+  python3 tools/scripts/configure-provider.py anthropic sk-ant-...   # key as an argument
+  python3 tools/scripts/configure-provider.py openai                 # prompt (hidden)
 """
 import getpass
 import json

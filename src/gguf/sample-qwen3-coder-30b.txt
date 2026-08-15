@@ -1,7 +1,7 @@
 # Sample: `gguf-inspect` on the production model
 #
 # Real output, not a mock-up. Produced by range-fetching the first 40 MB of the
-# 18.6 GB Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf that `src/ec2-tests/first-run.py`
+# 18.6 GB Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf that `tools/ec2/first-run.py`
 # installs, then running the inspector on that fragment:
 #
 #   curl -sL -r 0-41943039 -o head.gguf \

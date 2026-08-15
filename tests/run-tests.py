@@ -5,8 +5,8 @@ Designed to run on the EC2 instance, either directly or over SSH. REPO is derive
 from the script's own location so it works regardless of $HOME.
 
 Usage:
-  python3 src/ec2-tests/run-tests.py           # library must already be built
-  python3 src/ec2-tests/run-tests.py --build   # cargo-build the engine first
+  python3 tests/run-tests.py           # library must already be built
+  python3 tests/run-tests.py --build   # cargo-build the engine first
 
 ## There is no daemon to start
 
@@ -32,7 +32,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[1]
 
 # Per-eval ceiling. Generation on an A10G is seconds, not minutes; a test past
 # this is wedged, and failing it beats hanging the suite.
@@ -99,7 +99,7 @@ def main(argv):
     jade = find_jade()
     lib = REPO / "target" / "release" / "libdovata.so"
     model_path = Path(os.environ.get("JADE_MODEL_PATH", "/jade/inference/model.gguf"))
-    tests_dir = REPO / "src" / "ec2-jade-tests"
+    tests_dir = REPO / "tests"
 
     os.environ["PATH"] = "/usr/local/cuda/bin:" + os.environ.get("PATH", "")
     os.environ["LD_LIBRARY_PATH"] = (
