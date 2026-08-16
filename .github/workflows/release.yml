@@ -57,7 +57,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # llama.cpp is a vendored git submodule (src/infer-engine/ffi/llama.cpp
+          # llama.cpp is a vendored git submodule (src/llama/bindings-sys/llama.cpp
           # → our fork @ pinned commit), not a bundled crates.io copy. The CUDA
           # build compiles it from source, so it must be checked out here or the
           # build hits an empty directory.
@@ -106,7 +106,7 @@ jobs:
       # cached build that never recompiles the changed C++/CUDA sources.
       - name: Resolve llama.cpp submodule SHA (cache key)
         id: llama_sha
-        run: echo "sha=$(git -C src/infer-engine/ffi/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: echo "sha=$(git -C src/llama/bindings-sys/llama.cpp rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo + build (incl. compiled llama.cpp)
         uses: Swatinem/rust-cache@v2
@@ -122,9 +122,10 @@ jobs:
       # we never cut a release from a broken library/protocol.
       - name: Test pure crates
         run: |
-          cargo test -p ovata-infer-protocol
-          cargo test -p gguf
+          # The engine (which now contains gguf as a module) plus every sibling crate.
+          # `cargo test` alone covers only the root package, so the members are named.
           cargo test -p dovata --lib
+          cargo test -p ovata-infer-protocol -p ovata-provider-echo -p bundle-kit -p packaging
           # Also with every capability compiled out. The gates are only real if the
           # crate still builds and passes without them, and this is where a stale
           # `#[cfg(feature = ...)]` left over from moving code shows up — a build with

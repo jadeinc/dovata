@@ -97,7 +97,7 @@ common = []
 # build of this crate is stock upstream, byte for byte, with no staging step at all.
 # The engine crate turns the ones it needs on through its own capability features.
 #
-# See src/infer-engine/moe-driver/bundle/ for the format, and the "De-forking" section
+# See src/moe/driver/bundle/ for the format, and the "De-forking" section
 # of this crate's README for why the delta lives here rather than in a fork.
 bundle-moe = []
 cuda = []

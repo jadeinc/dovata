@@ -278,7 +278,7 @@ fn read_header(path: &str) -> Option<Vec<u8>> {
 /// language dropped it along with the daemon, and `InferRequest` carries only
 /// `input`, `grammar`, `anchor` and `stop_anchor`. So nothing sets the field and
 /// `u32::default()` is 0, which is not "unlimited": the engine computes
-/// `max_new = (ctx_size - prompt_len).min(max_tokens)` in `engine/standard.rs`, so
+/// `max_new = (ctx_size - prompt_len).min(max_tokens)` in `decode/exec.rs`, so
 /// zero produces an empty reply. The model loads, the request logs, and the caller
 /// gets nothing — a silent failure, and exactly what an unset default looks like
 /// here. This module must therefore supply one.

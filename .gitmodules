@@ -1,5 +1,5 @@
-[submodule "llama-cpp/ffi/llama.cpp"]
-	path = src/infer-engine/ffi/llama.cpp
+[submodule "src/llama/bindings-sys/llama.cpp"]
+	path = src/llama/bindings-sys/llama.cpp
 	url = https://github.com/ggml-org/llama.cpp.git
 [submodule "ovata-infer-protocol"]
 	path = src/protocol

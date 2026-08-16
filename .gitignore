@@ -2,7 +2,7 @@
 target/
 **/*.rs.bk
 
-# C / CUDA build artifacts — src/infer-engine/moe-driver/ is C++ and CUDA,
+# C / CUDA build artifacts — src/moe/driver/ is C++ and CUDA,
 # and CMake is pointed at build/.
 *.o
 build/

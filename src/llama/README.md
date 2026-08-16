@@ -1,10 +1,27 @@
-# infer-engine — the vendored llama.cpp bindings
+# llama/ — the substrate every capability links
 
-This subtree is our in-tree fork of [utilityai/llama-cpp-rs][readme] (at 0.1.150), plus
-one component that is entirely ours. It is what makes the daemon able to run a model.
+Our in-tree fork of [utilityai/llama-cpp-rs][readme] (at 0.1.150) over a stock upstream
+llama.cpp, plus the machinery that lets a capability patch llama.cpp without anyone
+forking it.
 
-> The upstream project's own README is preserved below the line, and still describes the
-> `api/` and `ffi/` crates accurately. Read this section first for what is different here.
+> The upstream project's own README is preserved below the line. It still describes the
+> two bindings crates accurately, under their old directory names. Read this section
+> first for what is different here.
+
+## Why this is the one directory under src/ that nests
+
+Every other child of `src/` is a capability — a slice of the engine, flat, named for
+what it does. This one is not a capability. It is what all of them link.
+
+It has to nest because it is genuinely several things: a sys crate with a build script
+that compiles llama.cpp from source, a safe wrapper over it, an upstream checkout, and
+a build-time library for reading capability bundles. Flattening those into `src/` would
+put four pieces of vendored plumbing next to `decode` and `compose` as if they were
+peers of them, which is exactly the confusion the flat layout exists to avoid.
+
+The crate *names* stay upstream's (`llama-cpp-2`, `llama-cpp-sys-2`) even though the
+directories were renamed. They are vendored identity, and renaming them would churn
+every `use llama_cpp_2::` in the engine for nothing.
 
 ## Why it is vendored
 
@@ -42,7 +59,7 @@ key meaningful.
 With no bundle enabled, `prepare_llama_src` returns the submodule path unchanged and
 nothing is staged: a stock build costs exactly what it always did.
 
-The bundle that exists is [`moe-driver/bundle/`](moe-driver/bundle/README.md). Read it
+The bundle that exists is [`moe-driver/bundle/`](../moe/driver/bundle/README.md). Read it
 before touching llama.cpp — including for why a build that silently *fails* to patch is
 the failure mode all of this is designed around.
 
@@ -76,10 +93,23 @@ in place without path-dependency games.
 
 | Directory | What it is |
 |---|---|
-| `ffi/` | `llama-cpp-sys-2` — raw bindgen bindings, the C++ wrapper shims, and the `llama.cpp` submodule (stock upstream). Building this compiles llama.cpp from source. |
-| `api/` | `llama-cpp-2` — the safe(-ish) Rust wrapper over `ffi`: model, context, batch, sampling, tokens, GGUF, grammar. |
-| `moe-driver/` | **Ours, not upstream.** The C++/CUDA expert-offload driver, and in `bundle/` its delta to llama.cpp. See its [README](moe-driver/README.md). |
-| `bundle-kit/` | **Ours.** Reads the bundles for `ffi/build.rs`. A crate rather than more build-script code, so the rules can be tested. See its [README](bundle-kit/README.md). |
+| `bindings-sys/` | `llama-cpp-sys-2` — raw bindgen bindings, the C++ wrapper shims, and `llama.cpp/`, the stock upstream submodule. Building this compiles llama.cpp from source. |
+| `bindings/` | `llama-cpp-2` — the safe(-ish) Rust wrapper over the sys crate: model, context, batch, sampling, tokens, GGUF, grammar. |
+| `bundle-kit/` | **Ours.** Reads the capability bundles for `bindings-sys/build.rs`. A crate rather than more build-script code, so the rules can be tested. See its [README](bundle-kit/README.md). |
+
+The expert-offload driver used to be here as `moe-driver/`. It moved to
+[`src/moe/driver/`](../moe/driver/README.md) with the capability that owns it — it is
+not part of the substrate, it is one capability's native code that happens to be
+compiled into llama.cpp.
+
+### Why the submodule sits inside `bindings-sys/`
+
+`llama.cpp/` is a child of the crate that compiles it, not a sibling. `build.rs` finds it
+as `manifest_dir.join("llama.cpp")`, and the crate's `include` list references it by the
+same relative path. Hoisting it to `src/llama/upstream/` would mean the build script
+counting directories back out of its own crate — the exact pattern the capability
+bundles exist to remove from the CMake. It stays where the thing that builds it can name
+it without counting.
 
 ## Who uses it
 

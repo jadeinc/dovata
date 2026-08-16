@@ -3,7 +3,7 @@
 A small library the sys crate's `build.rs` uses to read *capability bundles*: the
 per-capability patch series that let this repo build stock upstream llama.cpp plus our
 deltas, instead of carrying a fork. See
-[`../moe-driver/bundle/`](../moe-driver/bundle/README.md) for the one bundle that
+[`../../moe/driver/bundle/`](../../moe/driver/bundle/README.md) for the one bundle that
 exists and what it does.
 
 ## Why it is a crate

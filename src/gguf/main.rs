@@ -7,9 +7,9 @@
 //! finished downloading.
 //!
 //! ```sh
-//! cargo run -p gguf --bin gguf-inspect -- model.gguf
-//! cargo run -p gguf --bin gguf-inspect -- model.gguf --all
-//! cargo run -p gguf --bin gguf-inspect -- model.gguf --profile-stub > new-model.toml
+//! cargo run --bin gguf-inspect -- model.gguf
+//! cargo run --bin gguf-inspect -- model.gguf --all
+//! cargo run --bin gguf-inspect -- model.gguf --profile-stub > new-model.toml
 //! ```
 
 use std::fs::File;
@@ -17,7 +17,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
-use gguf::Gguf;
+use dovata::gguf::Gguf;
 
 /// How much of the file to read. A GGUF puts all metadata before the tensor data, so
 /// this is generous for any published model — and it is a cap, not a target, which is

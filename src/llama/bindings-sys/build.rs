@@ -1293,7 +1293,7 @@ fn main() {
 fn enabled_bundles(manifest_dir: &Path) -> Vec<bundle_kit::Bundle> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if cfg!(feature = "bundle-moe") {
-        dirs.push(manifest_dir.join("../moe-driver/bundle"));
+        dirs.push(manifest_dir.join("../../moe/driver/bundle"));
     }
 
     dirs.into_iter()

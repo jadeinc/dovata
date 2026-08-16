@@ -76,14 +76,14 @@ def llama_cpp_pin():
     where the git checkout is, and inject it into the generated runner.
     """
     out = subprocess.run(
-        ["git", "ls-tree", "HEAD", "--", "src/infer-engine/ffi/llama.cpp"],
+        ["git", "ls-tree", "HEAD", "--", "src/llama/bindings-sys/llama.cpp"],
         cwd=str(repo_root()), capture_output=True, text=True,
     )
     if out.returncode != 0:
         die("cannot read the llama.cpp submodule pin — is this a git checkout?")
     parts = out.stdout.split()
     if len(parts) < 3 or parts[1] != "commit":
-        die("src/infer-engine/ffi/llama.cpp is not a submodule gitlink")
+        die("src/llama/bindings-sys/llama.cpp is not a submodule gitlink")
     return parts[2]
 
 

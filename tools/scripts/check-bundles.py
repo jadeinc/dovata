@@ -3,7 +3,7 @@
 
 A bundle is a capability's delta to llama.cpp: a patch series plus cmake defines,
 living beside the capability instead of inside a fork. See
-src/infer-engine/moe-driver/bundle/ for the shape and the sys crate's build.rs for
+src/moe/driver/bundle/ for the shape and the sys crate's build.rs for
 how it is staged and applied.
 
 This script answers the one question that decides whether a build will work:
@@ -37,9 +37,9 @@ except ModuleNotFoundError:
     sys.exit(f"ERROR: needs Python 3.11+ for tomllib (running {sys.version.split()[0]})")
 
 ROOT = Path(__file__).resolve().parents[2]
-LLAMA_SUBMODULE = "src/infer-engine/ffi/llama.cpp"
+LLAMA_SUBMODULE = "src/llama/bindings-sys/llama.cpp"
 
-# Mirrors FORBIDDEN_PATH_PREFIXES in src/infer-engine/bundle-kit/src/lib.rs. Two copies
+# Mirrors FORBIDDEN_PATH_PREFIXES in src/llama/bundle-kit/src/lib.rs. Two copies
 # is a smell, and this one is deliberate: the Rust list gates the *build*, this one gates
 # *review*, and a patch that reaches CI having skipped the build check is exactly the
 # case worth catching. The bundle-kit tests pin the Rust side; if you add to one, add to

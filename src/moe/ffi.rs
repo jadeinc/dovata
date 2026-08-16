@@ -1,7 +1,7 @@
 //! The Rust half of the MoE expert-offload FFI.
 //!
 //! `moe_driver_init` is a C symbol compiled into libllama by the driver's CMake
-//! wiring (`src/infer-engine/moe-driver/`). This module owns the `#[repr(C)]`
+//! wiring (`src/moe/driver/`). This module owns the `#[repr(C)]`
 //! mirror of `moe_driver_config` and the one `unsafe` call, so the rest of the
 //! crate hands over a validated [`ExpertOrder`] and a [`MoeOffload`] and never
 //! touches a raw pointer.

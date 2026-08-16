@@ -65,6 +65,15 @@ pub mod load;
 /// `.gguf` must not mean editing the engine.
 pub mod model;
 
+/// GGUF header reading: what llama.cpp will see in a model file, answered without
+/// llama.cpp. [`load::preflight`] is its caller, and `gguf-inspect` (a bin of this
+/// package) is its CLI.
+///
+/// Was its own crate. It is dependency-free by design — that is the whole point, since
+/// it has to run on a laptop against a model no GPU has touched — and a crate boundary
+/// between it and its one caller bought a second manifest and nothing else.
+pub mod gguf;
+
 // ── Primitives over the context, shared by all three request paths ────────────
 
 /// Text to tokens and back, including the incremental UTF-8 decoder that makes a

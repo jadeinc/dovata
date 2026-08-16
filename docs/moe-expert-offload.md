@@ -67,23 +67,46 @@ module; the vendored fork gets only a small, guarded seam so we can **abort clea
 diff).
 
 ```
-infer-engine/
-  moe-driver/            # NEW — standalone C++/CUDA static lib, OUTSIDE llama.cpp/ subtree
-    CMakeLists.txt       #       own build target
-    moe_driver.h         #       pure-ggml + C-ABI surface (no llama internal types)
-    graph.cpp            #       dual mul_mat_id graph emission (split tensors)
-    cache.cu / cache.cpp #       cache directory + async host→VRAM copy engine + kernels
-    policy.cpp           #       LRU/admission state machine (pure; mirrored by Rust tests)
-  ffi/llama.cpp/         # vendored upstream — touched only at the seam below
+src/moe/                     # the capability: everything about expert offload
+  mod.rs  ffi.rs             # the Rust half and the C ABI declaration
+  driver/                    # standalone C++/CUDA static lib, OUTSIDE the llama.cpp tree
+    CMakeLists.txt           #   own build target (+ a host-only standalone mode)
+    include/moe_driver.h     #   pure-ggml + C-ABI surface (no llama internal types)
+    src/graph.cpp            #   graph emission against the resident tensors
+    src/page.cu              #   the CUDA on-stream pager
+    src/moe_policy.cpp       #   LRU/admission state machine (pure; host-testable)
+    src/moe_stub.cpp         #   inert definitions for non-CUDA builds
+  driver/bundle/             # the seam itself, as patches against stock upstream
+
+src/llama/bindings-sys/llama.cpp/   # stock upstream, never edited
 ```
 
-**The seam (≈3 guarded call sites + build wiring), each a passthrough when the driver is off:**
-- `src/llama-graph.cpp :: build_moe_ffn` — `if (moe_driver_active()) return
-  moe_driver_build_ffn(ctx0, gate_exps, up_exps, down_exps, cur, ids, weights, ...);`
-- `src/llama-model.cpp :: load_tensors` — per `blk.%d.ffn_{gate,up,down}_exps` tensor, ask
-  the driver for the split/placement plan (resident GPU buft vs cold CPU buft).
-- one init/teardown call at context create/free for the cache-engine lifecycle.
-- `add_subdirectory(moe-driver)` + link, behind CMake option `JADE_MOE_DRIVER=ON`.
+The seam used to live as commits on a fork of llama.cpp. It is now a patch series in
+`driver/bundle/`, applied to a staged copy of the pinned upstream tree at build time —
+so the delta is reviewable here rather than in another repo's history. See
+[`src/moe/driver/bundle/README.md`](../src/moe/driver/bundle/README.md).
+
+**The seam as built** — four files, each a passthrough when the driver is off. This
+section used to describe a design; the list below is what the patch series actually does,
+read off the diff:
+
+- `src/llama-graph.cpp :: build_moe_ffn` — when the driver is active, swap the
+  host-resident expert tensors for its VRAM-resident ones and remap `selected_experts` to
+  resident slot ids, *after* the routing weights are gathered and *before* the matmul.
+  The stock matmul then runs unchanged. Also defines `moe_driver_seam_present()`.
+- `ggml/src/ggml-cuda/ggml-cuda.cu` — dispatch `GGML_OP_CUSTOM` to the pager so paging
+  stays on the CUDA stream, declare the op supported, and opt it out of CUDA graph
+  capture (host-side classification plus a data-dependent async copy are not legal
+  during capture).
+- `ggml/src/ggml-cuda/CMakeLists.txt` — compile the driver's four sources into
+  `ggml-cuda`, from `${JADE_MOE_DRIVER_DIR}`.
+- `src/CMakeLists.txt` — the include path, and `moe_stub.cpp` into `libllama` on
+  non-CUDA builds so the seam's symbols resolve without a driver.
+
+> An earlier version of this section claimed a third call site in
+> `src/llama-model.cpp :: load_tensors`. There is none — that file is untouched. The
+> placement is achieved with llama's own `add_cpu_moe_override`, set from `load/config.rs`,
+> rather than by patching the loader.
 
 The seam adapts llama's internal handles into **public ggml types** at the boundary, so the
 driver never depends on llama internals and survives upstream rebases.

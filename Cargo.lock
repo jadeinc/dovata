@@ -218,7 +218,6 @@ name = "dovata"
 version = "0.1.0"
 dependencies = [
  "encoding_rs",
- "gguf",
  "libc",
  "llama-cpp-2",
  "llama-cpp-sys-2",
@@ -327,10 +326,6 @@ dependencies = [
  "libc",
  "r-efi 6.0.0",
 ]
-
-[[package]]
-name = "gguf"
-version = "0.1.0"
 
 [[package]]
 name = "glob"

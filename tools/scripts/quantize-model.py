@@ -82,14 +82,14 @@ def load_lock(lock_path):
             os.environ[key] = val.strip()
 
 
-LLAMA_SUBMODULE = "src/infer-engine/ffi/llama.cpp"
+LLAMA_SUBMODULE = "src/llama/bindings-sys/llama.cpp"
 
 
 def llama_cpp_pin():
     """The llama.cpp commit the engine builds from, read from the submodule itself.
 
     Precisely: the engine links this commit *plus* its enabled capability bundles
-    (src/infer-engine/*/bundle/), while this script builds the quantize and imatrix
+    (src/moe/driver/bundle/), while this script builds the quantize and imatrix
     tools from the commit alone. That is sound only while no bundle patch touches how
     a GGUF is produced or read — tools/scripts/check-bundles.py enforces exactly that,
     and CI runs it. Break the rule and you publish a model.gguf the engine refuses.
@@ -214,7 +214,7 @@ def publish_from_url(url, out_dir, bucket, prefix, do_upload):
     if cargo:
         info("verifying the GGUF header")
         rc = subprocess.run(
-            [cargo, "run", "-q", "-p", "gguf", "--bin", "gguf-inspect", "--", str(final)],
+            [cargo, "run", "-q", "--bin", "gguf-inspect", "--", str(final)],
             cwd=str(REPO_ROOT),
         ).returncode
         if rc != 0:
@@ -300,7 +300,7 @@ def main():
     llama_commit = os.environ.get("LLAMA_CPP_COMMIT") or llama_cpp_pin()
     if not llama_commit:
         die("cannot determine which llama.cpp commit to quantize with.\n"
-            "  It is normally read from the src/infer-engine/ffi/llama.cpp submodule, which\n"
+            "  It is normally read from the src/llama/bindings-sys/llama.cpp submodule, which\n"
             "  needs a git checkout. Running from an rsynced copy with no .git? Set\n"
             "  LLAMA_CPP_COMMIT explicitly — tools/ec2/quantize.py does this for you.")
 

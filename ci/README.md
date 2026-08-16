@@ -34,7 +34,7 @@ the GPU box. The output lands at
 
 ## Where the llama.cpp commit comes from
 
-Not from here. `quantize-model.py` reads it from the `src/infer-engine/ffi/llama.cpp`
+Not from here. `quantize-model.py` reads it from the `src/llama/bindings-sys/llama.cpp`
 submodule, because that submodule is what the daemon links. Quantizing with a different
 commit than the daemon links can produce a GGUF the daemon refuses to load, so the two
 must agree — and the surest way to make them agree is to have only one of them.

@@ -24,7 +24,7 @@ QUANT=Q4_K_M
 IMATRIX_CHUNKS=100
 
 # --- llama.cpp toolchain ----------------------------------------------------
-# The commit is NOT recorded here. It is read from the src/infer-engine/ffi/llama.cpp
+# The commit is NOT recorded here. It is read from the src/llama/bindings-sys/llama.cpp
 # submodule at run time, because that submodule is what the engine builds from.
 # (The engine links that commit plus its capability bundles' patches; those patches
 # are forbidden from touching the converter or quantizer, so one pin still serves

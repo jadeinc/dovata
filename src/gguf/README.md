@@ -71,14 +71,14 @@ with the pinned engine.
 
 ```sh
 # What is in this file, and will it load
-cargo run -p gguf --bin gguf-inspect -- model.gguf
+cargo run --bin gguf-inspect -- model.gguf
 
 # Everything, including tokenizer.chat_template printed verbatim
-cargo run -p gguf --bin gguf-inspect -- model.gguf --all
+cargo run --bin gguf-inspect -- model.gguf --all
 
 # Vet a model you have not downloaded
 curl -sL -r 0-41943039 -o head.gguf "<huggingface resolve url>"
-cargo run -p gguf --bin gguf-inspect -- head.gguf
+cargo run --bin gguf-inspect -- head.gguf
 ```
 
 Exit status is 0 when no required key is missing, 1 when one is, so it drops into a
@@ -87,8 +87,8 @@ script or a CI gate as-is.
 ## Adding a model, end to end
 
 ```sh
-cargo run -p gguf --bin gguf-inspect -- new-model.gguf                    # 1. does it load
-cargo run -p gguf --bin gguf-inspect -- new-model.gguf --profile-stub \
+cargo run --bin gguf-inspect -- new-model.gguf                    # 1. does it load
+cargo run --bin gguf-inspect -- new-model.gguf --profile-stub \
   > src/model/profiles/new-model.toml                                    # 2. starter profile
 ```
 

@@ -45,7 +45,7 @@ impl ModelDims {
     /// `None` when a required key is missing — the same condition preflight already
     /// refuses a load for, so in practice this is reached only with an override.
     #[must_use]
-    pub fn from_gguf(model: &gguf::Gguf) -> Option<Self> {
+    pub fn from_gguf(model: &crate::gguf::Gguf) -> Option<Self> {
         let arch = model.architecture()?;
         let u32_key = |suffix: &str| -> Option<u32> {
             model.u64(&format!("{arch}.{suffix}")).and_then(|v| u32::try_from(v).ok())
@@ -309,7 +309,7 @@ mod tests {
         // Built the way preflight's own fixtures build one, so the key names here are
         // the key names a real file carries.
         let bytes = crate::load::preflight::tests::header("qwen3moe", Some("Qwen3-Coder-30B"));
-        let model = gguf::Gguf::parse(&bytes).expect("fixture parses");
+        let model = crate::gguf::Gguf::parse(&bytes).expect("fixture parses");
         let dims = ModelDims::from_gguf(&model).expect("dims readable");
         assert_eq!(dims.layers, 48);
         assert_eq!(dims.heads, 32);

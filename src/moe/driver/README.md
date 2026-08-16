@@ -4,7 +4,7 @@ A small C++/CUDA static library that keeps a Mixture-of-Experts model running on
 too small to hold all of it. The hot experts stay pinned in VRAM, a cache holds recently
 used ones, and everything else lives in host RAM and gets paged in on demand.
 
-This is ours, not vendored — it sits inside `infer-engine/` because the llama.cpp build
+This is ours, not vendored — it sits inside `src/moe/` with the capability that owns it, and the llama.cpp build
 pulls it in with `add_subdirectory()`.
 
 ## The problem it solves

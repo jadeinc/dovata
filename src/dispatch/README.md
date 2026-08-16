@@ -92,7 +92,7 @@ Dropping the daemon left it with no startup phase to hang off, and exiting the p
 would now take the caller's program with it. So `dispatch` sat defined and never called,
 and `JADE_KV_BENCH` and its siblings did nothing — 903 lines the compiler kept alive and
 no path reached. It has been deleted. The measured numbers it produced are recorded in
-[`docs/blended-rag-rlm.md`](../../../../docs/blended-rag-rlm.md), and the routines
+[`docs/blended-rag-rlm.md`](../../docs/blended-rag-rlm.md), and the routines
 themselves are recoverable from git history if you want to re-run one.
 
 If you do bring one back, wire it to an explicit entry point rather than to a load-time
@@ -104,8 +104,8 @@ hijack. Deleting it also left `concurrency` with no caller at all — see the go
 It uses the pure modules in the crate root (`control`, `sched`, `cache`, `config`,
 `profile`, `route`, `moe`, `preflight`), `ovata-infer-protocol` for
 `Frame`/`FrameSink`/`InferenceRequest`, and `llama-cpp-2` + `llama-cpp-sys-2` from
-`src/infer-engine/`. The MoE paging machinery it calls over FFI lives in
-`src/infer-engine/moe-driver/`.
+`src/llama/`. The MoE paging machinery it calls over FFI lives in
+`src/moe/driver/`.
 
 ## Building and gotchas
 

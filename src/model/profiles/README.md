@@ -107,7 +107,7 @@ entries (`tag`, `open`, `close`) for extra special-token spans.
    and `[limits] context_window` and appends the model's chat template as a comment:
 
    ```sh
-   cargo run -p gguf --bin gguf-inspect -- new-model.gguf --profile-stub > new-model.toml
+   cargo run --bin gguf-inspect -- new-model.gguf --profile-stub > new-model.toml
    ```
 
 2. Fill in the tool-call and tool-result tokens. These cannot be read out of a GGUF —

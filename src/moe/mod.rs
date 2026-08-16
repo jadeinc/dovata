@@ -8,7 +8,7 @@
 //!
 //! This file is the pure half and builds anywhere. [`ffi`] is the thin
 //! declaration over the C driver, Linux-only. The paging machinery itself is
-//! C++ and CUDA in `src/infer-engine/moe-driver/`, compiled into libllama by the
+//! C++ and CUDA in `src/moe/driver/`, compiled into libllama by the
 //! driver's CMake wiring.
 //!
 //! The whole capability is behind the `moe` cargo feature. Turning it off drops

@@ -78,7 +78,7 @@ impl Preflight {
 
     /// Evaluate an already-read header. Pure, so this is what the tests drive.
     pub fn evaluate(bytes: &[u8], registry: &Registry, allow_unprofiled: bool) -> Result<Preflight, Error> {
-        let model = gguf::Gguf::parse(bytes).map_err(|e| Error::NotLoadable(e.to_string()))?;
+        let model = crate::gguf::Gguf::parse(bytes).map_err(|e| Error::NotLoadable(e.to_string()))?;
 
         // Required-key check first: a file missing these cannot load at all, so
         // reporting a profile miss on top of it would just be noise.
@@ -197,7 +197,7 @@ impl fmt::Display for Error {
             Error::NotLoadable(detail) => write!(
                 f,
                 "the model file is not a usable GGUF: {detail}\n  \
-                 Inspect it with: cargo run -p gguf --bin gguf-inspect -- <model>"
+                 Inspect it with: cargo run --bin gguf-inspect -- <model>"
             ),
             Error::MissingKeys(keys) => {
                 writeln!(f, "the model file is missing metadata llama.cpp requires:")?;
@@ -213,7 +213,7 @@ impl fmt::Display for Error {
                  general.name         = {}\n  \
                  Without a profile the daemon falls back to bare ChatML: it will generate\n  \
                  text fine and parse every tool call wrong, silently.\n  \
-                 fix:  cargo run -p gguf --bin gguf-inspect -- <model> --profile-stub\n  \
+                 fix:  cargo run --bin gguf-inspect -- <model> --profile-stub\n  \
                  or:   JADE_ALLOW_UNPROFILED=1 to boot without tool-call support",
                 architecture.as_deref().unwrap_or("(absent)"),
                 name.as_deref().unwrap_or("(absent)"),

@@ -48,7 +48,7 @@ this directory puts its parent on `sys.path` and imports from it.
 - `check-bundles.py` — verifies every *capability bundle* still applies to the pinned
   llama.cpp. A bundle is a capability's patch series against stock upstream, which is
   what replaced this repo's llama.cpp fork; see
-  [`src/infer-engine/moe-driver/bundle/`](../../src/infer-engine/moe-driver/bundle/README.md).
+  [`src/moe/driver/bundle/`](../../src/moe/driver/bundle/README.md).
   Stages a worktree at the pin and runs `git apply --check` on each patch. Seconds, no
   compiler, so CI runs it before the long CUDA build. It also rejects any patch touching
   `convert_hf_to_gguf.py`, `gguf-py/`, or the quantizer — the engine links
@@ -85,7 +85,7 @@ rather than in S3.
 ## The quantization contract
 
 `quantize-model.py` uses the **exact llama.cpp commit the daemon links**, read from the
-`src/infer-engine/ffi/llama.cpp` submodule with `git ls-tree`. That is not a nicety — a
+`src/llama/bindings-sys/llama.cpp` submodule with `git ls-tree`. That is not a nicety — a
 GGUF written by a different commit can be rejected outright for quant-type or
 GGUF-version skew. The commit is read from the submodule rather than recorded anywhere,
 so it cannot drift from what the daemon actually links; it used to be a hand-copied line

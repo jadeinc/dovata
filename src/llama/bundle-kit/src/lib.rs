@@ -309,21 +309,55 @@ driver_dir = ".."
         assert!(err.contains("SHARED"), "must name the define; got: {err}");
     }
 
-    /// The bundle that actually ships must load, and must not name a patch it does
+    /// Every bundle that actually ships must load, and must not name a patch it does
     /// not have. Everything above tests the rules against synthetic input; this is the
-    /// one test that would notice a typo in the real `bundle.toml`, and it runs on a
+    /// one test that would notice a typo in a real `bundle.toml`, and it runs on a
     /// laptop with no llama.cpp and no GPU.
+    ///
+    /// It *discovers* the bundles rather than naming one. An earlier version reached for
+    /// `../moe-driver/bundle` and broke the moment that directory moved to live with the
+    /// capability that owns it — a counted relative path, which is the exact fragility
+    /// this crate exists to remove from the CMake. Discovery also means a second
+    /// capability's bundle is covered the day it appears.
     #[test]
-    fn the_real_moe_bundle_loads_and_is_allowed() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("moe-driver/bundle");
-        let b = load_manifest(&dir).expect("the shipped moe bundle must load");
-        assert_eq!(b.name, "moe");
-        assert_eq!(b.patches.len(), 3, "the seam is three patches; update this if it changes");
-        assert_eq!(b.upstream.len(), 40, "upstream must be a full sha, not a branch or tag");
-        check_forbidden_paths(std::slice::from_ref(&b)).expect("the moe seam touches no GGUF path");
+    fn every_shipped_bundle_loads_and_is_allowed() {
+        // <root>/src/llama/bundle-kit -> <root>
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("manifest dir is <root>/src/llama/bundle-kit")
+            .join("src");
+
+        let mut found = Vec::new();
+        let mut stack = vec![src];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    // Skip the upstream checkout: it is large, and none of it is ours.
+                    if p.file_name().is_some_and(|n| n == "llama.cpp") {
+                        continue;
+                    }
+                    stack.push(p);
+                } else if p.file_name().is_some_and(|n| n == "bundle.toml") {
+                    found.push(dir.clone());
+                }
+            }
+        }
+
+        assert!(!found.is_empty(), "no bundle.toml found under src/ — did a bundle move?");
+        for dir in &found {
+            let b = load_manifest(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+            assert_eq!(
+                b.upstream.len(),
+                40,
+                "{}: upstream must be a full sha, not a branch or tag",
+                dir.display()
+            );
+            check_forbidden_paths(std::slice::from_ref(&b))
+                .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+        }
     }
 
     #[test]
