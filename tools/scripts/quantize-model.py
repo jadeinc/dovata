@@ -96,7 +96,7 @@ def llama_cpp_pin():
 
     This used to be a line in ci/model-version.lock, hand-copied from the submodule
     and hand-updated alongside it. Nothing checked that the two agreed, and quantizing
-    with a different commit than the daemon links is how you publish a GGUF the daemon
+    with a different commit than the engine builds from is how you publish a GGUF the engine
     cannot load. Reading it from git removes the copy, so the two cannot disagree.
 
     Uses `ls-tree` rather than `rev-parse` inside the submodule: the gitlink is

@@ -84,11 +84,11 @@ rather than in S3.
 
 ## The quantization contract
 
-`quantize-model.py` uses the **exact llama.cpp commit the daemon links**, read from the
+`quantize-model.py` uses the **exact llama.cpp commit the engine builds from**, read from the
 `src/llama/bindings-sys/llama.cpp` submodule with `git ls-tree`. That is not a nicety — a
 GGUF written by a different commit can be rejected outright for quant-type or
 GGUF-version skew. The commit is read from the submodule rather than recorded anywhere,
-so it cannot drift from what the daemon actually links; it used to be a hand-copied line
+so it cannot drift from what the engine builds from; it used to be a hand-copied line
 in `ci/model-version.lock`, and by the time it was removed the copy was two weeks stale.
 
 `ci/model-version.lock` still holds the model repo, revision, and quant scheme. Bumping

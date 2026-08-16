@@ -9,7 +9,7 @@ The model is a build artifact like any other, and it needs to be reproducible: t
 inputs must always yield the same GGUF. Scattering the source repo, the revision, the
 quantization scheme, and the llama.cpp commit across a shell script and a workflow file
 means they drift, and a drifting llama.cpp commit is the one that hurts — quantize with a
-different commit than the daemon links and the GGUF can be rejected outright for
+different commit than the engine builds from and the GGUF can be rejected outright for
 quant-type or GGUF-version skew.
 
 So they live here in one flat `KEY=VALUE` file that both a Python script and a workflow
@@ -35,8 +35,8 @@ the GPU box. The output lands at
 ## Where the llama.cpp commit comes from
 
 Not from here. `quantize-model.py` reads it from the `src/llama/bindings-sys/llama.cpp`
-submodule, because that submodule is what the daemon links. Quantizing with a different
-commit than the daemon links can produce a GGUF the daemon refuses to load, so the two
+submodule, because that submodule is what the engine builds from. Quantizing with a different
+commit than the engine builds from can produce a GGUF the engine refuses to load, so the two
 must agree — and the surest way to make them agree is to have only one of them.
 
 This file used to carry a `LLAMA_CPP_COMMIT` line copied from the submodule by hand.

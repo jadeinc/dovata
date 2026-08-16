@@ -31,7 +31,7 @@ IMATRIX_CHUNKS=100
 # both. tools/scripts/check-bundles.py enforces it.)
 # It used to be a LLAMA_CPP_COMMIT line, hand-copied from the submodule and updated
 # by hand alongside it, with nothing checking the two agreed — and quantizing with a
-# different commit than the daemon links is how you publish a GGUF the daemon cannot
+# different commit than the engine builds from is how you publish a GGUF the daemon cannot
 # load. One source, no copy, nothing to keep in sync.
 #
 # Only the repo stays configurable. We fetch the quantize/imatrix tools from ggml-org

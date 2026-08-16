@@ -69,7 +69,7 @@ def parse_args(argv):
 
 
 def llama_cpp_pin():
-    """The llama.cpp commit the daemon links, from the submodule gitlink.
+    """The llama.cpp commit the engine builds from, read from the submodule gitlink.
 
     The box never sees it on its own: the rsync below excludes .git/, so
     quantize-model.py cannot read the submodule pin there. We resolve it here,
