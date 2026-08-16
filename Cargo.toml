@@ -22,6 +22,11 @@ members = [
     # `cargo build --workspace` is a Linux operation; on macOS use targeted `-p` builds.
     "src/infer-engine/api",
     "src/infer-engine/ffi",
+    # Reads the capability bundles (patch series + cmake defines) that let the sys
+    # crate build stock upstream llama.cpp plus our deltas, instead of a fork. A
+    # build-dependency of the sys crate, and a member so `cargo test` runs its tests —
+    # build scripts are not testable, which is why this logic is not in one.
+    "src/infer-engine/bundle-kit",
     # Build/packaging xtask: assembles the provider .so bundles into dist/.
     "src/packaging",
     # GGUF header tooling: reads a model file's metadata without llama.cpp, so a model

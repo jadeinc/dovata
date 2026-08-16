@@ -131,6 +131,14 @@ jobs:
           # defaults on never exercises the other arm.
           cargo test -p dovata --lib --no-default-features
 
+      # Do the capability bundles still apply to the pinned llama.cpp? Seconds, no
+      # compiler, and it runs before the CUDA build so a pin that moved out from under
+      # a bundle fails here instead of thirty minutes in. It also enforces that no
+      # patch touches the GGUF converter or quantizer, which is what lets the engine
+      # (upstream + patches) and quantize-model.py (stock upstream) share one pin.
+      - name: Verify capability bundles apply
+        run: python3 tools/scripts/check-bundles.py --verbose
+
       # Build the engine (--features cuda) + the provider .so packages and stage the
       # whole bundle into dist/ (engine asset `dovata-<arch>.so` + .sha256, provider
       # .so's, manifest.json). All the real logic lives in the packaging xtask.

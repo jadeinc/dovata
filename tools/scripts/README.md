@@ -45,6 +45,17 @@ this directory puts its parent on `sys.path` and imports from it.
   refused by. Reads `jade_pkg_abi_version` if the package has it, falling back to the
   re-exported `jrt_abi_version` for packages built before that stamp existed; a library
   with neither links no Jade runtime and is skipped.
+- `check-bundles.py` — verifies every *capability bundle* still applies to the pinned
+  llama.cpp. A bundle is a capability's patch series against stock upstream, which is
+  what replaced this repo's llama.cpp fork; see
+  [`src/infer-engine/moe-driver/bundle/`](../../src/infer-engine/moe-driver/bundle/README.md).
+  Stages a worktree at the pin and runs `git apply --check` on each patch. Seconds, no
+  compiler, so CI runs it before the long CUDA build. It also rejects any patch touching
+  `convert_hf_to_gguf.py`, `gguf-py/`, or the quantizer — the engine links
+  upstream-plus-patches while `quantize-model.py` builds from stock upstream at the same
+  commit, and they agree only while nothing changes how a GGUF is written. Reads the pin
+  from the git *index*, so a staged-but-uncommitted pin bump is checked against the
+  commit you are about to make rather than the one you are replacing.
 - `configure-provider.py` — writes `~/.jade/providers/<name>.json` at mode 0600 with an
   API key, which is where the Anthropic and OpenAI providers look when the corresponding
   `*_API_KEY` env var is not set. Prompts hidden if the key is not given as an argument.

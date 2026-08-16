@@ -8,17 +8,65 @@ one component that is entirely ours. It is what makes the daemon able to run a m
 
 ## Why it is vendored
 
-The daemon needs to reach below the stock llama.cpp API. The KV-composition engine
+The engine needs to reach below the stock llama.cpp API. The KV-composition engine
 splices precomputed K/V from separate blocks into one attention window; the MoE work
 pages expert weights between host RAM and VRAM during graph build. Neither is expressible
-through the crates.io bindings, and both need matching changes in llama.cpp itself.
+through the crates.io bindings, so the bindings crates live here where they can be
+edited.
 
-So `ffi/llama.cpp` points at **our fork** (`joericks1998/llama.cpp`) at a pinned commit,
-not upstream, and the bindings crates live here where they can be edited. This is also a
-compatibility contract: the model GGUF is quantized with the *exact* llama.cpp commit the
-daemon links, or the daemon may refuse to load it. `tools/scripts/quantize-model.py` reads
-that commit from this submodule with `git ls-tree`, so moving the submodule moves the
-quantizer with it and the two cannot drift apart.
+This is also a compatibility contract: the model GGUF is quantized with the *exact*
+llama.cpp commit the engine links, or the engine may refuse to load it.
+`tools/scripts/quantize-model.py` reads that commit from this submodule with
+`git ls-tree`, so moving the submodule moves the quantizer with it and the two cannot
+drift apart.
+
+## De-forking: `ffi/llama.cpp` is stock upstream now
+
+It used to be `joericks1998/llama.cpp`, a fork four files ahead of `ggml-org/llama.cpp`.
+Those four files were one capability's seam — the MoE expert-offload hook in
+`build_moe_ffn`, its CUDA dispatch, and the CMake to compile the driver — plus a deleted
+`AGENTS.md` and a stubbed-out chat-template function the engine never called.
+
+The delta was small. Being small was the problem: it was small *and invisible*. You could
+not see from this repo what we had changed in llama.cpp or why, the change belonged to a
+capability and nothing recorded which, and every upstream bump meant rebasing a branch
+whose contents lived somewhere else.
+
+So the submodule is stock upstream at a pin, and each capability that needs a change to
+llama.cpp ships a **bundle**: a patch series plus cmake defines, in that capability's own
+directory. `ffi/build.rs` stages a copy of the pinned tree, applies the enabled bundles'
+patches to the copy, and points cmake at the copy — the submodule is never written to,
+which keeps it a clean checkout and keeps the release workflow's `rev-parse HEAD` cache
+key meaningful.
+
+With no bundle enabled, `prepare_llama_src` returns the submodule path unchanged and
+nothing is staged: a stock build costs exactly what it always did.
+
+The bundle that exists is [`moe-driver/bundle/`](moe-driver/bundle/README.md). Read it
+before touching llama.cpp — including for why a build that silently *fails* to patch is
+the failure mode all of this is designed around.
+
+Two of the fork's changes did not become bundles:
+
+- The **chat-template stubs** were dropped. They amputated
+  `llama_chat_apply_template` and `llama_chat_builtin_templates` to enforce that
+  templating lives in the model profile — but dovata does its own templating in
+  `src/dovata/src/prompt.rs` and never called either one. The fork was removing
+  something unused and then patching the hole it made.
+- The fork's **deletion of upstream's `AGENTS.md`** was 190 of its 221 deleted lines and
+  changed no code.
+
+### The wrapper headers had to stop naming the checkout
+
+`wrapper.h` and friends used to include llama's headers as
+`"llama.cpp/include/llama.h"` — a path relative to their own directory, which worked
+only because they sit beside the submodule. Once `llama_src` could be a staged copy
+under `OUT_DIR`, that quoted include kept finding the *unpatched* submodule next door
+while `-I` pointed at the patched copy, and bindgen saw two of every ggml header.
+
+They now use `<llama.h>` and resolve through the include path, which `build.rs` already
+sets. Same fix as the counted paths in the bundle's CMake hunks, and the same lesson:
+depend on the include path, not on where the file happens to sit in a tree.
 
 These crates used to be their own cargo workspace with a separate lockfile. They are now
 members of the one root workspace, so there is a single `Cargo.lock` and you can edit them
@@ -28,9 +76,10 @@ in place without path-dependency games.
 
 | Directory | What it is |
 |---|---|
-| `ffi/` | `llama-cpp-sys-2` — raw bindgen bindings, the C++ wrapper shims, and the `llama.cpp` submodule itself. Building this compiles llama.cpp from source. |
+| `ffi/` | `llama-cpp-sys-2` — raw bindgen bindings, the C++ wrapper shims, and the `llama.cpp` submodule (stock upstream). Building this compiles llama.cpp from source. |
 | `api/` | `llama-cpp-2` — the safe(-ish) Rust wrapper over `ffi`: model, context, batch, sampling, tokens, GGUF, grammar. |
-| `moe-driver/` | **Ours, not upstream.** The C++/CUDA expert-offload driver. See its [README](moe-driver/README.md). |
+| `moe-driver/` | **Ours, not upstream.** The C++/CUDA expert-offload driver, and in `bundle/` its delta to llama.cpp. See its [README](moe-driver/README.md). |
+| `bundle-kit/` | **Ours.** Reads the bundles for `ffi/build.rs`. A crate rather than more build-script code, so the rules can be tested. See its [README](bundle-kit/README.md). |
 
 ## Who uses it
 

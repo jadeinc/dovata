@@ -74,6 +74,10 @@ include = [
 
 [build-dependencies]
 bindgen = { workspace = true }
+# Reads the capability bundles below. A separate crate rather than more functions in
+# build.rs because build scripts cannot be unit-tested and the "is this patch allowed"
+# rules are the ones where being wrong is silent.
+bundle-kit = { path = "../bundle-kit" }
 cc = { workspace = true, features = ["parallel"] }
 cmake = "0.1"
 find_cuda_helper = "0.2.0"
@@ -88,6 +92,14 @@ default = ["common"]
 # size-constrained downstream binaries that only need the core inference API.
 # Enabled by default to preserve backwards compatibility.
 common = []
+# Capability bundles: a per-capability patch series applied to a staged copy of the
+# pinned upstream llama.cpp, instead of carrying a fork. Off by default so a plain
+# build of this crate is stock upstream, byte for byte, with no staging step at all.
+# The engine crate turns the ones it needs on through its own capability features.
+#
+# See src/infer-engine/moe-driver/bundle/ for the format, and the "De-forking" section
+# of this crate's README for why the delta lives here rather than in a fork.
+bundle-moe = []
 cuda = []
 # Disables the need to dynamically link against libcuda.so / cuda.dll
 cuda-no-vmm = ["cuda"]

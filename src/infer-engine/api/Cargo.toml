@@ -29,6 +29,11 @@ default = ["openmp", "android-shared-stdcxx", "common"]
 # `wrapper_common.cpp` bindings from the link line. Enabled by default for
 # backwards compatibility.
 common = ["llama-cpp-sys-2/common"]
+# Capability bundle: applies the MoE expert-offload patch series to a staged copy of
+# the pinned upstream llama.cpp. A pass-through like every feature here — the engine
+# crate turns it on through its own `moe` capability, so the Rust half and the C++
+# seam are one switch. Off, the sys crate builds stock upstream with no staging step.
+bundle-moe = ["llama-cpp-sys-2/bundle-moe"]
 cuda = ["llama-cpp-sys-2/cuda"]
 cuda-no-vmm = ["cuda", "llama-cpp-sys-2/cuda-no-vmm"]
 metal = ["llama-cpp-sys-2/metal"]

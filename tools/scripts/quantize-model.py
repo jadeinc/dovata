@@ -86,7 +86,13 @@ LLAMA_SUBMODULE = "src/infer-engine/ffi/llama.cpp"
 
 
 def llama_cpp_pin():
-    """The llama.cpp commit the daemon links, read from the submodule itself.
+    """The llama.cpp commit the engine builds from, read from the submodule itself.
+
+    Precisely: the engine links this commit *plus* its enabled capability bundles
+    (src/infer-engine/*/bundle/), while this script builds the quantize and imatrix
+    tools from the commit alone. That is sound only while no bundle patch touches how
+    a GGUF is produced or read — tools/scripts/check-bundles.py enforces exactly that,
+    and CI runs it. Break the rule and you publish a model.gguf the engine refuses.
 
     This used to be a line in ci/model-version.lock, hand-copied from the submodule
     and hand-updated alongside it. Nothing checked that the two agreed, and quantizing

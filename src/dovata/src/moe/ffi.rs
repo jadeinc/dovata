@@ -38,6 +38,21 @@ extern "C" {
         n_expert_used: i32,
         expert_order_flat: *const i32,
     ) -> i32;
+
+    /// Returns 1 in a build whose llama.cpp carries the `build_moe_ffn` seam.
+    ///
+    /// Defined by the capability bundle's first patch, in `llama-graph.cpp`, right
+    /// beside the seam it reports on — so the symbol exists exactly when the seam
+    /// does. Deliberately *not* declared in `moe_driver.h`: the non-CUDA build
+    /// compiles `moe_stub.cpp`, which implements that whole header, and a stub
+    /// definition would satisfy this while proving nothing.
+    ///
+    /// This is the last of three guards against the quietest failure in the build —
+    /// llama.cpp compiled without the seam. `build.rs` panics if a patch fails to
+    /// apply; a missing symbol here fails the link or the `dlopen`; and this call
+    /// catches the remainder. All three exist because a seam that is inert when its
+    /// driver is off looks exactly like a seam that was never compiled in.
+    fn moe_driver_seam_present() -> i32;
 }
 
 /// Experts selected per token by the router. Qwen3-Coder-30B-A3B uses 8; the value
@@ -52,6 +67,16 @@ const N_EXPERT_USED: i32 = 8;
 /// does, except for three times the VRAM, so the load fails rather than running
 /// stock under a config that asked for offload.
 pub(crate) fn init(cfg: &MoeOffload, order: &ExpertOrder) -> Result<(), String> {
+    // SAFETY: a zero-argument C function returning int, defined by the bundle patch.
+    if unsafe { moe_driver_seam_present() } != 1 {
+        return Err(
+            "the llama.cpp this engine links has no build_moe_ffn seam, so the driver \
+             would be initialised and never called. The `moe` capability bundle did not \
+             make it into the build — run `python3 tools/scripts/check-bundles.py`."
+                .to_string(),
+        );
+    }
+
     let mc = MoeDriverConfig {
         enabled: true,
         pin: cfg.pin as i32,

@@ -236,7 +236,12 @@ fn main() {
 
     let target_dir = get_cargo_target_dir().unwrap();
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("Failed to get CARGO_MANIFEST_DIR");
-    let llama_src = Path::new(&manifest_dir).join("llama.cpp");
+    // The submodule: a clean checkout of stock upstream llama.cpp. Never written to.
+    let llama_upstream = Path::new(&manifest_dir).join("llama.cpp");
+    // What cmake actually builds. With no bundles enabled this *is* the submodule and
+    // nothing is copied; otherwise it is a patched copy under OUT_DIR.
+    let bundles = enabled_bundles(Path::new(&manifest_dir));
+    let llama_src = prepare_llama_src(&llama_upstream, &out_dir, &bundles);
     let build_shared_libs = cfg!(feature = "dynamic-link");
 
     let build_shared_libs = std::env::var("LLAMA_BUILD_SHARED_LIBS")
@@ -293,6 +298,15 @@ fn main() {
     env::set_var("CMAKE_BUILD_PARALLEL_LEVEL", cmake_build_parallelism_level);
 
     // Bindings
+    //
+    // The wrapper headers include llama's as `<llama.h>` rather than
+    // `"llama.cpp/include/llama.h"`, so they resolve through these -I flags instead of
+    // relative to their own directory. That matters because `llama_src` is not always
+    // the submodule: with a capability bundle enabled it is a patched copy staged under
+    // OUT_DIR, and a quoted include would have kept finding the unpatched submodule
+    // beside wrapper.h — giving bindgen two copies of every ggml header and a wall of
+    // redefinition errors. Same fix as the counted paths in the bundle's CMake hunks:
+    // depend on the include path, not on where the file happens to sit.
     let mut bindings_builder = bindgen::Builder::default()
         .header("wrapper.h")
         .clang_arg(format!("-I{}", llama_src.join("include").display()))
@@ -321,6 +335,9 @@ fn main() {
     if cfg!(feature = "mtmd") {
         bindings_builder = bindings_builder
             .header("wrapper_mtmd.h")
+            // mtmd's headers are not under include/ or ggml/include/, so they need
+            // their own -I now that wrapper_mtmd.h includes them by name.
+            .clang_arg(format!("-I{}", llama_src.join("tools/mtmd").display()))
             .allowlist_function("mtmd_.*")
             .allowlist_type("mtmd_.*");
     }
@@ -577,6 +594,20 @@ fn main() {
     // deliberate — the requirement comes from how *we* consume llama.cpp, not
     // from llama.cpp itself.
     config.define("CMAKE_POSITION_INDEPENDENT_CODE", "ON");
+
+    // Each enabled capability bundle's cmake defines. This is where the counted
+    // relative paths went: the patched CMakeLists reads `JADE_<NAME>_DRIVER_DIR`, an
+    // absolute path resolved here, instead of counting `../../..` out of the llama.cpp
+    // tree. Those counts hardcoded how deep the submodule sat in this repo, so they
+    // broke on any move — and on being staged into OUT_DIR, where the depth differs.
+    // The patched files refuse to configure if the define is missing, so a bundle
+    // wired up wrong fails at cmake time rather than building a libllama with no
+    // driver in it. Same reasoning as CMAKE_POSITION_INDEPENDENT_CODE above: the
+    // requirement comes from how *we* consume llama.cpp, so it belongs here.
+    for (k, v) in bundle_kit::cmake_defines(&bundles).unwrap_or_else(|e| panic!("{e}")) {
+        debug_log!("bundle define {k}={v}");
+        config.define(&k, &v);
+    }
 
     // Would require extra source files to pointlessly
     // be included in what's uploaded to and downloaded from
@@ -1235,6 +1266,148 @@ fn main() {
             if !dst.exists() {
                 std::fs::hard_link(asset.clone(), dst).unwrap();
             }
+        }
+    }
+}
+
+// ── Capability bundles ────────────────────────────────────────────────────────
+//
+// This repo used to carry a fork of llama.cpp. The delta was small — one capability's
+// seam, four files — but it was invisible from here: nobody could see from this repo
+// what we had changed upstream or why, and every upstream bump was a rebase.
+//
+// Now the submodule is stock upstream at a pin, and each capability that needs a
+// change to llama.cpp ships a *bundle*: a patch series plus cmake defines, reviewable
+// in this repo, named for the capability it belongs to. The build stages a copy of the
+// tree, patches the copy, and points cmake at it.
+//
+// Staging out-of-tree is not optional. Patching the submodule in place would leave the
+// working tree dirty, break the `rev-parse HEAD` cache key the release workflow uses,
+// and apply patches on top of patches on a second build.
+
+/// The bundles this build has enabled, from the crate's cargo features.
+///
+/// One arm per `bundle-*` feature. Kept explicit rather than derived from
+/// `CARGO_FEATURE_*` env vars so that adding a bundle is a visible edit here, next to
+/// the comment explaining what bundles are.
+fn enabled_bundles(manifest_dir: &Path) -> Vec<bundle_kit::Bundle> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if cfg!(feature = "bundle-moe") {
+        dirs.push(manifest_dir.join("../moe-driver/bundle"));
+    }
+
+    dirs.into_iter()
+        .map(|d| {
+            bundle_kit::load_manifest(&d)
+                .unwrap_or_else(|e| panic!("capability bundle at {}: {e}", d.display()))
+        })
+        .collect()
+}
+
+/// The llama.cpp source tree cmake should build.
+///
+/// With no bundles this returns the submodule path unchanged, so a stock build costs
+/// nothing and is byte-identical to building upstream directly. Otherwise it
+/// materializes `OUT_DIR/llama-src` and applies every patch to that.
+///
+/// A `git worktree` is used rather than a copy: llama.cpp is a large tree and the
+/// release runner is already near its disk limit, and a worktree shares the object
+/// store. The fallback is a real copy, for a checkout with no usable git dir — which
+/// is the rsynced-to-the-GPU-box case, since `tools/ec2/quantize.py` syncs without
+/// `.git`.
+///
+/// # Panics
+/// If a patch fails to apply, or a bundle touches a path that would break the "one
+/// pin, not two" invariant. Both are hard errors on purpose: the MoE seam is a no-op
+/// when its driver is inactive, so a build that silently skipped the patch produces a
+/// library that loads, answers correctly, and uses three times the VRAM.
+fn prepare_llama_src(upstream: &Path, out_dir: &Path, bundles: &[bundle_kit::Bundle]) -> PathBuf {
+    if bundles.is_empty() {
+        return upstream.to_path_buf();
+    }
+
+    bundle_kit::check_forbidden_paths(bundles).unwrap_or_else(|e| panic!("{e}"));
+
+    // Rebuild when a bundle changes, and when the submodule pointer moves.
+    for b in bundles {
+        println!("cargo:rerun-if-changed={}", b.dir.display());
+    }
+    println!("cargo:rerun-if-changed={}", upstream.join(".git").display());
+
+    let staged = out_dir.join("llama-src");
+    if staged.exists() {
+        std::fs::remove_dir_all(&staged)
+            .unwrap_or_else(|e| panic!("clearing {}: {e}", staged.display()));
+    }
+
+    let head = git_output(upstream, &["rev-parse", "HEAD"]);
+    let via_worktree = head.is_some()
+        && Command::new("git")
+            .current_dir(upstream)
+            .args(["worktree", "add", "--detach", "--force"])
+            .arg(&staged)
+            .arg(head.as_deref().unwrap_or("HEAD"))
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+    if !via_worktree {
+        println!("cargo:warning=llama.cpp has no usable git dir; copying the tree instead of using a worktree");
+        copy_tree(upstream, &staged);
+    }
+
+    for b in bundles {
+        for p in &b.patches {
+            let out = Command::new("git")
+                .current_dir(&staged)
+                .args(["apply", "--whitespace=nowarn"])
+                .arg(p)
+                .output()
+                .unwrap_or_else(|e| panic!("running git apply: {e}"));
+            assert!(
+                out.status.success(),
+                "capability bundle '{}': patch {} did not apply to llama.cpp at {}.\n{}\n\
+                 The bundle records the upstream commit it was generated against; run\n\
+                 `python3 tools/scripts/check-bundles.py` to see whether the submodule pin\n\
+                 moved out from under it. This is a hard error because the seam is inert\n\
+                 when its driver is off, so a skipped patch builds and runs, silently stock.",
+                b.name,
+                p.file_name().unwrap_or(p.as_os_str()).to_string_lossy(),
+                staged.display(),
+                String::from_utf8_lossy(&out.stderr),
+            );
+        }
+        println!(
+            "cargo:warning=capability bundle '{}' applied ({} patches)",
+            b.name,
+            b.patches.len()
+        );
+    }
+
+    staged
+}
+
+/// `git <args>` in `dir`, trimmed, or `None` if git failed or there is no repo.
+fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git").current_dir(dir).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Recursive copy, skipping `.git`. Only used when a worktree is not available.
+fn copy_tree(src: &Path, dst: &Path) {
+    for entry in walkdir::WalkDir::new(src).into_iter().filter_entry(|e| e.file_name() != ".git") {
+        let entry = entry.unwrap_or_else(|e| panic!("walking {}: {e}", src.display()));
+        let rel = entry.path().strip_prefix(src).expect("walkdir yields paths under src");
+        let target = dst.join(rel);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&target)
+                .unwrap_or_else(|e| panic!("creating {}: {e}", target.display()));
+        } else if entry.file_type().is_file() {
+            std::fs::copy(entry.path(), &target)
+                .unwrap_or_else(|e| panic!("copying to {}: {e}", target.display()));
         }
     }
 }

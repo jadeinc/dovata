@@ -1,0 +1,49 @@
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 68c9e606c..0c7760696 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -1,5 +1,19 @@
+ #include "llama-graph.h"
+ 
++#include "moe_driver.h" // MoE expert-offload seam (no-op when driver inactive)
++
++// Marks this build as carrying the seam in build_moe_ffn below.
++//
++// The bundle that adds the seam adds this with it, so a build whose patch series
++// did not apply has no definition of it. The seam is deliberately a no-op when the
++// driver is inactive, which makes "the patch never applied" and "the driver is
++// correctly disabled" look identical at run time — this is what tells them apart.
++//
++// Declared on the Rust side only (src/dovata/src/moe/ffi.rs), NOT in moe_driver.h:
++// the non-CUDA build compiles moe_stub.cpp, which implements that whole header, and
++// a stub definition here would satisfy the check while proving nothing.
++extern "C" int moe_driver_seam_present(void) { return 1; }
++
+ #include "llama-impl.h"
+ #include "llama-model.h"
+ #include "llama-batch.h"
+@@ -1655,6 +1669,24 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         cb(cur, "ffn_moe_weighted", il);
+     }
+ 
++    // ── MoE expert offload (seam) ─────────────────────────────────────────
++    // When the driver is active, swap the host-resident expert tensors for its
++    // VRAM resident tensors (H+C experts) and remap selected_experts to resident
++    // slot-ids; the stock matmul path below then runs unchanged. NOTE: the
++    // routing `weights` above were gathered with the ORIGINAL expert ids, so the
++    // remap must happen here (after weights, before the matmul). Only the plain
++    // separate-gate/up path (no merged gate_up, bias, or per-expert scale) is
++    // offloaded; anything else falls through to the stock tensors.
++    if (moe_driver_active() && !gate_up_exps && up_exps && gate_exps && down_exps &&
++        !up_exps_b && !gate_exps_b && !up_exps_s && !gate_exps_s) {
++        ggml_tensor * r_gate = nullptr, * r_up = nullptr, * r_down = nullptr, * r_ids = nullptr;
++        if (moe_driver_remap(ctx0, il, gate_exps, up_exps, down_exps, selected_experts,
++                             &r_gate, &r_up, &r_down, &r_ids)) {
++            gate_exps = r_gate; up_exps = r_up; down_exps = r_down; selected_experts = r_ids;
++        }
++    }
++    // ──────────────────────────────────────────────────────────────────────
++
+     ggml_tensor * up = nullptr;
+     ggml_tensor * experts = nullptr;
+ 

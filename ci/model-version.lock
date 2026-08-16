@@ -25,7 +25,10 @@ IMATRIX_CHUNKS=100
 
 # --- llama.cpp toolchain ----------------------------------------------------
 # The commit is NOT recorded here. It is read from the src/infer-engine/ffi/llama.cpp
-# submodule at run time, because that submodule is what the daemon actually links.
+# submodule at run time, because that submodule is what the engine builds from.
+# (The engine links that commit plus its capability bundles' patches; those patches
+# are forbidden from touching the converter or quantizer, so one pin still serves
+# both. tools/scripts/check-bundles.py enforces it.)
 # It used to be a LLAMA_CPP_COMMIT line, hand-copied from the submodule and updated
 # by hand alongside it, with nothing checking the two agreed — and quantizing with a
 # different commit than the daemon links is how you publish a GGUF the daemon cannot

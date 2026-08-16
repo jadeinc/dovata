@@ -39,10 +39,16 @@ compose = []
 # only what compiles. The pure scheduler stays well tested either way.
 batch = []
 
-# MoE expert offload: the expert_order loader, the FFI to the C driver, and (with
-# the bundle wired up in the sys crate) the llama.cpp graph seam. Turn it off and
-# JADE_MOE_DRIVER=1 fails the load instead of being ignored.
-moe = []
+# MoE expert offload: the expert_order loader, the FFI to the C driver, and the
+# llama.cpp graph seam. Turn it off and JADE_MOE_DRIVER=1 fails the load instead of
+# being ignored.
+#
+# This is the feature that shows why capabilities and llama.cpp bundles are one
+# mechanism: enabling it also enables the sys crate's `bundle-moe`, which applies this
+# capability's patch series to a staged copy of stock upstream llama.cpp. Rust half and
+# C++ seam move together, behind one switch, so they cannot drift into a build that
+# initialises a driver the graph never calls.
+moe = ["llama-cpp-2/bundle-moe"]
 
 [dependencies]
 # `version` alongside `path` is not redundant: cargo checks the submodule's actual
