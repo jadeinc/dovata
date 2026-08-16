@@ -15,10 +15,34 @@ path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+# Every capability is on by default, so a plain `cargo build` produces the artifact
+# that ships. The features exist to make each capability's boundary explicit and
+# checkable — if a capability can't be switched off, its edges aren't real — and to
+# give the llama.cpp bundles (src/infer-engine/*/bundle/) one switch that gates the
+# Rust half and the C++ patch series together.
+default = ["compose", "batch", "moe"]
+
 # GPU offload on NVIDIA hardware for the in-process engine (forwarded to the vendored
 # llama-cpp-2). No-op on non-Linux targets, where the engine isn't compiled.
 cuda = ["llama-cpp-2/cuda"]
+
+# Long-context answering: the KV-composition engine (src/engine/compose.rs), its
+# request dispatch (src/engine/rlm.rs), and the pure corpus/question split
+# (src/route.rs). Turn it off and an over-context prompt is refused with an Error
+# frame naming the capability, rather than truncated to fit — a wrong answer from a
+# silently shortened prompt is worse than no answer.
+compose = []
+
+# Continuous batching: the pure multi-sequence scheduler (src/sched.rs) and its
+# llama-bound driver (src/engine/concurrency.rs). Nothing calls the driver today —
+# see src/dovata/src/engine/README.md — so turning this off changes no behaviour,
+# only what compiles. The pure scheduler stays well tested either way.
+batch = []
+
+# MoE expert offload: the expert_order loader, the FFI to the C driver, and (with
+# the bundle wired up in the sys crate) the llama.cpp graph seam. Turn it off and
+# JADE_MOE_DRIVER=1 fails the load instead of being ignored.
+moe = []
 
 [dependencies]
 # `version` alongside `path` is not redundant: cargo checks the submodule's actual

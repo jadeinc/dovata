@@ -1,4 +1,4 @@
-//! MoE expert-offload support (pure, platform-independent half).
+//! MoE expert offload — the whole capability's Rust side.
 //!
 //! Loads and validates the per-layer `expert_order` asset (the usage-ranked
 //! expert permutation produced offline; see `docs/moe-expert-offload.md`) and
@@ -6,8 +6,19 @@
 //! parse + validation here means the C++ driver never touches JSON, and the
 //! bug-prone "is this a valid permutation" check is unit-tested on any platform.
 //!
-//! The expensive paging machinery itself lives in the Linux-only `inference`
-//! backend (the `infer-engine/moe-driver` library); this module is the pure glue.
+//! This file is the pure half and builds anywhere. [`ffi`] is the thin
+//! declaration over the C driver, Linux-only. The paging machinery itself is
+//! C++ and CUDA in `src/infer-engine/moe-driver/`, compiled into libllama by the
+//! driver's CMake wiring.
+//!
+//! The whole capability is behind the `moe` cargo feature. Turning it off drops
+//! this module, the FFI, and the llama.cpp seam together — and makes a config
+//! that asks for offload fail the load rather than run stock, because a driver
+//! that quietly did not engage looks exactly like one that did, at three times
+//! the VRAM.
+
+#[cfg(target_os = "linux")]
+pub(crate) mod ffi;
 
 use serde_json::Value;
 

@@ -38,26 +38,83 @@ const PROVIDER_CRATES: &[&str] = &[
 /// The engine crate: the local llama.cpp provider, shipped as a cdylib.
 const ENGINE_CRATE: &str = "dovata";
 
+/// Every capability the engine can be built with — each one a slice that compiles out
+/// whole, Rust and llama.cpp seam together. This list is what a *release* must carry;
+/// see [`Plan::capabilities`] for why a shipped artifact missing one is an error.
+///
+/// Kept in step with `[features]` in `src/dovata/Cargo.toml` by hand. The engine cannot
+/// tell us its own list: `cfg!` inside the engine reports the build in front of it, not
+/// the manifest, and the shipped library links CUDA so it cannot be dlopened here to be
+/// asked. One short list, checked by the release path, beats a clever mechanism.
+const CAPABILITIES: &[&str] = &["compose", "batch", "moe"];
+
 /// How the bundle is built and how the engine library is staged.
 struct Plan {
     /// Release profile (`target/release`) vs dev (`target/debug`).
     release: bool,
     /// Build the engine's `cuda` feature (GPU offload). Release/Linux only.
     cuda: bool,
+    /// Capabilities to compile in. Defaults to all of [`CAPABILITIES`]; a dev build may
+    /// narrow it with `--capabilities a,b` to cut compile time while working on one.
+    capabilities: Vec<String>,
+}
+
+impl Plan {
+    /// Refuse to publish an engine that is missing a capability.
+    ///
+    /// A `.so` built without `compose` refuses over-context prompts, and one without
+    /// `moe` refuses to activate expert offload. Both are correct behaviours and both
+    /// are catastrophic in a release: the artifact loads, answers ordinary prompts, and
+    /// fails only on the requests the missing capability existed to serve. The manifest
+    /// records what was built, and this stops the wrong thing being built at all.
+    fn check_release_completeness(&self) -> Result<(), String> {
+        if !self.release {
+            return Ok(());
+        }
+        let missing: Vec<&str> = CAPABILITIES
+            .iter()
+            .copied()
+            .filter(|c| !self.capabilities.iter().any(|h| h == c))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "refusing to build a release without every capability: missing {}. \
+             A partial engine loads and serves ordinary prompts, then fails only on the \
+             requests the missing capability existed to serve. Drop --capabilities, or \
+             use `build` rather than `release` for a narrowed dev bundle.",
+            missing.join(", ")
+        ))
+    }
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let has = |flag: &str| args.iter().any(|a| a == flag);
+    // `--capabilities a,b` narrows what the engine is built with. Absent, everything.
+    let capabilities = match args.iter().position(|a| a == "--capabilities") {
+        Some(i) => match args.get(i + 1) {
+            Some(csv) => csv.split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect(),
+            None => {
+                eprintln!("packaging: --capabilities needs a comma-separated list");
+                std::process::exit(2);
+            }
+        },
+        None => CAPABILITIES.iter().map(|s| (*s).to_owned()).collect(),
+    };
     let plan = match args.first().map(String::as_str) {
-        Some("build") => Plan { release: has("--release") || has("-r"), cuda: false },
-        Some("release") => Plan { release: true, cuda: has("--cuda") },
+        Some("build") => Plan { release: has("--release") || has("-r"), cuda: false, capabilities },
+        Some("release") => Plan { release: true, cuda: has("--cuda"), capabilities },
         _ => {
-            eprintln!("usage: cargo run -p packaging -- <build [--release] | release [--cuda]>");
+            eprintln!(
+                "usage: cargo run -p packaging -- <build [--release] | release [--cuda]> \
+                 [--capabilities a,b]"
+            );
             std::process::exit(2);
         }
     };
-    if let Err(e) = assemble(&plan) {
+    if let Err(e) = plan.check_release_completeness().and_then(|()| assemble(&plan)) {
         eprintln!("packaging: error: {e}");
         std::process::exit(1);
     }
@@ -77,14 +134,25 @@ fn assemble(plan: &Plan) -> Result<(), String> {
         cmd.arg("--release");
     }
     cmd.args(["-p", ENGINE_CRATE]);
+    // Capabilities are passed explicitly rather than left to `default`, so the manifest
+    // below records what was actually asked for instead of what the manifest happened to
+    // default to. `--no-default-features` makes the list authoritative: with defaults
+    // still on, dropping a capability from the list would have no effect and the
+    // recorded value would be a lie.
+    let mut features: Vec<&str> = plan.capabilities.iter().map(String::as_str).collect();
     if plan.cuda {
-        cmd.args(["--features", "cuda"]);
+        features.push("cuda");
+    }
+    cmd.arg("--no-default-features");
+    if !features.is_empty() {
+        cmd.args(["--features", &features.join(",")]);
     }
     for c in PROVIDER_CRATES {
         cmd.args(["-p", c]);
     }
     eprintln!(
-        "packaging: building {ENGINE_CRATE}{} + {} providers ({profile})",
+        "packaging: building {ENGINE_CRATE} [{}]{} + {} providers ({profile})",
+        plan.capabilities.join(" "),
         if plan.cuda { " (cuda)" } else { "" },
         PROVIDER_CRATES.len()
     );
@@ -173,6 +241,10 @@ fn assemble(plan: &Plan) -> Result<(), String> {
             // xtask links too. Same constants, same build.
             "abi_version": PROVIDER_ABI_VERSION,
             "protocol_version": ovata_infer_protocol::PROTOCOL_VERSION,
+            // What this particular .so can do. A consumer holding the file cannot ask
+            // it — dlopening a CUDA-linked library needs a driver — so the answer ships
+            // beside it, the same reasoning as the model's .buildinfo sidecar.
+            "capabilities": plan.capabilities,
         })
     } else {
         eprintln!("packaging:   engine library skipped (engine is Linux-only)");

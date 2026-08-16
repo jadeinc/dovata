@@ -70,10 +70,36 @@ cargo run -p packaging -- build              # dev bundle, debug profile
 cargo run -p packaging -- build --release    # dev bundle, release profile
 cargo run -p packaging -- release            # release bundle: dovata-<arch>.so + sha256
 cargo run -p packaging -- release --cuda     # ... with the engine's GPU backend
+cargo run -p packaging -- build --capabilities compose   # narrowed dev bundle
 ```
 
 `--cuda` is release/Linux only — it forwards the `cuda` feature to the engine crate, which
 is a no-op where the engine is not compiled in.
+
+## Capabilities, and why a release cannot ship a partial one
+
+The engine is built from capabilities — `compose`, `batch`, `moe` — each a slice that
+compiles out whole, Rust and llama.cpp seam together. `--capabilities a,b` narrows the
+list, which is useful for cutting compile time while working on one of them.
+
+Two things follow from that, and both are deliberate.
+
+The build passes `--no-default-features` and names the list explicitly, rather than
+letting the crate's `default` decide. Otherwise narrowing the list would have no effect —
+defaults would put the capabilities back — and the manifest would record a list that did
+not match the artifact.
+
+And `release` refuses a narrowed list outright. A `.so` built without `compose` still
+loads, still answers ordinary prompts, and refuses only over-context ones; without `moe`
+it refuses only to activate expert offload. Those are the right behaviours for a
+deliberately narrow build and a disaster in a published one, because the artifact looks
+healthy right up until it meets the request the missing capability existed to serve. Use
+`build` for a narrowed bundle; `release` means all of them.
+
+The enabled list is written into `dist/manifest.json` under `engine.capabilities`. It
+ships there rather than being read back from the library because the shipped engine links
+CUDA and cannot be dlopened on a machine with no driver — the same reason its
+`abi_version` is stamped from the linked constant instead of queried.
 
 ## Gotchas
 

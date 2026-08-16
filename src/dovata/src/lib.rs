@@ -22,17 +22,38 @@
 //! platform. The [`engine`] module is `#[cfg(target_os = "linux")]` and links the
 //! vendored `infer-engine` (llama.cpp); on macOS the cdylib builds as an empty stub.
 
-// Each module below is pure (no llama.cpp) and individually unit-tested:
+// Each module below is pure (no llama.cpp) and individually unit-tested.
+//
+// The ones carrying a `#[cfg(feature = ...)]` are the pure halves of *capabilities* —
+// a slice of the engine that can be compiled out whole, Rust and llama.cpp seam
+// together. Every capability is in `default`, so this changes nothing about what
+// ships; it makes each boundary explicit, and a boundary you cannot switch off is
+// not a boundary. Each gate's comment says what the engine loses without it.
 pub mod cache; // bounded LRU cache of past responses (skip the model on repeats)
 pub mod config; // env-var parsing + validation into a Config struct
 pub mod control; // the constrained-decoding state machine (anchors/grammar/stops)
 pub mod preflight; // reads the GGUF header at boot: profile selection + fail-fast checks
 pub mod prompt; // turns a request prompt string into chat messages for the model
 pub mod profile; // per-model token/turn profiles + chat templates (was jade-model-profile)
-pub mod route; // over-context corpus/question split + text chunking for the RLM path
-pub mod moe; // MoE expert-offload glue: expert_order asset load + validation (pure half)
-pub mod sched; // pure multi-sequence continuous-batching scheduler (RLM concurrency core)
 pub mod vram; // sizes the generation cap from the VRAM left after the weights
+
+/// Pure half of the **compose** capability: the over-context corpus/question split and
+/// text chunking. Without the feature there is no long-context path at all — an
+/// over-context prompt is refused rather than truncated to fit.
+#[cfg(feature = "compose")]
+pub mod route;
+
+/// Pure half of the **moe** capability: the `expert_order` asset loader and its
+/// permutation validation. Without the feature, a config that asks for expert offload
+/// fails the load instead of running stock at three times the VRAM.
+#[cfg(feature = "moe")]
+pub mod moe;
+
+/// Pure half of the **batch** capability: the multi-sequence continuous-batching
+/// scheduler. Nothing calls its llama-bound driver today, so dropping the feature
+/// changes no behaviour — only what compiles.
+#[cfg(feature = "batch")]
+pub mod sched;
 
 // The local llama.cpp inference engine — the in-process provider. Linux-only: it links
 // the vendored infer-engine (llama.cpp). Compiled out on other platforms.
@@ -59,6 +80,49 @@ pub mod jade_pkg;
 // export, and the cdylib builds as an empty stub rather than failing.
 #[cfg(target_os = "linux")]
 ovata_infer_protocol::export_provider!(engine::Dovata);
+
+#[cfg(test)]
+mod capabilities {
+    //! That each capability's pure half is reachable under default features.
+    //!
+    //! A `#[cfg(feature = "…")]` with a mis-typed feature name compiles fine and
+    //! silently drops the module — the failure surfaces later as "unresolved import"
+    //! in whatever tries to use it, which on the engine side means a Linux CUDA build
+    //! rather than a laptop test run. These name each feature once more, so a typo in
+    //! Cargo.toml or in a gate fails here in under a second.
+    //!
+    //! Each test is itself gated: with the feature off the module is *supposed* to be
+    //! absent, so the assertion is only meaningful when the feature is on.
+
+    #[test]
+    #[cfg(feature = "compose")]
+    fn compose_pure_half_is_present() {
+        // route is the over-context corpus/question split.
+        let _ = crate::route::DEFAULT_CHUNK_CHARS;
+    }
+
+    #[test]
+    #[cfg(feature = "batch")]
+    fn batch_pure_half_is_present() {
+        // sched is the multi-sequence continuous-batching scheduler.
+        let _: fn(_, _) -> _ = crate::sched::Scheduler::new;
+    }
+
+    #[test]
+    #[cfg(feature = "moe")]
+    fn moe_pure_half_is_present() {
+        // A malformed asset must be rejected, which also proves the loader linked.
+        assert!(crate::moe::ExpertOrder::from_json(b"{}").is_err());
+    }
+
+    // There is deliberately no test that `default` still lists every capability.
+    // `cfg!(feature = …)` reports the build in front of it, not the manifest, so such
+    // a test cannot tell "someone dropped a capability from default" from "this is a
+    // --no-default-features run" — it would fail on the second and catch nothing on
+    // the first. The check that a *shipped* artifact carries every capability belongs
+    // where a shipped artifact exists: `packaging` records the enabled list in
+    // dist/manifest.json and refuses a release build that is missing one.
+}
 
 #[cfg(test)]
 mod protocol_compat {

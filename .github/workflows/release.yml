@@ -125,6 +125,11 @@ jobs:
           cargo test -p ovata-infer-protocol
           cargo test -p gguf
           cargo test -p dovata --lib
+          # Also with every capability compiled out. The gates are only real if the
+          # crate still builds and passes without them, and this is where a stale
+          # `#[cfg(feature = ...)]` left over from moving code shows up — a build with
+          # defaults on never exercises the other arm.
+          cargo test -p dovata --lib --no-default-features
 
       # Build the engine (--features cuda) + the provider .so packages and stage the
       # whole bundle into dist/ (engine asset `dovata-<arch>.so` + .sha256, provider

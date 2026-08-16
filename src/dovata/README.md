@@ -156,6 +156,32 @@ wire version move independently — 0.4.0 and 0.5.1 both speak wire 3 — so the
 cannot stand in for either. Changing one of those numbers should be deliberate, and
 the test is what makes it so.
 
+## Capabilities
+
+The engine is built from capabilities: slices that compile out whole, the Rust half and
+the llama.cpp seam together, each behind one cargo feature.
+
+| Feature | The capability | Pure half | llama-bound half |
+|---|---|---|---|
+| `compose` | long-context answering by KV composition | `src/route.rs` | `src/engine/{compose,rlm}.rs` |
+| `batch` | continuous batching across sequences | `src/sched.rs` | `src/engine/concurrency.rs` |
+| `moe` | MoE expert offload to host RAM | `src/moe/mod.rs` | `src/moe/ffi.rs` + the C driver |
+
+Every one is in `default`, so `cargo build -p dovata` is still the shipping artifact.
+They are not there to make the build configurable. They are there because a boundary you
+cannot switch off is not a boundary — if a capability's edges are real, the crate compiles
+and passes its tests without it, and CI checks exactly that with
+`cargo test -p dovata --lib --no-default-features`. The second reason arrives with the
+llama.cpp bundles: a capability that patches llama.cpp needs one switch that gates its
+patch series and its Rust caller together, or the two drift.
+
+Turning one off makes the engine *refuse* the requests it can no longer serve, never
+answer them worse. Without `compose`, an over-context prompt gets an `Error` frame instead
+of being truncated to fit — a truncated prompt returns a confident answer to a question
+nobody asked. Without `moe`, `JADE_MOE_DRIVER=1` fails the load instead of quietly running
+stock, which produces the same output at roughly three times the VRAM and surfaces as an
+OOM with no mention of experts.
+
 ## Configuration
 
 All environment, all `JADE_*`, all read by `Config::from_env` when the library loads.

@@ -198,6 +198,22 @@ impl Config {
                     .to_owned(),
             );
         }
+        // Asking for a capability the binary was not built with is a configuration
+        // error, not something to log and continue past. A build without `moe` has no
+        // driver and no llama.cpp seam, so it would run the stock path — same output,
+        // roughly three times the VRAM, and the first symptom is an OOM somewhere that
+        // says nothing about expert offload. The rule lives here rather than in the
+        // engine because `validate` is pure and runs on any platform, so the refusal is
+        // unit-tested on a laptop instead of only on the GPU box.
+        #[cfg(not(feature = "moe"))]
+        if self.moe.enabled {
+            return Err(
+                "JADE_MOE_DRIVER is set but this engine was built without the `moe` \
+                 capability, so there is no expert-offload driver to activate. Rebuild \
+                 with --features moe, or unset JADE_MOE_DRIVER."
+                    .to_owned(),
+            );
+        }
         // MoE offload rules (only checked when the driver is enabled):
         if self.moe.enabled {
             // can't pin/cache experts without knowing which are hot
@@ -329,12 +345,35 @@ mod tests {
     }
 
     #[test]
+    // Asserts a *valid* MoE config passes, which is only true in a build that has the
+    // capability — without it every MoE config is rejected. See the pair below.
+    #[cfg(feature = "moe")]
     fn moe_enabled_requires_order_path() {
         let c = cfg(&[("JADE_MOE_DRIVER", "on")]);
         assert!(c.validate().is_err(), "enabled without order path must be rejected");
         let c = cfg(&[("JADE_MOE_DRIVER", "on"), ("JADE_MOE_ORDER_PATH", "/x/order.json")]);
         assert_eq!(c.moe.order_path.as_deref(), Some("/x/order.json"));
         assert!(c.validate().is_ok());
+    }
+
+    /// A build without the capability refuses every MoE config, however well formed.
+    ///
+    /// The old behaviour was to log and run the stock path. That produces the same
+    /// output at roughly three times the VRAM, so the first symptom is an OOM in a
+    /// place that says nothing about expert offload — the config asked for something
+    /// the binary cannot do, and saying so is the whole point.
+    #[test]
+    #[cfg(not(feature = "moe"))]
+    fn moe_enabled_without_capability_is_a_config_error() {
+        let c = cfg(&[
+            ("JADE_MOE_DRIVER", "on"),
+            ("JADE_MOE_ORDER_PATH", "/x/order.json"),
+        ]);
+        let err = c.validate().expect_err("a build without `moe` must refuse the config");
+        assert!(
+            err.contains("moe"),
+            "the message must name the missing capability so the fix is obvious; got: {err}"
+        );
     }
 
     #[test]

@@ -8,9 +8,16 @@
 //!
 //! * [`kv`]          — KV-cache optimizations (cache-type mapping, prefix reuse).
 //! * [`standard`]    — single-shot inference (one sequence, constrained decode).
-//! * [`concurrency`] — continuous-batching engine over the pure `crate::sched`.
-//! * [`compose`]     — RLM engine: tensor-level KV-cache composition.
-//! * [`rlm`]         — RLM request dispatch onto [`compose`].
+//! * `concurrency`   — continuous-batching engine over the pure `crate::sched`
+//!                     (feature `batch`).
+//! * `compose`       — RLM engine: tensor-level KV-cache composition (feature `compose`).
+//! * `rlm`           — RLM request dispatch onto `compose` (feature `compose`).
+//!
+//! `kv` and `standard` are unconditional: every request path needs them. The other
+//! three are the llama-bound halves of capabilities that can be compiled out whole.
+//! When one is off, `infer` refuses the requests it would have served — see the
+//! degradation arms below — rather than falling through to a path that answers the
+//! wrong question.
 //!
 //! The platform-independent logic (anchors/stop/grammar, config, response cache,
 //! scheduler) lives in the `dovata` library and is unit-tested on any platform;
@@ -31,9 +38,12 @@ mod standard;
 // and mass prompting, but nothing reaches it any more. Its only caller was the
 // env-gated selftest module, which was deleted once dropping the daemon left it with
 // no startup phase to hang off. Wire it to an explicit entry point before relying on it.
+#[cfg(feature = "batch")]
 #[allow(dead_code)]
 mod concurrency;
+#[cfg(feature = "compose")]
 mod rlm;
+#[cfg(feature = "compose")]
 mod compose;
 
 use std::num::NonZeroU32;
@@ -51,34 +61,18 @@ use llama_cpp_2::{
     token::LlamaToken,
 };
 
-/// FFI to the index-driven MoE expert-offload driver. `moe_driver_init` is a C
-/// symbol compiled into libllama; it mirrors `moe_driver_config` in `moe_driver.h`
-/// and `MoeOffload` in `crate::config`.
-#[repr(C)]
-struct MoeDriverConfig {
-    enabled: bool,
-    pin: i32,
-    cache: i32,
-    order_path: *const std::os::raw::c_char,
-}
-
-extern "C" {
-    /// Returns 0 on success; non-zero leaves the driver inactive (stock path).
-    fn moe_driver_init(
-        cfg: *const MoeDriverConfig,
-        n_layers: i32,
-        n_experts: i32,
-        n_expert_used: i32,
-        expert_order_flat: *const i32,
-    ) -> i32;
-}
-
 // ── Over-context routing constants ─────────────────────────────────────────────
+/// Tokens of generation room a prompt must leave inside the native window before the
+/// request is treated as over-context. Unconditional: it decides *whether* to route to
+/// compose, which is a question worth answering even when compose is not compiled in.
 const NATIVE_GEN_HEADROOM: u32 = 512;
 /// Fallback RLM frontier = this × the native window when no profile/env limit is set.
+#[cfg(feature = "compose")]
 const RLM_FRONTIER_WINDOW_MULT: u32 = 8;
 /// Defaults for the over-context blended pipeline (overridable via env).
+#[cfg(feature = "compose")]
 const RLM_DEFAULT_N: usize = 12;
+#[cfg(feature = "compose")]
 const RLM_DEFAULT_K: usize = 4;
 
 // ── The provider ───────────────────────────────────────────────────────────────
@@ -103,6 +97,9 @@ pub struct Dovata {
     /// GGUF model name — used for profile/limit selection, never sent on the wire.
     model_name: String,
     /// RLM efficient-frontier limit (max corpus tokens) for the over-context path.
+    /// Only the compose path reads it, so without that capability the field would be
+    /// written at load and never read.
+    #[cfg(feature = "compose")]
     rlm_max: u32,
 }
 
@@ -186,32 +183,32 @@ impl Provider for Dovata {
         eprintln!("dovata: model name: {model_name}");
 
         // Activate the index-driven MoE driver (expert tensors are host-resident now).
+        //
+        // Every failure here fails the load. That is a change from the original, which
+        // logged and continued on a stock path: a run with the driver inactive produces
+        // identical output and uses roughly three times the VRAM, so the symptom is an
+        // OOM much later, in a place that says nothing about expert offload. The config
+        // asked for offload; not getting it is an error, not a fallback.
+        #[cfg(feature = "moe")]
         if cfg.moe.enabled {
             let order_path = cfg.moe.order_path.as_deref().unwrap_or_default();
-            match crate::moe::ExpertOrder::load(order_path) {
-                Ok(order) => {
-                    let mc = MoeDriverConfig {
-                        enabled: true,
-                        pin: cfg.moe.pin as i32,
-                        cache: cfg.moe.cache as i32,
-                        order_path: std::ptr::null(),
-                    };
-                    // SAFETY: mc + order.flat() live for the duration of the call.
-                    let rc = unsafe {
-                        moe_driver_init(&mc, order.n_layers as i32, order.n_experts as i32, 8, order.flat().as_ptr())
-                    };
-                    if rc == 0 {
-                        eprintln!(
-                            "dovata: MoE driver ACTIVE — pin={} cache={} ({}/{} resident/layer, {} layers)",
-                            cfg.moe.pin, cfg.moe.cache, cfg.moe.pin + cfg.moe.cache, order.n_experts, order.n_layers
-                        );
-                    } else {
-                        eprintln!("dovata: MoE driver init failed (rc={rc}) — running stock path");
-                    }
-                }
-                Err(e) => eprintln!("dovata: MoE order load failed ({e}) — running stock path"),
-            }
+            let order = crate::moe::ExpertOrder::load(order_path)
+                .map_err(|e| format!("MoE expert order load failed ({order_path}): {e}"))?;
+            crate::moe::ffi::init(&cfg.moe, &order)
+                .map_err(|e| format!("MoE driver activation failed: {e}"))?;
+            eprintln!(
+                "dovata: MoE driver ACTIVE — pin={} cache={} ({}/{} resident/layer, {} layers)",
+                cfg.moe.pin,
+                cfg.moe.cache,
+                cfg.moe.pin + cfg.moe.cache,
+                order.n_experts,
+                order.n_layers
+            );
         }
+        // Without the `moe` capability there is nothing to activate — and nothing to
+        // check for here, because `cfg.validate()` above already refused the load with
+        // a message naming the missing capability. That rule lives in `config` so it is
+        // testable without a GPU.
 
         let flash_attn_policy = if cfg.flash_attn {
             llama_cpp_sys_2::LLAMA_FLASH_ATTN_TYPE_ENABLED
@@ -241,8 +238,12 @@ impl Provider for Dovata {
             .map_err(|e| format!("context init failed: {e}"))?;
         eprintln!("dovata: context ready (ctx_size={})", cfg.ctx_size);
 
-        let rlm_max = rlm_max_context(&model_name, cfg.ctx_size);
-        eprintln!("dovata: rlm frontier (max corpus tokens) = {rlm_max}");
+        #[cfg(feature = "compose")]
+        let rlm_max = {
+            let m = rlm_max_context(&model_name, cfg.ctx_size);
+            eprintln!("dovata: rlm frontier (max corpus tokens) = {m}");
+            m
+        };
         let chat_tmpl = resolve_chat_template(&model_name);
         let cache = PromptCache::new(cfg.cache_size);
         eprintln!("dovata: prompt cache size={}", cfg.cache_size);
@@ -252,6 +253,7 @@ impl Provider for Dovata {
             engine: Mutex::new(Engine { ctx, cache, kv_tokens: Vec::new() }),
             chat_tmpl,
             model_name,
+            #[cfg(feature = "compose")]
             rlm_max,
         })
     }
@@ -281,7 +283,18 @@ impl Provider for Dovata {
 
         // RLM mode: explicit context-handle / pre-chunked decomposition.
         if req.rlm {
-            rlm::handle_rlm(req, model, ctx, sink);
+            #[cfg(feature = "compose")]
+            {
+                rlm::handle_rlm(req, model, ctx, sink);
+            }
+            #[cfg(not(feature = "compose"))]
+            {
+                sink.emit(Frame::Error(
+                    "this request asks for the rlm path, but the engine was built \
+                     without the `compose` capability. Rebuild with --features compose."
+                        .into(),
+                ));
+            }
             return;
         }
 
@@ -291,11 +304,29 @@ impl Provider for Dovata {
             .and_then(|f| model.str_to_token(&f, AddBos::Always).map_err(|e| format!("tokenize failed: {e}")))
         {
             Ok(toks) if toks.len() as u32 + NATIVE_GEN_HEADROOM > ctx.n_ctx() => {
-                eprintln!(
-                    "dovata: over-context ({} prompt tokens, window {}) → blended RLM compose",
-                    toks.len(), ctx.n_ctx()
-                );
-                answer_over_context(req, model, ctx, sink, self.rlm_max);
+                #[cfg(feature = "compose")]
+                {
+                    eprintln!(
+                        "dovata: over-context ({} prompt tokens, window {}) → blended RLM compose",
+                        toks.len(),
+                        ctx.n_ctx()
+                    );
+                    answer_over_context(req, model, ctx, sink, self.rlm_max);
+                }
+                // Falling through to the native path here would send llama.cpp a prompt
+                // longer than its window, and the answer would come back derived from
+                // whatever fragment survived — right-looking and wrong. Refuse instead.
+                #[cfg(not(feature = "compose"))]
+                {
+                    sink.emit(Frame::Error(format!(
+                        "prompt is {} tokens against a {} token window, and this engine \
+                         was built without the `compose` capability that answers \
+                         over-context requests. Shorten the prompt, raise JADE_CTX_SIZE, \
+                         or rebuild with --features compose.",
+                        toks.len(),
+                        ctx.n_ctx()
+                    )));
+                }
                 return;
             }
             Ok(_) => {} // fits → native path below
@@ -348,6 +379,7 @@ impl Provider for Dovata {
 
 /// Answer an over-context request with the blended KV-composition engine. Emits
 /// `Token`(answer) → `Done`, or an `Error` frame. (The `Meta` frame is the host's.)
+#[cfg(feature = "compose")]
 fn answer_over_context(
     req: &InferenceRequest,
     model: &LlamaModel,
@@ -456,6 +488,7 @@ fn resolve_chat_template(model_name: &str) -> ChatTemplate {
 }
 
 /// The RLM efficient-frontier limit (max corpus tokens) for the active model.
+#[cfg(feature = "compose")]
 fn rlm_max_context(model_name: &str, ctx_size: u32) -> u32 {
     if let Some(n) = std::env::var("JADE_RLM_MAX_CONTEXT").ok().and_then(|v| v.trim().parse::<u32>().ok()) {
         if n > 0 {

@@ -58,6 +58,30 @@ A request lands in one of three places depending on its shape:
   host-RAM `KvBlockCache` so an uploaded context is tokenized only once.
 - `concurrency.rs` — the continuous-batching driver over `crate::sched`.
 
+## Which of these are optional
+
+`kv.rs` and `standard.rs` are unconditional — every request path needs them. The other
+three are the llama-bound halves of *capabilities*, each gated by a cargo feature that
+drops the Rust and (once the bundles land) the llama.cpp seam together:
+
+| Feature | Drops | What `infer` does instead |
+|---|---|---|
+| `compose` | `compose.rs`, `rlm.rs`, `crate::route` | refuses an `rlm` request and refuses an over-context prompt, both with an `Error` frame naming the capability |
+| `batch` | `concurrency.rs`, `crate::sched` | nothing — no path reaches the driver today |
+| `moe` | `crate::moe` and its FFI | `Config::validate` refuses the load when `JADE_MOE_DRIVER` is set |
+
+All three are in `default`, so a plain build is the shipping artifact and none of this
+changes what ships. They exist because a boundary you cannot switch off is not a
+boundary — and because the llama.cpp bundle for a capability needs one switch that gates
+its patch series and its Rust caller together.
+
+The refusals matter more than they look. Falling through to the native path with an
+over-context prompt would send llama.cpp more tokens than its window holds and return an
+answer derived from whatever fragment survived: right-looking and wrong. Running stock
+when `JADE_MOE_DRIVER` was set produces identical output at roughly three times the VRAM,
+so the first symptom is an OOM somewhere that says nothing about expert offload. Both were
+silent before; both are now loud.
+
 ## The self-tests are gone, and the JADE_* gates with them
 
 There used to be a `bench.rs` here: a `dispatch` function that ran once at the end of
