@@ -1,0 +1,73 @@
+// Qwen3-Coder-30B — model profile, as a Jade package.
+//
+// Tool-call parsing is a property of the *model*, not of the Jade language or
+// the wire protocol, so it ships here with the model instead of being a runtime
+// builtin. A program that targets this model imports the profile and asks it to
+// parse tool calls out of a reply:
+//
+//     use "qwen3-coder-30b.jde" as profile
+//     let call = profile.find_tool_call(reply)   // { name, args } or nil
+//
+// Provenance: ported from jadelang's src/llm/model_profile.rs (Rust) and
+// src/runtime_aot/infer/tool_call.c (C), which were removed when parsing left
+// the runtime. This is the delimited path only — see the note at the bottom.
+
+use std::json
+
+// This model emits native Qwen/Hermes tool calls:
+//   <tool_call>{ "tool_name": ..., "arguments": { ... } }</tool_call>
+//
+// The delimiters and the name field are the engine's too — it splits the same
+// span out of the token stream as it arrives. They live in the sibling
+// `qwen3-coder-30b.toml`, which is compiled into the engine, and are copied down
+// here by the generator. Hand-editing them puts this package back out of step
+// with the engine that produced the text it parses.
+// ── BEGIN GENERATED — from qwen3-coder-30b.toml; run tools/scripts/gen-profile-package.py
+// Model: Qwen3-Coder-30B. Edit the TOML, not these three lines.
+let TOOL_OPEN  = "<tool_call>"
+let TOOL_CLOSE = "</tool_call>"
+let NAME_FIELD = "tool_name"
+// ── END GENERATED
+
+// find_tool_calls(text) -> [ { name, args } ], in order, empty when none.
+//
+// `args` is the verbatim (trimmed) JSON body between the delimiters; `name` is
+// the value of this model's name field lifted from that body. An opening
+// delimiter with no matching close treats the remainder as the body, matching
+// the daemon's defensive finish behavior.
+fn find_tool_calls(text) {
+    let out = []
+    let first = true
+    for chunk in text.split(TOOL_OPEN) {
+        if first {
+            // Everything before the first delimiter is pre-amble, not a call.
+            first = false
+        } else {
+            let pieces = chunk.split(TOOL_CLOSE)
+            let body = pieces[0].trim()
+            let parsed = json.parse(body)
+            out.push({ "name": parsed[NAME_FIELD], "args": body })
+        }
+    }
+    return out
+}
+
+// find_tool_call(text) -> { name, args } or nil — the first call, if any.
+fn find_tool_call(text) {
+    let calls = find_tool_calls(text)
+    if len(calls) == 0 {
+        return nil
+    }
+    return calls[0]
+}
+
+// NOTE — differences from the removed Rust/C parser, to reconcile as the
+// language grows:
+//   * Bare-JSON recovery (a tool call with no <tool_call> delimiters, which the
+//     daemon can emit when keep_anchors is off) is NOT handled here. Recovering
+//     it needs a balanced-brace scan, which needs a string index_of/slice
+//     primitive Jade does not yet expose. Keep the daemon emitting anchors, or
+//     add that primitive and port scan_bare_tool_calls.
+//   * The old parser tolerated a malformed body (empty name). Here json.parse
+//     raises on invalid JSON. In practice the model is grammar-constrained
+//     (llm.tool_grammar) to emit valid tool calls, so bodies parse.

@@ -73,6 +73,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
 
 [[package]]
+name = "bundle-kit"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -210,7 +218,6 @@ name = "dovata"
 version = "0.1.0"
 dependencies = [
  "encoding_rs",
- "gguf",
  "libc",
  "llama-cpp-2",
  "llama-cpp-sys-2",
@@ -321,10 +328,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gguf"
-version = "0.1.0"
-
-[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -419,6 +422,7 @@ name = "llama-cpp-sys-2"
 version = "0.1.150"
 dependencies = [
  "bindgen",
+ "bundle-kit",
  "cc",
  "cmake",
  "find_cuda_helper",

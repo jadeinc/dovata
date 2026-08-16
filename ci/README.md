@@ -9,7 +9,7 @@ The model is a build artifact like any other, and it needs to be reproducible: t
 inputs must always yield the same GGUF. Scattering the source repo, the revision, the
 quantization scheme, and the llama.cpp commit across a shell script and a workflow file
 means they drift, and a drifting llama.cpp commit is the one that hurts — quantize with a
-different commit than the daemon links and the GGUF can be rejected outright for
+different commit than the engine builds from and the GGUF can be rejected outright for
 quant-type or GGUF-version skew.
 
 So they live here in one flat `KEY=VALUE` file that both a Python script and a workflow
@@ -27,22 +27,22 @@ model release.
 
 ## Who reads them
 
-`src/scripts/quantize-model.py` reads `model-version.lock` for its env defaults and
-`calib-code.txt` for the imatrix pass. `src/ec2-tests/quantize.py` drives that script on
+`tools/scripts/quantize-model.py` reads `model-version.lock` for its env defaults and
+`calib-code.txt` for the imatrix pass. `tools/ec2/quantize.py` drives that script on
 the GPU box. The output lands at
 `s3://jade-os-release-bucket/models/model.gguf`.
 
 ## Where the llama.cpp commit comes from
 
-Not from here. `quantize-model.py` reads it from the `src/infer-engine/ffi/llama.cpp`
-submodule, because that submodule is what the daemon links. Quantizing with a different
-commit than the daemon links can produce a GGUF the daemon refuses to load, so the two
+Not from here. `quantize-model.py` reads it from the `src/llama/bindings-sys/llama.cpp`
+submodule, because that submodule is what the engine builds from. Quantizing with a different
+commit than the engine builds from can produce a GGUF the engine refuses to load, so the two
 must agree — and the surest way to make them agree is to have only one of them.
 
 This file used to carry a `LLAMA_CPP_COMMIT` line copied from the submodule by hand.
 Nothing checked that the copy was current. It is gone.
 
-One wrinkle: `src/ec2-tests/quantize.py` rsyncs the repo to the GPU box without `.git`,
+One wrinkle: `tools/ec2/quantize.py` rsyncs the repo to the GPU box without `.git`,
 so the box cannot read the submodule pin itself. The driver resolves it locally and
 passes it to the box as `LLAMA_CPP_COMMIT`. That env var is still the interface; it is
 just no longer a value anyone maintains.

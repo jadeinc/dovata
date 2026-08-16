@@ -1,0 +1,59 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 3d4b5f605..f817a35cd 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -2788,6 +2788,11 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
+         nb1, nb2, nb3, stream);
+ }
+ 
++// MoE expert-offload: CUDA on-stream pager (page.cu, in this target).
++extern "C" void moe_driver_page_cuda(int32_t layer, const int32_t * sel_dev, int32_t * out_dev,
++                                     int32_t n_used, int32_t n_tokens, void * stream);
++extern "C" bool moe_driver_active(void);
++
+ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
+     switch (dst->op) {
+         case GGML_OP_ARGMAX:
+@@ -3007,6 +3012,18 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
+         case GGML_OP_LOG:
+             ggml_cuda_op_log(ctx, dst);
+             break;
++        case GGML_OP_CUSTOM:
++            // MoE pager: stays on the CUDA backend (no graph split). The
++            // layer index rides in the custom-op userdata (CallbackCtx.layer).
++            if (moe_driver_active()) {
++                const struct ggml_custom_op_params * cp =
++                    (const struct ggml_custom_op_params *) dst->op_params;
++                const int moe_layer = cp->userdata ? *(const int *) cp->userdata : -1;
++                moe_driver_page_cuda(moe_layer,
++                    (const int32_t *) dst->src[0]->data, (int32_t *) dst->data,
++                    (int32_t) dst->ne[0], (int32_t) dst->ne[1], ctx.stream());
++            }
++            break;
+         case GGML_OP_NONE:
+         case GGML_OP_RESHAPE:
+         case GGML_OP_VIEW:
+@@ -3271,6 +3288,14 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
+ #endif
+         }
+ 
++        // MoE pager: the GGML_OP_CUSTOM op does host-side classification +
++        // data-dependent cudaMemcpyAsync + a stream sync, none of which are legal
++        // during graph capture. Skip capture (the op still runs on the CUDA
++        // stream, so the per-layer backend split is still avoided).
++        if (node->op == GGML_OP_CUSTOM) {
++            use_cuda_graph = false;
++        }
++
+         // [TAG_MUL_MAT_ID_CUDA_GRAPHS]
+         if (node->op == GGML_OP_MUL_MAT_ID) {
+             const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+@@ -5338,6 +5363,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+         case GGML_OP_RMS_NORM_BACK:
+             return ggml_is_contiguous(op->src[0]);
+             break;
++        case GGML_OP_CUSTOM:
++            return true; // MoE pager (dispatched to moe_driver_page_cuda)
+         case GGML_OP_NONE:
+         case GGML_OP_RESHAPE:
+         case GGML_OP_VIEW:

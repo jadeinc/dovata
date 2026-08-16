@@ -71,14 +71,14 @@ with the pinned engine.
 
 ```sh
 # What is in this file, and will it load
-cargo run -p gguf --bin gguf-inspect -- model.gguf
+cargo run --bin gguf-inspect -- model.gguf
 
 # Everything, including tokenizer.chat_template printed verbatim
-cargo run -p gguf --bin gguf-inspect -- model.gguf --all
+cargo run --bin gguf-inspect -- model.gguf --all
 
 # Vet a model you have not downloaded
 curl -sL -r 0-41943039 -o head.gguf "<huggingface resolve url>"
-cargo run -p gguf --bin gguf-inspect -- head.gguf
+cargo run --bin gguf-inspect -- head.gguf
 ```
 
 Exit status is 0 when no required key is missing, 1 when one is, so it drops into a
@@ -87,9 +87,9 @@ script or a CI gate as-is.
 ## Adding a model, end to end
 
 ```sh
-cargo run -p gguf --bin gguf-inspect -- new-model.gguf                    # 1. does it load
-cargo run -p gguf --bin gguf-inspect -- new-model.gguf --profile-stub \
-  > src/dovata/profiles/new-model.toml                                    # 2. starter profile
+cargo run --bin gguf-inspect -- new-model.gguf                    # 1. does it load
+cargo run --bin gguf-inspect -- new-model.gguf --profile-stub \
+  > src/model/profiles/new-model.toml                                    # 2. starter profile
 ```
 
 The stub arrives with `model`, `match`, and `[limits] context_window` already filled in
@@ -97,13 +97,13 @@ from the header, and with the tool-call and tool-result blocks left as explicit 
 those tokens are a training convention, not a recorded field, so they cannot be read out
 of the file. The stub appends the model's `tokenizer.chat_template` verbatim as a
 comment, which is where the delimiters are actually written down. Fill them in, add the
-file to `BUILTIN_PROFILES` in `src/dovata/src/profile/mod.rs`, and `cargo test -p dovata`
+file to `BUILTIN_PROFILES` in `src/model/mod.rs`, and `cargo test -p dovata`
 validates it. The language-side `.jde` twin is a separate file; see
-`src/dovata/profiles/README.md`.
+`src/model/profiles/README.md`.
 
 ## Who uses it
 
-`src/dovata` links it. `dovata::preflight` runs at daemon startup, before the engine
+the engine links it. `dovata::preflight` runs at daemon startup, before the engine
 loads: it reads the header, checks the required keys, selects the model profile, and
 refuses the boot with a specific message when something is wrong. That turns a mistyped
 `JADE_MODEL_PATH` or an unprofiled model from a minutes-long load followed by a vague
@@ -117,9 +117,9 @@ never claims otherwise, it just gets there first with a better error.
 
 Everything else is still humans at a terminal. The obvious next users are
 `src/packaging` (record the shipped model's arch and hyperparameters in
-`manifest.json`) and `src/scripts/quantize-model.py` (assert a freshly quantized GGUF
+`manifest.json`) and `tools/scripts/quantize-model.py` (assert a freshly quantized GGUF
 declares what the pinned engine expects before it is uploaded).
 
 The `KNOWN_PROFILE_GLOBS` constant in `src/main.rs` is a hand-copied mirror of the globs
-in `src/dovata/profiles/*.toml`, kept so this crate builds standalone. Add a profile and
+in `src/model/profiles/*.toml`, kept so this crate builds standalone. Add a profile and
 it needs updating here too, or `gguf-inspect` will under-report a match.

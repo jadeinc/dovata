@@ -53,7 +53,7 @@ env:
   PACKAGES: |
     anthropic src/anthropic/anthropic.jde
     openai src/openai/openai.jde
-    qwen3-coder-30b src/dovata/profiles/qwen3-coder-30b.jde
+    qwen3-coder-30b src/model/profiles/qwen3-coder-30b.jde
   # Public repo whose GitHub Pages serves jadelang.org, and where the built .so's are
   # staged for the Pages deploy to inject.
   PAGES_REPO: "joericks1998/jade"
@@ -112,7 +112,7 @@ jobs:
       # refuse to publish a package that no longer matches the engine it parses
       # for. `cargo test -p dovata` runs the same check.
       - name: Check profile packages are in sync with their TOMLs
-        run: python3 src/scripts/gen-profile-package.py --check
+        run: python3 tools/scripts/gen-profile-package.py --check
 
       - name: Build Jade packages (${{ matrix.platform }})
         run: |
@@ -131,7 +131,7 @@ jobs:
       # the publish if it is below the floor, so a toolchain pin drifting behind the
       # runtime cannot quietly ship packages that every consumer is refused by.
       - name: Check package value ABI (${{ matrix.platform }})
-        run: python3 src/scripts/check-package-abi.py --min "$MIN_PACKAGE_ABI" out/*.so
+        run: python3 tools/scripts/check-package-abi.py --min "$MIN_PACKAGE_ABI" out/*.so
 
       - uses: actions/upload-artifact@v4
         with:

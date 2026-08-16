@@ -4,10 +4,10 @@
 # published to s3://jade-os-release-bucket/models/model.gguf. Everything is
 # pinned so a build is byte-for-byte reproducible. Bumping a value here is the
 # intended way to cut a new model release; then run the pipeline by hand on the
-# EC2 GPU box: `python3 src/ec2-tests/quantize.py` (drives src/scripts/quantize-model.py).
+# EC2 GPU box: `python3 tools/ec2/quantize.py` (drives tools/scripts/quantize-model.py).
 #
 # It is plain `KEY=VALUE` (no spaces, no quotes) so it can be parsed as env
-# defaults by src/scripts/quantize-model.py AND read line-by-line by the workflow.
+# defaults by tools/scripts/quantize-model.py AND read line-by-line by the workflow.
 
 # --- Source model -----------------------------------------------------------
 # Qwen3-Coder-30B-A3B-Instruct: a 30B-total / ~3B-active MoE coder model.
@@ -24,11 +24,14 @@ QUANT=Q4_K_M
 IMATRIX_CHUNKS=100
 
 # --- llama.cpp toolchain ----------------------------------------------------
-# The commit is NOT recorded here. It is read from the src/infer-engine/ffi/llama.cpp
-# submodule at run time, because that submodule is what the daemon actually links.
+# The commit is NOT recorded here. It is read from the src/llama/bindings-sys/llama.cpp
+# submodule at run time, because that submodule is what the engine builds from.
+# (The engine links that commit plus its capability bundles' patches; those patches
+# are forbidden from touching the converter or quantizer, so one pin still serves
+# both. tools/scripts/check-bundles.py enforces it.)
 # It used to be a LLAMA_CPP_COMMIT line, hand-copied from the submodule and updated
 # by hand alongside it, with nothing checking the two agreed — and quantizing with a
-# different commit than the daemon links is how you publish a GGUF the daemon cannot
+# different commit than the engine builds from is how you publish a GGUF the daemon cannot
 # load. One source, no copy, nothing to keep in sync.
 #
 # Only the repo stays configurable. We fetch the quantize/imatrix tools from ggml-org

@@ -2,29 +2,17 @@
 target/
 **/*.rs.bk
 
-# Kernel build artifacts
-*.ko
+# C / CUDA build artifacts — src/moe/driver/ is C++ and CUDA,
+# and CMake is pointed at build/.
 *.o
-*.mod
-*.mod.c
-*.mod.o
-*.order
-*.symvers
-kernel/modules/*/build/
-
-# Kernel source — fetched at build time, never committed
-../linux/
-
-# Build output
 build/
-dist/
-*.iso
-*.img
-*.bin
 
-# Local model files — download with: make model
+# Packaging output. Deleted and recreated by every `cargo run -p packaging` run.
+dist/
+
+# Local model files.
 # Hardware path: /jade/inference/model.gguf (not in repo)
-# Dev path:      models/model.gguf (gitignored, loaded via JADE_MODEL_PATH)
+# Dev path:      models/model.gguf (loaded via JADE_MODEL_PATH)
 *.gguf
 
 # OS / editor
@@ -35,27 +23,23 @@ Thumbs.db
 *.swp
 *.swo
 
-
 # Claude
 CLAUDE.md
 
-# Architecture diagrams (local reference only)
-kernel/modules/jade_core/ARCHITECTURE.md
-jade-tree/ARCHITECTURE.md
-
-# Archived plans and open design questions (local reference only)
-archived-plans/
-open-questions/
-
+# Credentials and machine-local state
 keys/
 jade.toml
 .env
 .ec2.env
 .ec2-host
-.venv/
-# Python bytecode cache (the src/scripts/ and src/ec2-tests/ tooling is Python)
+# No trailing slash: on a dev box this is a symlink to a venv shared with the
+# sibling jade-os repo, and `.venv/` matches only a real directory.
+.venv
+
+# Python bytecode cache (everything under tools/ is Python)
 __pycache__/
 *.pyc
+
 # Jade/native build artifacts (provider .so live in dist/ or the release bundle)
 *.so
 *.dylib
