@@ -14,7 +14,7 @@ index 68c9e606c..0c7760696 100644
 +// driver is inactive, which makes "the patch never applied" and "the driver is
 +// correctly disabled" look identical at run time — this is what tells them apart.
 +//
-+// Declared on the Rust side only (src/dovata/src/moe/ffi.rs), NOT in moe_driver.h:
++// Declared on the Rust side only (src/moe/ffi.rs), NOT in moe_driver.h:
 +// the non-CUDA build compiles moe_stub.cpp, which implements that whole header, and
 +// a stub definition here would satisfy the check while proving nothing.
 +extern "C" int moe_driver_seam_present(void) { return 1; }

@@ -32,7 +32,7 @@
 //! back rather than returning zero. Set `JADE_MAX_TOKENS` when the offload driver is
 //! doing the real work and this arithmetic no longer describes the machine.
 
-use crate::config::KvType;
+use crate::load::config::KvType;
 
 impl ModelDims {
     /// Read a model's shape out of its GGUF header.
@@ -308,7 +308,7 @@ mod tests {
     fn dims_come_out_of_a_real_gguf_header() {
         // Built the way preflight's own fixtures build one, so the key names here are
         // the key names a real file carries.
-        let bytes = crate::preflight::tests::header("qwen3moe", Some("Qwen3-Coder-30B"));
+        let bytes = crate::load::preflight::tests::header("qwen3moe", Some("Qwen3-Coder-30B"));
         let model = gguf::Gguf::parse(&bytes).expect("fixture parses");
         let dims = ModelDims::from_gguf(&model).expect("dims readable");
         assert_eq!(dims.layers, 48);

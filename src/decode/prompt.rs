@@ -8,7 +8,7 @@
 /// Separated from inference.rs so it can be compiled and tested on all
 /// platforms (inference.rs is Linux + --features inference only).
 
-use crate::profile::ChatTemplate;
+use crate::model::ChatTemplate;
 use ovata_infer_protocol::envelope::{self, Message};
 
 /// Render a request prompt into the model's chat format using the model profile's
@@ -82,6 +82,19 @@ pub fn strip_stop_anchor(buf: &mut String, stop: &str) {
     if let Some(pos) = buf.find(stop) {
         buf.truncate(pos);
     }
+}
+
+
+/// Render a request prompt into the model's chat format.
+///
+/// A `Result` for the caller's convenience — every request path does this as one step
+/// of a `and_then` chain over tokenization, which can fail. The rendering itself
+/// cannot; [`format_prompt`] above is total.
+///
+/// This lived in the dispatch file, which meant the router owned prompt rendering.
+/// Rendering is decode's job; the router's job is choosing a path.
+pub fn build_formatted_prompt(prompt_str: &str, tmpl: &ChatTemplate) -> Result<String, String> {
+    Ok(format_prompt(prompt_str, tmpl))
 }
 
 #[cfg(test)]

@@ -1,12 +1,14 @@
 //! Continuous-batching concurrent engine: run N sub-inferences against ONE resident
 //! model/context, with every `ctx.decode` packing tokens from every live sequence
 //! into one forward pass (the RLM fan-out latency win). All scheduling bookkeeping
-//! is in the pure [`crate::sched::Scheduler`]; this is the thin llama-bound driver
+//! is in the pure [`crate::batch::sched::Scheduler`]; this is the thin llama-bound driver
 //! that translates its plans into batches and feeds sampled tokens back.
 
-use super::kv;
-use crate::control::DecodeControl;
-use crate::sched::Scheduler;
+use crate::kv::exec as kv;
+use crate::sample::chain;
+use crate::tokenize::exec::PieceDecoder;
+use crate::sample::control::DecodeControl;
+use crate::batch::sched::Scheduler;
 use llama_cpp_2::{
     context::LlamaContext,
     llama_batch::LlamaBatch,
@@ -60,14 +62,10 @@ pub(crate) fn run_concurrent_inner(
     let mut outputs = vec![String::new(); n];
     // Per-sequence UTF-8 decoders — a multi-byte char split across two BPE tokens
     // of the SAME sequence must not interleave with another sequence's bytes.
-    let mut decoders: Vec<_> =
-        (0..n).map(|_| encoding_rs::UTF_8.new_decoder_without_bom_handling()).collect();
+    let mut decoders: Vec<PieceDecoder> = (0..n).map(|_| PieceDecoder::new()).collect();
     // One free sampler shared by all unconstrained samples (no per-seq state).
-    let mut free_sampler = LlamaSampler::chain_simple(vec![
-        LlamaSampler::temp(0.6),
-        LlamaSampler::min_p(0.05, 1),
-        LlamaSampler::dist(0),
-    ]);
+    let sampling = chain::Params::default();
+    let mut free_sampler = chain::free(sampling);
     // Per-sequence grammar samplers (stateful grammar stacks), kept alive for the
     // whole run — freeing one while the context is live crashes llama.cpp.
     let mut grammar_samplers: Vec<Option<LlamaSampler>> = Vec::with_capacity(n);
@@ -78,18 +76,12 @@ pub(crate) fn run_concurrent_inner(
     kv::prefill_shared(ctx, shared, n)?;
 
     for (i, sub) in subs.into_iter().enumerate() {
-        let gs = if let Some(ref gbnf) = sub.grammar {
-            match LlamaSampler::grammar(model, gbnf, "root") {
-                Ok(g) => Some(LlamaSampler::chain_simple(vec![
-                    LlamaSampler::temp(0.6),
-                    g,
-                    LlamaSampler::min_p(0.05, 1),
-                    LlamaSampler::dist(0),
-                ])),
-                Err(e) => return Err(format!("GBNF grammar error (sub {i}): {e:?}")),
-            }
-        } else {
-            None
+        let gs = match sub.grammar {
+            Some(ref gbnf) => Some(
+                chain::grammar(model, gbnf, sampling)
+                    .map_err(|e| format!("sub {i}: {e}"))?,
+            ),
+            None => None,
         };
         grammar_samplers.push(gs);
         let toks: Vec<i32> = sub.tokens.iter().map(|t| t.0).collect();
@@ -135,9 +127,7 @@ pub(crate) fn run_concurrent_inner(
             let piece = if is_eog {
                 String::new()
             } else {
-                model
-                    .token_to_piece(token, &mut decoders[sid], true, None)
-                    .map_err(|err| format!("token to str failed: {err}"))?
+                decoders[sid].piece(model, token)?
             };
             let ev = sched.accept(slot.seq_id, token.0, &piece, is_eog);
             if let Some(text) = ev.emit {

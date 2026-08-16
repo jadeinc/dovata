@@ -251,11 +251,11 @@ unsafe fn field_str(v: &JadeVal, name: &str) -> Option<String> {
 /// it, so the package path needs its own handle. Loading is the expensive step —
 /// tens of seconds and most of a GPU's memory — so it must not happen per request.
 #[cfg(target_os = "linux")]
-static ENGINE: OnceLock<Result<crate::engine::Dovata, String>> = OnceLock::new();
+static ENGINE: OnceLock<Result<crate::dispatch::Dovata, String>> = OnceLock::new();
 
 #[cfg(target_os = "linux")]
-fn engine() -> Result<&'static crate::engine::Dovata, String> {
-    match ENGINE.get_or_init(|| crate::engine::Dovata::from_config(b"")) {
+fn engine() -> Result<&'static crate::dispatch::Dovata, String> {
+    match ENGINE.get_or_init(|| crate::dispatch::Dovata::from_config(b"")) {
         Ok(e) => Ok(e),
         Err(e) => Err(e.clone()),
     }
@@ -283,7 +283,7 @@ fn read_header(path: &str) -> Option<Vec<u8>> {
 /// gets nothing — a silent failure, and exactly what an unset default looks like
 /// here. This module must therefore supply one.
 ///
-/// The number is estimated rather than fixed: see [`crate::vram`]. A flat constant
+/// The number is estimated rather than fixed: see [`crate::load::vram`]. A flat constant
 /// is wrong in both directions — too small on a card with room to spare, too large
 /// on one already full of weights — so the cap comes from how much KV cache actually
 /// fits after the weights, using the model's own shape from its GGUF header and an
@@ -304,32 +304,32 @@ fn default_max_tokens() -> u32 {
         {
             return n;
         }
-        let cfg = crate::config::Config::from_env();
+        let cfg = crate::load::config::Config::from_env();
         let vram = std::env::var("JADE_VRAM_BYTES")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .filter(|n| *n > 0)
-            .unwrap_or(crate::vram::DEFAULT_VRAM_BYTES);
+            .unwrap_or(crate::load::vram::DEFAULT_VRAM_BYTES);
 
         let weights = std::fs::metadata(&cfg.model_path).map(|m| m.len()).unwrap_or(0);
         // The header sits before the tensor data, so a bounded prefix is enough — the
         // file itself may be 20 GB. Same budget preflight reads with.
         let dims = read_header(&cfg.model_path)
             .and_then(|b| gguf::Gguf::parse(&b).ok())
-            .and_then(|g| crate::vram::ModelDims::from_gguf(&g));
+            .and_then(|g| crate::load::vram::ModelDims::from_gguf(&g));
 
         let Some(dims) = dims else {
             // Unreadable header. Preflight already refuses a load for this, so
             // reaching here means an override let it through; fall back rather than
             // guess a shape.
-            return crate::vram::MIN_MAX_TOKENS;
+            return crate::load::vram::MIN_MAX_TOKENS;
         };
-        let budget = crate::vram::Budget {
+        let budget = crate::load::vram::Budget {
             vram_bytes: vram,
             weights_bytes: weights,
-            overhead_bytes: crate::vram::DEFAULT_OVERHEAD_BYTES,
+            overhead_bytes: crate::load::vram::DEFAULT_OVERHEAD_BYTES,
         };
-        let cap = crate::vram::estimate_max_tokens(dims, cfg.kv_type_k, cfg.kv_type_v, budget);
+        let cap = crate::load::vram::estimate_max_tokens(dims, cfg.kv_type_k, cfg.kv_type_v, budget);
         eprintln!(
             "dovata: max_tokens={cap} (weights {} MiB, assumed VRAM {} MiB, {} B/token)",
             weights / (1024 * 1024),

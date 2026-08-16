@@ -15,7 +15,7 @@
 //! * **plain string**: the corpus is the whole string chunked; the question is the
 //!   trailing paragraph (a question typically trails the document it's about).
 
-use crate::prompt::extract_envelope;
+use crate::decode::prompt::extract_envelope;
 
 /// Default chunk size in characters (~512 tokens at ~4 chars/token). The block size
 /// is the main retrieval-recall knob; the daemon passes this to [`derive_rlm_input`].

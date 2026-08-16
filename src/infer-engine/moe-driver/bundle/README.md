@@ -72,7 +72,7 @@ So there are three:
    This is the one that fires in practice.
 2. **`moe_driver_seam_present()`** is defined by patch 0001, beside the seam it reports
    on, so the symbol exists exactly when the seam does. It is declared on the Rust side
-   only (`src/dovata/src/moe/ffi.rs`) and deliberately *not* in `moe_driver.h` — the
+   only (`src/moe/ffi.rs`) and deliberately *not* in `moe_driver.h` — the
    non-CUDA build compiles `moe_stub.cpp`, which implements that whole header, and a
    stub definition would satisfy the check while proving nothing.
 3. **`crate::moe::ffi::init` calls it** before `moe_driver_init`, and fails the library

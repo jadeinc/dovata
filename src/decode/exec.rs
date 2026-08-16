@@ -2,15 +2,17 @@
 //! decode. This is the daemon's default request path — `handle_connection` streams
 //! each token out as it's produced.
 
-use super::build_formatted_prompt;
-use super::kv;
-use crate::profile::ChatTemplate;
+use crate::decode::prompt::build_formatted_prompt;
+use crate::sample::chain;
+use crate::tokenize::exec::{self as tokenize, PieceDecoder};
+use crate::kv::exec as kv;
+use crate::model::ChatTemplate;
 use ovata_infer_protocol::InferenceRequest;
-use crate::control::DecodeControl;
+use crate::sample::control::DecodeControl;
 use llama_cpp_2::{
     context::LlamaContext,
     llama_batch::LlamaBatch,
-    model::{AddBos, LlamaModel},
+    model::LlamaModel,
     sampling::LlamaSampler,
     token::LlamaToken,
 };
@@ -25,13 +27,11 @@ pub(crate) fn infer_streaming(
     kv_tokens: &mut Vec<LlamaToken>,
     mut on_token: impl FnMut(&str),
 ) -> Result<u64, String> {
-    let mut decoder = encoding_rs::UTF_8.new_decoder_without_bom_handling();
+    let mut decoder = PieceDecoder::new();
 
     let prompt = build_formatted_prompt(&req.prompt, tmpl)?;
 
-    let tokens = model
-        .str_to_token(&prompt, AddBos::Always)
-        .map_err(|e| format!("tokenization failed: {e}"))?;
+    let tokens = tokenize::encode(model, &prompt)?;
 
     let n_prompt = tokens.len();
     let ctx_size = ctx.n_ctx();
@@ -69,31 +69,19 @@ pub(crate) fn infer_streaming(
     kv_tokens.extend_from_slice(&tokens[prefix_len..]);
 
     // Free sampler used for unconstrained tokens (and all tokens once grammar is retired).
-    let mut free_sampler = LlamaSampler::chain_simple(vec![
-        LlamaSampler::temp(0.6),
-        LlamaSampler::min_p(0.05, 1),
-        LlamaSampler::dist(0),
-    ]);
+    let sampling = chain::Params::default();
+    let mut free_sampler = chain::free(sampling);
 
     // Grammar sampler (constrained decoding). Kept allocated until after the
     // generation loop — freeing a grammar sampler while the context is active
     // crashes llama.cpp.
-    let mut anchor_sampler: Option<LlamaSampler> = if let Some(ref gbnf) = req.grammar {
-        match LlamaSampler::grammar(model, gbnf, "root") {
-            Ok(g) => Some(LlamaSampler::chain_simple(vec![
-                LlamaSampler::temp(0.6),
-                g,
-                LlamaSampler::min_p(0.05, 1),
-                LlamaSampler::dist(0),
-            ])),
-            Err(e) => return Err(format!("GBNF grammar error: {e:?}")),
-        }
-    } else {
-        None
+    let mut anchor_sampler: Option<LlamaSampler> = match req.grammar {
+        Some(ref gbnf) => Some(chain::grammar(model, gbnf, sampling)?),
+        None => None,
     };
 
     // All anchor / stop-anchor / depth-tracking decisions live in this pure state
-    // machine (see crate::control). The engine only asks it which sampler to use
+    // machine (see crate::sample::control). The engine only asks it which sampler to use
     // and what text to emit.
     let mut control = DecodeControl::new(req);
 
@@ -131,8 +119,7 @@ pub(crate) fn infer_streaming(
 
         // turn the token id into its text fragment (a "piece"); the decoder handles
         // multi-token UTF-8 sequences split across pieces.
-        let piece = model.token_to_piece(token, &mut decoder, true, None)
-            .map_err(|e| format!("token to str failed: {e}"))?;
+        let piece = decoder.piece(model, token)?;
         n_gen += 1;
 
         // run the piece through the control machine; it returns the text that's

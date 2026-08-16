@@ -37,12 +37,12 @@ from _common import die, info, ok, warn  # noqa: E402
 
 # <root>/tools/scripts/this.py → <root>
 ROOT = Path(__file__).resolve().parents[2]
-PROFILES = ROOT / "src" / "dovata" / "profiles"
+PROFILES = ROOT / "src" / "model" / "profiles"
 
 BEGIN = "// ── BEGIN GENERATED — from {toml}; run tools/scripts/gen-profile-package.py"
 END = "// ── END GENERATED"
 
-# Mirrors `default_name_field()` in src/dovata/src/profile/mod.rs. A profile that
+# Mirrors `default_name_field()` in src/model/mod.rs. A profile that
 # omits the key gets the same value the engine's serde default gives it, so the
 # two sides still agree on what the engine will actually look for.
 DEFAULT_NAME_FIELD = "tool_name"

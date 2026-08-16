@@ -25,7 +25,7 @@
 //! recurse-action / park-resume that makes a parent wait on its children
 //! (Phase 2) layers on top of `accept`'s `finished` signal and is not here yet.
 
-use crate::control::DecodeControl;
+use crate::sample::control::DecodeControl;
 
 /// llama.cpp sequence id (the KV partition a token belongs to).
 pub type SeqId = i32;

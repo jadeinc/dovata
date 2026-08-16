@@ -33,7 +33,7 @@
 
 use std::fmt;
 
-use crate::profile::{ModelProfile, Registry, Selector};
+use crate::model::{ModelProfile, Registry, Selector};
 
 /// How much of the file to read. A GGUF's metadata and tensor index both sit before the
 /// tensor data; 64 MB covers both for every model we have shipped, and it is a cap on a
@@ -231,7 +231,7 @@ pub(crate) mod tests {
     /// A GGUF header carrying exactly the keys the required-key check demands, so the
     /// tests can vary the two identifiers without tripping the earlier gate.
     ///
-    /// Shared with `crate::vram`'s tests: a second hand-rolled GGUF byte builder is
+    /// Shared with `crate::load::vram`'s tests: a second hand-rolled GGUF byte builder is
     /// exactly the kind of duplicate that drifts from the real format silently.
     pub(crate) fn header(arch: &str, name: Option<&str>) -> Vec<u8> {
         let mut kvs: Vec<(String, u32, Vec<u8>)> = Vec::new();

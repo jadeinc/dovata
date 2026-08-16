@@ -30,7 +30,7 @@ this directory puts its parent on `sys.path` and imports from it.
   header, and publishes it to the same S3 contract — no GPU, no llama.cpp build, no
   150 GB of scratch.
 - `gen-profile-package.py` — regenerates the Jade-side model profile
-  (`src/dovata/profiles/<model>.jde`) from the engine-side `<model>.toml`. A profile is
+  (`src/model/profiles/<model>.jde`) from the engine-side `<model>.toml`. A profile is
   two files describing one model, shipped on two different pipelines with no runtime link
   between them, and they drifted on the tool-call delimiters. The TOML is the source of
   truth now; this copies the three shared constants down into the marked region of the

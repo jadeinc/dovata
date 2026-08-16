@@ -51,7 +51,7 @@ Two of the fork's changes did not become bundles:
 - The **chat-template stubs** were dropped. They amputated
   `llama_chat_apply_template` and `llama_chat_builtin_templates` to enforce that
   templating lives in the model profile — but dovata does its own templating in
-  `src/dovata/src/prompt.rs` and never called either one. The fork was removing
+  `src/decode/prompt.rs` and never called either one. The fork was removing
   something unused and then patching the hole it made.
 - The fork's **deletion of upstream's `AGENTS.md`** was 190 of its 221 deleted lines and
   changed no code.
@@ -83,7 +83,7 @@ in place without path-dependency games.
 
 ## Who uses it
 
-Only `src/dovata/src/engine/` — and only on Linux, where the daemon declares
+Only `src/dispatch/` — and only on Linux, where the daemon declares
 `llama-cpp-2` and `llama-cpp-sys-2` as target-specific dependencies. Nothing else in the
 repo links it. `tools/scripts/quantize-model.py` depends on the
 pinned commit rather than on the code.

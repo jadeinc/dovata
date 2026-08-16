@@ -10,7 +10,7 @@
 //!                         copy its KV into N sequences, so each only prefills its
 //!                         unique suffix (concurrent / mass prompting).
 
-use crate::config::KvType;
+use crate::load::config::KvType;
 use llama_cpp_2::{
     context::{params::KvCacheType, LlamaContext},
     llama_batch::LlamaBatch,

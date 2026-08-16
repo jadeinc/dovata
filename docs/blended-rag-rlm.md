@@ -109,7 +109,7 @@ can't reliably pick among near-duplicate facts), **not** a length frontier — s
 excluded from the frontier min rather than dragging it to zero.
 
 **Documented frontier:** `rlm_max_context = 262144` tokens (8×), set in the model profile
-(`src/dovata/profiles/qwen3-coder-30b.toml`, `[limits]`). Beyond it the daemon
+(`src/model/profiles/qwen3-coder-30b.toml`, `[limits]`). Beyond it the daemon
 hard-rejects (untested territory). This is the **validated** ceiling, not a proven breaking
 point — pushing 16×/32× to find the true edge is future work.
 
@@ -329,5 +329,5 @@ that no path could reach.
 The numbers stand — they were real measurements on the A10G — but nothing reproduces them
 today. To re-run one, recover the module from git history and wire it to an explicit entry
 point rather than to a load-time hijack. The same deletion left
-`src/dovata/src/engine/concurrency.rs` with no caller at all, since the selftests were the
+`src/batch/exec.rs` with no caller at all, since the selftests were the
 only thing that ever drove the continuous-batching path.

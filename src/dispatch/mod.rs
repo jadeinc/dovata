@@ -1,59 +1,51 @@
-//! The llama.cpp inference backend — the half of this crate that touches the GPU.
+//! The composition root: the `Provider` impl, and the choice of request path.
 //!
-//! [`Dovata`] implements [`Provider`], and the crate ships it as a `cdylib` that the
-//! calling program `dlopen`s once and then calls in-process. There is no host and no
-//! socket: this module owns the model and context lifecycle and dispatches requests
-//! straight onto them, and the caller owns everything around that. The decode engines
-//! live in focused submodules:
+//! [`Dovata`] implements [`Provider`], and the crate ships it as a `cdylib` the calling
+//! program `dlopen`s once and then calls in-process. There is no host and no socket:
+//! this module owns the model and context lifetime, and per request it decides which
+//! capability answers.
 //!
-//! * [`kv`]          — KV-cache optimizations (cache-type mapping, prefix reuse).
-//! * [`standard`]    — single-shot inference (one sequence, constrained decode).
-//! * `concurrency`   — continuous-batching engine over the pure `crate::sched`
-//!                     (feature `batch`).
-//! * `compose`       — RLM engine: tensor-level KV-cache composition (feature `compose`).
-//! * `rlm`           — RLM request dispatch onto `compose` (feature `compose`).
+//! It owns almost no logic of its own. Every path it dispatches to lives in its own
+//! capability, and the primitives they share do too:
 //!
-//! `kv` and `standard` are unconditional: every request path needs them. The other
-//! three are the llama-bound halves of capabilities that can be compiled out whole.
-//! When one is off, `infer` refuses the requests it would have served — see the
-//! degradation arms below — rather than falling through to a path that answers the
-//! wrong question.
+//! ```text
+//!   infer(req)
+//!     req.count_only  -> tokenize, report the count
+//!     req.rlm         -> crate::compose::rlm       (feature `compose`)
+//!     over-context    -> crate::compose::exec      (feature `compose`)
+//!     otherwise       -> crate::decode::exec
+//! ```
 //!
-//! The platform-independent logic (anchors/stop/grammar, config, response cache,
-//! scheduler) lives in the `dovata` library and is unit-tested on any platform;
-//! everything here is llama.cpp-bound and Linux-only.
+//! Note what *is* here and what is not. Constructing the value is [`crate::load`]'s
+//! job, not this module's — load-time policy is the only thing that can refuse to come
+//! up, and separating it keeps that decision in one place. Rendering a prompt is
+//! [`crate::decode`]'s. All this file decides is which engine sees the request.
+//!
+//! When a capability is compiled out, `infer` *refuses* the requests it would have
+//! served rather than falling through to a path that answers a different question. See
+//! the degradation arms below; both replace a silent wrong answer.
 //!
 //! ## Linux-only / verification note
 //!
 //! This module links vendored llama.cpp and does not build on macOS, so it is behind
 //! `#[cfg(target_os = "linux")]` and nothing here is exercised by a Mac `cargo test`.
-//! It reached its current shape by moving the daemon's old `inference*.rs` here and
-//! swapping the socket/io_uring output boundary for a [`FrameSink`]. Points to
-//! re-check on a Linux build: the `unsafe impl Send/Sync for Dovata` justification,
-//! the `Box::leak` `'static` model/backend, and the llama-cpp-2 API surface.
+//! Points to re-check on a Linux build: the `unsafe impl Send/Sync for Dovata`
+//! justification, the `Box::leak` `'static` model/backend, and the llama-cpp-2 API
+//! surface.
 
-mod kv;
-mod standard;
-// The continuous-batching driver is retained as general infrastructure for concurrent
-// and mass prompting, but nothing reaches it any more. Its only caller was the
-// env-gated selftest module, which was deleted once dropping the daemon left it with
-// no startup phase to hang off. Wire it to an explicit entry point before relying on it.
-#[cfg(feature = "batch")]
-#[allow(dead_code)]
-mod concurrency;
+use crate::decode::exec as standard;
+use crate::kv::exec as kv;
 #[cfg(feature = "compose")]
-mod rlm;
-#[cfg(feature = "compose")]
-mod compose;
+use crate::compose::{exec as compose, rlm};
 
 use std::num::NonZeroU32;
 use std::sync::Mutex;
 
 use ovata_infer_protocol::{Frame, FrameSink, InferenceRequest, Provider};
 
-use crate::cache::PromptCache;
-use crate::config::{Config, KvType};
-use crate::profile::ChatTemplate;
+use crate::decode::cache::PromptCache;
+use crate::load::config::{Config, KvType};
+use crate::model::ChatTemplate;
 use llama_cpp_2::{
     context::{params::LlamaContextParams, LlamaContext},
     llama_backend::LlamaBackend,
@@ -272,7 +264,7 @@ impl Provider for Dovata {
 
         // count_only: tokenize the formatted prompt and report the count.
         if req.count_only {
-            match build_formatted_prompt(&req.prompt, tmpl)
+            match crate::decode::prompt::build_formatted_prompt(&req.prompt, tmpl)
                 .and_then(|f| model.str_to_token(&f, AddBos::Always).map_err(|e| format!("tokenize failed: {e}")))
             {
                 Ok(tokens) => sink.emit(Frame::Done { tokens_used: tokens.len() as u64 }),
@@ -300,7 +292,7 @@ impl Provider for Dovata {
 
         // Over-context routing: a prompt that won't fit the native window with room to
         // generate is answered by the blended KV-composition engine.
-        match build_formatted_prompt(&req.prompt, tmpl)
+        match crate::decode::prompt::build_formatted_prompt(&req.prompt, tmpl)
             .and_then(|f| model.str_to_token(&f, AddBos::Always).map_err(|e| format!("tokenize failed: {e}")))
         {
             Ok(toks) if toks.len() as u32 + NATIVE_GEN_HEADROOM > ctx.n_ctx() => {
@@ -363,7 +355,7 @@ impl Provider for Dovata {
             Ok(tokens_used) => {
                 if !req.keep_anchors {
                     if let Some(stop) = req.stop_anchor.as_deref() {
-                        crate::prompt::strip_stop_anchor(&mut response_buf, stop);
+                        crate::decode::prompt::strip_stop_anchor(&mut response_buf, stop);
                     }
                 }
                 cache.insert(cache_key, response_buf, tokens_used);
@@ -387,7 +379,7 @@ fn answer_over_context(
     sink: &mut dyn FrameSink,
     rlm_max: u32,
 ) {
-    let input = crate::route::derive_rlm_input(&req.prompt, crate::route::DEFAULT_CHUNK_CHARS);
+    let input = crate::compose::route::derive_rlm_input(&req.prompt, crate::compose::route::DEFAULT_CHUNK_CHARS);
     let store = match compose::BlockStore::from_texts(model, &input.corpus) {
         Ok(s) => s,
         Err(e) => {
@@ -424,13 +416,6 @@ fn answer_over_context(
     }
 }
 
-/// Render a request prompt into the model's chat format. Shared by the standard
-/// path, `count_only`, and the RLM sub-call builder. The real work is the pure,
-/// tested `crate::prompt::format_prompt`.
-pub(crate) fn build_formatted_prompt(prompt_str: &str, tmpl: &ChatTemplate) -> Result<String, String> {
-    Ok(crate::prompt::format_prompt(prompt_str, tmpl))
-}
-
 /// Read the model's GGUF header, pick its profile, and publish the choice — or refuse
 /// the load with a message that names the fix.
 ///
@@ -438,15 +423,15 @@ pub(crate) fn build_formatted_prompt(prompt_str: &str, tmpl: &ChatTemplate) -> R
 /// it always was: everything a GGUF can tell us is decided before llama.cpp touches the
 /// file, so a bad path, an unusable file, or a model no profile matches costs a second
 /// instead of a full load. `JADE_ALLOW_UNPROFILED=1` downgrades the no-profile refusal
-/// to a warning; see `crate::preflight`.
+/// to a warning; see `crate::load::preflight`.
 fn preflight(cfg: &Config) -> Result<(), String> {
     let allow_unprofiled = std::env::var("JADE_ALLOW_UNPROFILED")
         .map(|v| matches!(v.trim(), "1" | "on" | "true"))
         .unwrap_or(false);
 
-    let pf = crate::preflight::Preflight::read(
+    let pf = crate::load::preflight::Preflight::read(
         &cfg.model_path,
-        &crate::profile::Registry::builtin(),
+        &crate::model::Registry::builtin(),
         allow_unprofiled,
     )
     .map_err(|e| format!("model preflight failed\n  {e}"))?;
@@ -461,7 +446,7 @@ fn preflight(cfg: &Config) -> Result<(), String> {
             pf.context_length.unwrap_or(0)
         );
     }
-    crate::preflight::publish(&pf);
+    crate::load::preflight::publish(&pf);
     Ok(())
 }
 
@@ -472,11 +457,11 @@ fn preflight(cfg: &Config) -> Result<(), String> {
 /// second one that could differ. The name-glob path stays as the fallback for the cases
 /// where the preflight never ran: unit tests, and the `JADE_*` self-test hijacks that
 /// construct an engine directly without going through the host.
-fn active_profile(model_name: &str) -> Option<&'static crate::profile::ModelProfile> {
-    crate::preflight::selected().or_else(|| {
+fn active_profile(model_name: &str) -> Option<&'static crate::model::ModelProfile> {
+    crate::load::preflight::selected().or_else(|| {
         // Leaked deliberately: the builtin registry is process-lifetime data, and this
         // fallback runs at most once per process.
-        let reg: &'static crate::profile::Registry = Box::leak(Box::new(crate::profile::Registry::builtin()));
+        let reg: &'static crate::model::Registry = Box::leak(Box::new(crate::model::Registry::builtin()));
         reg.select(model_name)
     })
 }

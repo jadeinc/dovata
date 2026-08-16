@@ -15,7 +15,7 @@ Qwen3-Coder-30B-A3B with a 256k KV cache does not fit on a 24 GiB card: full exp
 skewed, so most of that resident weight is idle most of the time.
 
 The driver exploits the skew. An offline measurement ranks every layer's experts by how
-often routing selects them (`src/dovata/profiles/*.expert-order.json`). The top H experts
+often routing selects them (`src/model/profiles/*.expert-order.json`). The top H experts
 per layer are pinned, C more slots hold an LRU cache, and the rest are computed on CPU
 for the current token and asynchronously promoted into a cache slot for next time. The
 math is unchanged — the same weights, just placed differently — so this is lossless. The
@@ -42,7 +42,7 @@ tested on any platform including macOS. Only the paging and graph emission need 
 
 - `moe_driver.h` — the public C ABI. Init once per model load, `build_ffn` per layer
   during graph build, free at teardown. `moe_driver_config` mirrors `MoeOffload` in
-  `src/dovata/src/config.rs`.
+  `src/load/config.rs`.
 - `moe_policy.h` — `LayerResidency`: the per-layer slot map. Slots `0..H` are pinned,
   `H..H+C` are the LRU cache, everything else is cold.
 - `moe_driver_internal.h` — state shared between the host core and the graph hook. Not

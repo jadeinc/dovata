@@ -23,11 +23,12 @@
 //! Verifying a change to them means running a real prompt on the GPU box.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use crate::sample::chain;
+use crate::tokenize::exec::PieceDecoder;
 use llama_cpp_2::{
     context::LlamaContext,
     llama_batch::LlamaBatch,
     model::{AddBos, LlamaModel},
-    sampling::LlamaSampler,
     token::LlamaToken,
     LlamaStateSeqFlags,
 };
@@ -82,8 +83,8 @@ pub(crate) fn gen_loop(
     mut next_pos: i32,
     k: usize,
 ) -> Result<String, String> {
-    let mut sampler = LlamaSampler::greedy();
-    let mut decoder = encoding_rs::UTF_8.new_decoder_without_bom_handling();
+    let mut sampler = chain::greedy();
+    let mut decoder = PieceDecoder::new();
     let mut batch = LlamaBatch::new(1, 1);
     let mut out = String::new();
     for _ in 0..k {
@@ -91,7 +92,7 @@ pub(crate) fn gen_loop(
         if model.is_eog_token(tok) {
             break;
         }
-        out.push_str(&model.token_to_piece(tok, &mut decoder, true, None).map_err(|e| format!("piece: {e}"))?);
+        out.push_str(&decoder.piece(model, tok)?);
         batch.clear();
         batch.add(tok, next_pos, &[seq], true).map_err(|e| format!("gen add: {e}"))?;
         ctx.decode(&mut batch).map_err(|e| format!("gen decode: {e}"))?;

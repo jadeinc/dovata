@@ -174,8 +174,8 @@ fn print_profile_stub(g: &Gguf) {
     println!("# a model's tool-call tokens are a training convention and are not recorded in");
     println!("# the file. Read `tokenizer.chat_template` (gguf-inspect --all) to find them.");
     println!("#");
-    println!("# Install: save as src/dovata/profiles/<model>.toml, add it to BUILTIN_PROFILES");
-    println!("# in src/dovata/src/profile/mod.rs, then `cargo test -p dovata` to validate it.");
+    println!("# Install: save as src/model/profiles/<model>.toml, add it to BUILTIN_PROFILES");
+    println!("# in src/model/mod.rs, then `cargo test -p dovata` to validate it.");
     println!();
     println!("schema_version = 1");
     println!("model = {name:?}");

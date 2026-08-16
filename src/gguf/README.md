@@ -89,7 +89,7 @@ script or a CI gate as-is.
 ```sh
 cargo run -p gguf --bin gguf-inspect -- new-model.gguf                    # 1. does it load
 cargo run -p gguf --bin gguf-inspect -- new-model.gguf --profile-stub \
-  > src/dovata/profiles/new-model.toml                                    # 2. starter profile
+  > src/model/profiles/new-model.toml                                    # 2. starter profile
 ```
 
 The stub arrives with `model`, `match`, and `[limits] context_window` already filled in
@@ -97,13 +97,13 @@ from the header, and with the tool-call and tool-result blocks left as explicit 
 those tokens are a training convention, not a recorded field, so they cannot be read out
 of the file. The stub appends the model's `tokenizer.chat_template` verbatim as a
 comment, which is where the delimiters are actually written down. Fill them in, add the
-file to `BUILTIN_PROFILES` in `src/dovata/src/profile/mod.rs`, and `cargo test -p dovata`
+file to `BUILTIN_PROFILES` in `src/model/mod.rs`, and `cargo test -p dovata`
 validates it. The language-side `.jde` twin is a separate file; see
-`src/dovata/profiles/README.md`.
+`src/model/profiles/README.md`.
 
 ## Who uses it
 
-`src/dovata` links it. `dovata::preflight` runs at daemon startup, before the engine
+the engine links it. `dovata::preflight` runs at daemon startup, before the engine
 loads: it reads the header, checks the required keys, selects the model profile, and
 refuses the boot with a specific message when something is wrong. That turns a mistyped
 `JADE_MODEL_PATH` or an unprofiled model from a minutes-long load followed by a vague
@@ -121,5 +121,5 @@ Everything else is still humans at a terminal. The obvious next users are
 declares what the pinned engine expects before it is uploaded).
 
 The `KNOWN_PROFILE_GLOBS` constant in `src/main.rs` is a hand-copied mirror of the globs
-in `src/dovata/profiles/*.toml`, kept so this crate builds standalone. Add a profile and
+in `src/model/profiles/*.toml`, kept so this crate builds standalone. Add a profile and
 it needs updating here too, or `gguf-inspect` will under-report a match.

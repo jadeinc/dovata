@@ -42,7 +42,7 @@ const ENGINE_CRATE: &str = "dovata";
 /// whole, Rust and llama.cpp seam together. This list is what a *release* must carry;
 /// see [`Plan::capabilities`] for why a shipped artifact missing one is an error.
 ///
-/// Kept in step with `[features]` in `src/dovata/Cargo.toml` by hand. The engine cannot
+/// Kept in step with `[features]` in `Cargo.toml` by hand. The engine cannot
 /// tell us its own list: `cfg!` inside the engine reports the build in front of it, not
 /// the manifest, and the shipped library links CUDA so it cannot be dlopened here to be
 /// asked. One short list, checked by the release path, beats a clever mechanism.

@@ -1,36 +1,110 @@
+[package]
+name = "dovata"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "JADE OS inference engine — the local llama.cpp provider, loaded in-process as an ovata-infer-protocol provider .so"
+
+[lib]
+name = "dovata"
+path = "src/lib.rs"
+# cdylib is what ships: the engine loaded straight into a Jade program as a provider
+# package, the same way `echo` is. rlib so the tests and the packaging xtask can link
+# the same code.
+crate-type = ["cdylib", "rlib"]
+
+# ── Capabilities ──────────────────────────────────────────────────────────────
+[features]
+# Every capability is on by default, so a plain `cargo build` produces the artifact
+# that ships. The features exist to make each capability's boundary explicit and
+# checkable — if a capability can't be switched off, its edges aren't real — and to
+# give the llama.cpp bundles (src/infer-engine/*/bundle/) one switch that gates the
+# Rust half and the C++ patch series together.
+default = ["compose", "batch", "moe"]
+
+# GPU offload on NVIDIA hardware for the in-process engine (forwarded to the vendored
+# llama-cpp-2). No-op on non-Linux targets, where the engine isn't compiled.
+cuda = ["llama-cpp-2/cuda"]
+
+# Long-context answering: the KV-composition engine and its request dispatch
+# (src/compose/), plus the pure corpus/question split. Turn it off and an over-context
+# prompt is refused with an Error frame naming the capability, rather than truncated to
+# fit — a wrong answer from a silently shortened prompt is worse than no answer.
+compose = []
+
+# Continuous batching: the pure multi-sequence scheduler and its llama-bound driver
+# (src/batch/). Nothing calls the driver today — see src/batch/README.md — so turning
+# this off changes no behaviour, only what compiles. The scheduler stays well tested
+# either way.
+batch = []
+
+# MoE expert offload: the expert_order loader, the FFI to the C driver, and the
+# llama.cpp graph seam. Turn it off and JADE_MOE_DRIVER=1 fails the load instead of
+# being ignored.
+#
+# This is the feature that shows why capabilities and llama.cpp bundles are one
+# mechanism: enabling it also enables the sys crate's `bundle-moe`, which applies this
+# capability's patch series to a staged copy of stock upstream llama.cpp. Rust half and
+# C++ seam move together, behind one switch, so they cannot drift into a build that
+# initialises a driver the graph never calls.
+moe = ["llama-cpp-2/bundle-moe"]
+
+[dependencies]
+# `version` alongside `path` is not redundant: cargo checks the submodule's actual
+# version against it, so rolling src/protocol back below the floor fails to resolve
+# instead of failing to compile somewhere confusing. 0.5.0 is the floor because the
+# provider ABI gained `ovata_provider_protocol_version` there, which packaging reads.
+ovata-infer-protocol = { path = "src/protocol", version = ">=0.5.0" }
+# GGUF header reader, used by the load-time preflight. Pure and dependency-free, so it
+# does not drag llama.cpp into the non-Linux build.
+gguf = { path = "src/gguf" }
+# Raw malloc/free for the Jade package boundary: the compiler frees the tree we
+# return, and its allocator is libc's, not Rust's. See src/jade_pkg.rs.
+libc = "0.2"
+serde_json = { version = "1", features = ["std"] }
+# The model profile capability (src/model/): TOML profiles compiled into the binary.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# The llama-bound halves of the capabilities are Linux-only: they link the vendored
+# infer-engine. Gated so the pure halves still build and test on macOS.
+[target.'cfg(target_os = "linux")'.dependencies]
+llama-cpp-2 = { path = "src/infer-engine/api" }
+llama-cpp-sys-2 = { path = "src/infer-engine/ffi" }
+encoding_rs = "0.8"
+
+# ── Workspace ─────────────────────────────────────────────────────────────────
 [workspace]
-# src/ holds shipped software only: the crates, the protocol submodule, and the Jade
-# provider packages. Everything you run rather than ship lives at the repo root —
-# tools/ (Python), tests/ (the evals), ci/, docs/, dist/.
+# This package IS the workspace root, the way jadelang's is: `src/` holds the engine's
+# capabilities as plain modules of this crate, and the handful of directories under it
+# that are separate crates are members below — each for a reason stated where it sits.
+#
+# Everything you run rather than ship lives at the repo root: tools/ (Python),
+# tests/ (the evals), ci/, docs/, dist/.
 members = [
-    # The wire protocol lives in its own public repo (git submodule at src/protocol/)
-    # so the Jade language, which is public, can depend on it too — a public repo
-    # cannot take a git dependency on this private one. Both sides build the same definition.
+    # A git submodule with its own public repo, so the Jade language — which is public —
+    # can depend on it too; a public repo cannot take a git dependency on this private
+    # one. Both sides build the same definition.
     "src/protocol",
-    # The inference engine: the llama.cpp backend plus the pure core and the folded-in
-    # model-profile module. Ships as a cdylib a Jade program dlopens. The Linux engine
-    # is cfg-gated; the pure half builds on any platform.
-    "src/dovata",
-    # Remote-API providers (anthropic, openai) are pure-Jade libraries that call
-    # their HTTP APIs directly (see src/anthropic/anthropic.jde, src/openai/openai.jde),
-    # so they are not workspace members. `echo` is the reference native provider and
-    # the dlopen fixture the packaging step validates against.
+    # Ships as its own `.so`. A second cdylib needs a second package, and this one is
+    # both the worked example for writing a native provider and the dlopen fixture
+    # packaging validates against.
     "src/echo",
-    # The inference engine — the vendored/forked llama.cpp bindings, now first-class
-    # members of the one workspace (single lockfile, editable). Heavy: building these
-    # needs the nested src/infer-engine/ffi/llama.cpp submodule + cmake, so bare
-    # `cargo build --workspace` is a Linux operation; on macOS use targeted `-p` builds.
+    # Vendored upstream identity, a build.rs that compiles llama.cpp from source, and a
+    # sys/safe split that is upstream's own convention. Heavy: building these needs the
+    # nested llama.cpp submodule plus cmake, so bare `cargo build --workspace` is a
+    # Linux operation; on macOS use targeted `-p` builds.
     "src/infer-engine/api",
     "src/infer-engine/ffi",
-    # Reads the capability bundles (patch series + cmake defines) that let the sys
-    # crate build stock upstream llama.cpp plus our deltas, instead of a fork. A
-    # build-dependency of the sys crate, and a member so `cargo test` runs its tests —
-    # build scripts are not testable, which is why this logic is not in one.
+    # A build-dependency of the sys crate, and a member so `cargo test` runs its tests.
+    # Build scripts are not testable, which is the whole reason it is not one.
     "src/infer-engine/bundle-kit",
-    # Build/packaging xtask: assembles the provider .so bundles into dist/.
+    # The xtask that builds and stages the others. As a module of this crate, the
+    # engine would depend on its own packager.
     "src/packaging",
     # GGUF header tooling: reads a model file's metadata without llama.cpp, so a model
-    # can be vetted on a laptop (or over a range request) before a GPU box ever sees it.
+    # can be vetted on a laptop before a GPU box ever sees it.
     "src/gguf",
 ]
 resolver = "2"
@@ -59,7 +133,7 @@ encoding_rs = "0.8.35"
 tracing-subscriber = { version = "0.3", features = ["json"] }
 
 # Only the infer-engine crates opt into these via `[lints] workspace = true`; the
-# daemon/provider crates don't reference workspace lints, so they're unaffected.
+# engine and provider crates don't reference workspace lints, so they're unaffected.
 [workspace.lints.rust]
 missing_docs = { level = "warn" }
 missing_debug_implementations = { level = "warn" }

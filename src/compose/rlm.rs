@@ -2,23 +2,23 @@
 //! window / VRAM. The full context lives in CPU RAM ([`StoredContext`]); only the
 //! blocks a query retrieves are ever tokenized and put on the GPU.
 //!
-//! The engine is tensor-level **KV-cache composition** (see [`super::compose`]): per
+//! The engine is tensor-level **KV-cache composition** (see [`super::exec`]): per
 //! query, retrieve the top-k blocks, splice their precomputed KV into one attention
 //! window, and answer in a single decode — no per-branch re-prompting, no agentic
 //! decision calls. (The earlier agentic PICK→fan-out→COMBINE engine was removed once
 //! composition proved both faster and simpler.) An uploaded context is tokenized into
-//! blocks ONCE and carries a host-RAM [`KvBlockCache`](super::compose::KvBlockCache),
+//! blocks ONCE and carries a host-RAM [`KvBlockCache`](super::exec::KvBlockCache),
 //! so after the first query touches a block its KV is RESTORED (cheap host→device
 //! copy) rather than re-prefilled — ~50× cheaper per block on the A10G. This module
 //! owns the RLM request dispatch ([`handle_rlm`]) and the upload context handles,
 //! emitting frames to the host's [`FrameSink`].
 //!
-//! The continuous-batching engine ([`super::concurrency`]) is retained as general
+//! The continuous-batching engine ([`crate::batch::exec`]) is retained as general
 //! infrastructure for concurrent / mass prompting, independent of RLM. Nothing calls
 //! it today — its only caller was the env-gated selftest module, deleted along with
 //! the daemon startup phase that dispatched it.
 
-use super::compose::{blended_compose_and_answer, BlockStore, KvBlockCache};
+use super::exec::{blended_compose_and_answer, BlockStore, KvBlockCache};
 use ovata_infer_protocol::{Frame, FrameSink, InferenceRequest};
 use llama_cpp_2::{context::LlamaContext, model::LlamaModel};
 use std::collections::HashMap;
@@ -170,7 +170,7 @@ pub(crate) fn handle_rlm(
 // These cover the PURE, model-free logic of this module: the upload payload parser.
 // The compose engine itself needs a real model and has no automated coverage left —
 // the selftests that drove it went away with the daemon. Its pure pieces (retrieval,
-// KV cache LRU) are unit-tested in `super::compose`. This whole module is behind the
+// KV cache LRU) are unit-tested in `super::exec`. This whole module is behind the
 // Linux-only `inference` feature, so these run under `cargo test -p dovata --features
 // inference` (not the macOS pure suite).
 #[cfg(test)]

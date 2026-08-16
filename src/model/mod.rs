@@ -18,7 +18,7 @@
 //!
 //! ## Two identifiers, in that order
 //!
-//! Selection happens at boot in [`crate::preflight`], which reads the GGUF header
+//! Selection happens at boot in [`crate::load::preflight`], which reads the GGUF header
 //! before the model loads and calls [`Registry::select_for`] with both identifiers
 //! the file carries. `general.name` is tried first: it is free text, but a name glob
 //! names one model, so it is the specific answer. `general.architecture` is tried
@@ -275,8 +275,8 @@ pub struct Registry {
 
 /// Profiles compiled into the crate (the defaults shipped in `profiles/`).
 const BUILTIN_PROFILES: &[&str] = &[
-    include_str!("../../profiles/qwen3-coder-30b.toml"),
-    include_str!("../../profiles/qwen3.6-35b-a3b.toml"),
+    include_str!("profiles/qwen3-coder-30b.toml"),
+    include_str!("profiles/qwen3.6-35b-a3b.toml"),
 ];
 
 impl Registry {
@@ -442,7 +442,9 @@ mod tests {
     // forgetting to run it fail rather than ship.
     #[test]
     fn jade_packages_match_their_toml() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("profiles");
+        // CARGO_MANIFEST_DIR is the repo root: this crate's package root is the root,
+        // and its capabilities are the children of src/.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/model/profiles");
         let mut checked = 0;
         for entry in std::fs::read_dir(&dir).expect("profiles dir readable") {
             let toml_path = entry.expect("dir entry").path();

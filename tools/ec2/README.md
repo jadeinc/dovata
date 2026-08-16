@@ -13,7 +13,7 @@ to get code onto a machine that can run it.
 
 The engine's interesting half does not run on a Mac. The llama.cpp backend is
 Linux-only, the model is 18 GB, and the CUDA paths need a real NVIDIA card — so the
-actual verification of anything in `src/dovata/src/engine/` happens on a `g5.xlarge`
+actual verification of anything in `src/dispatch/` happens on a `g5.xlarge`
 (A10G), not in a local test run. These scripts are the shortest path between an edit here
 and a result there.
 

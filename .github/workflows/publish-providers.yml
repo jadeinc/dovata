@@ -53,7 +53,7 @@ env:
   PACKAGES: |
     anthropic src/anthropic/anthropic.jde
     openai src/openai/openai.jde
-    qwen3-coder-30b src/dovata/profiles/qwen3-coder-30b.jde
+    qwen3-coder-30b src/model/profiles/qwen3-coder-30b.jde
   # Public repo whose GitHub Pages serves jadelang.org, and where the built .so's are
   # staged for the Pages deploy to inject.
   PAGES_REPO: "joericks1998/jade"

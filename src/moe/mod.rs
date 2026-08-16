@@ -147,9 +147,11 @@ mod tests {
     // The real shipped asset must load and be a valid 48×128 permutation set.
     #[test]
     fn real_asset_is_valid() {
+        // CARGO_MANIFEST_DIR is the repo root: this crate's package root is the root,
+        // and its capabilities are the children of src/.
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/profiles/qwen3-coder-30b.expert-order.json"
+            "/src/model/profiles/qwen3-coder-30b.expert-order.json"
         );
         let o = ExpertOrder::load(path).expect("ship asset loads");
         assert_eq!(o.n_layers, 48);

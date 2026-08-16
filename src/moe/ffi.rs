@@ -16,7 +16,7 @@
 //! llama.cpp with the driver's seam compiled in.
 
 use super::ExpertOrder;
-use crate::config::MoeOffload;
+use crate::load::config::MoeOffload;
 
 /// Mirrors `moe_driver_config` in `moe_driver.h`. Field order and types are the
 /// contract — changing either side alone corrupts the driver's config silently,

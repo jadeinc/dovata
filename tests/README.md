@@ -6,7 +6,7 @@ Jade program loads `dovata.so` as its provider and every `?p` dereference is ser
 in-process.
 
 There is no Rust here. `cargo test` never looks in this directory — the pure-core unit
-tests live next to the code they cover, under `src/dovata/src/`. This is the other kind
+tests live next to the code they cover, under `src/`. This is the other kind
 of testing: the engine as a black box, on a real GPU, driven by a real client.
 
 These are **integration/correctness** evals — they assert the engine's *mechanics*
