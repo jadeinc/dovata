@@ -1,3 +1,45 @@
+# bindings — `llama-cpp-2`, the safe wrapper
+
+The safe(-ish) Rust wrapper over [`../bindings-sys`](../bindings-sys/README.md): model,
+context, batch, sampling, tokens, GGUF, grammar. Vendored from
+[utilityai/llama-cpp-rs][readme] at 0.1.150; the crate name is kept because it is
+upstream identity, even though the directory was renamed from `api/`.
+
+> Upstream's own README is preserved below the line and still describes the crate
+> accurately. Read this section first for what is different here.
+
+[readme]: https://github.com/utilityai/llama-cpp-rs
+
+## Why the `common` feature stays on, at ~2.2 MB
+
+`common` pulls in llama.cpp's `common/` static library plus `wrapper_common.cpp`, and it
+is an obvious candidate to drop — the engine's own code never calls
+`json_schema_to_grammar`, `FitError`, `LlamaTokenDataArray`, or `LlamaSampler::accept`.
+Grepping every capability for the `common`-gated surface finds nothing.
+
+It stays anyway, because **`LlamaSampler::grammar` is gated on it**, and grammar-
+constrained decoding is not optional here. It is how tool calls and structured output
+work; `src/sample/chain.rs` calls it directly, and `05_grammar`, `07_tool_anchor` and
+`12_grammar_retire` all exercise it.
+
+The dependency runs deeper than the `#[cfg]`. `LlamaSampler::grammar` calls
+`llama_rs_sampler_init_grammar`, which is defined in `wrapper_common.cpp` — compiled only
+when `common` is on. Built both ways to confirm rather than reading attributes:
+
+| | `--features common` | `--no-default-features` |
+|---|---|---|
+| `libllama_cpp_sys_2_common_wrapper.a` | present, 2.2 MB | absent |
+| `llama_rs_sampler_init_grammar` in `bindings.rs` | 3 occurrences | 0 |
+
+So dropping `common` is not a subtle regression to be caught by an eval. It is a compile
+error at `chain::grammar`, and there is no non-`common` path to a grammar sampler in this
+crate. The size saving is real and the feature is load-bearing; the feature wins.
+
+Revisit only if grammar sampling moves to a path that does not route through
+`wrapper_common.cpp`.
+
+---
+
 # llama-cpp-rs-2
 
 [utilityai]: https://utilityai.ca

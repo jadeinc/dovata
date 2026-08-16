@@ -75,6 +75,12 @@ toml = "0.8"
 
 # The llama-bound halves of the capabilities are Linux-only: they link the vendored
 # llama bindings. Gated so the pure halves still build and test on macOS.
+#
+# Default features are kept, and `common` in particular. It is ~2.2 MB we appear not to
+# need — nothing here calls json_schema_to_grammar, FitError, or LlamaSampler::accept —
+# but LlamaSampler::grammar is gated on it, and its C entry point is only compiled when
+# it is on. Dropping it is a compile error at src/sample/chain.rs, not a size win. The
+# measurement is in src/llama/bindings/README.md.
 [target.'cfg(target_os = "linux")'.dependencies]
 llama-cpp-2 = { path = "src/llama/bindings" }
 llama-cpp-sys-2 = { path = "src/llama/bindings-sys" }
