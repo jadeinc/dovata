@@ -134,6 +134,19 @@ operation.
 ## What a green test run does not tell you
 
 Everything named `exec.rs` is `#[cfg(target_os = "linux")]`, and `src/kv/` and
-`src/tokenize/` are llama-bound end to end. The suite is fast and broad and proves nothing
-about the GPU paths. Those are covered by the evals in [`tests/`](tests/README.md), which
-run on the box.
+`src/tokenize/` are llama-bound end to end. The suite is fast and broad and compiles none
+of it.
+
+That gap is narrower than it looks, though, and worth closing before you push:
+
+```sh
+python3 tools/scripts/check-engine.py
+```
+
+It copies the repo to a scratch directory, drops the platform gate in the copy, and runs
+`cargo check` — so the engine is typechecked here, without slowing the default build or
+touching your tree. llama.cpp builds fine on macOS; nothing in the engine's Linux-only
+code is actually Linux-specific, only its dependency is.
+
+What still needs the GPU box: anything about CUDA, and anything at run time. The evals in
+[`tests/`](tests/README.md) are the real gate.

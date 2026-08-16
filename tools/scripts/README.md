@@ -45,6 +45,15 @@ this directory puts its parent on `sys.path` and imports from it.
   refused by. Reads `jade_pkg_abi_version` if the package has it, falling back to the
   re-exported `jrt_abi_version` for packages built before that stamp existed; a library
   with neither links no Jade runtime and is skipped.
+- `check-engine.py` — typechecks the Linux-only half of the engine on a Mac. Copies the
+  repo to a scratch dir, removes the `#[cfg(target_os = "linux")]` gate in the copy, and
+  runs `cargo check`; the working tree and the default build are untouched. Everything
+  named `exec.rs`, plus `dispatch/` and `moe/ffi.rs`, is normally compiled out here, so
+  `cargo test` says nothing about roughly half the engine — this closes that gap for
+  every renamed symbol, changed signature and bad import, which is the whole error class
+  a refactor produces. It caught a real one the first time it ran. It does *not* check
+  CUDA (the copy builds Metal/CPU and the MoE stub) or anything at run time; the evals on
+  the GPU box are still the gate. Run it before pushing engine changes.
 - `check-bundles.py` — verifies every *capability bundle* still applies to the pinned
   llama.cpp. A bundle is a capability's patch series against stock upstream, which is
   what replaced this repo's llama.cpp fork; see

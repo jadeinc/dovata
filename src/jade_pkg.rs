@@ -315,7 +315,7 @@ fn default_max_tokens() -> u32 {
         // The header sits before the tensor data, so a bounded prefix is enough — the
         // file itself may be 20 GB. Same budget preflight reads with.
         let dims = read_header(&cfg.model_path)
-            .and_then(|b| gguf::Gguf::parse(&b).ok())
+            .and_then(|b| crate::gguf::Gguf::parse(&b).ok())
             .and_then(|g| crate::load::vram::ModelDims::from_gguf(&g));
 
         let Some(dims) = dims else {
