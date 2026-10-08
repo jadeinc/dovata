@@ -41,11 +41,13 @@ env:
   # got "native function returned an unknown value tag" from inside the call, and one
   # on v1.1.32 is refused at load. Rebuilding against v1.1.32 is the fix — see the
   # ABI check step below, which will not let a stale package past again.
+  # It went to 5 by v1.3.10 (bytes, handle, char tags), and jade refuses any
+  # package whose ABI is not exactly its own, so the pin moved to v1.4.8.
   #
   # MIN_PACKAGE_ABI must stay in step: it is the RUNTIME_ABI_VERSION this toolchain
   # emits, and the check asserts the built packages carry at least it.
-  JADE_VERSION: "v1.1.32"
-  MIN_PACKAGE_ABI: "2"
+  JADE_VERSION: "v1.4.8"
+  MIN_PACKAGE_ABI: "5"
   # Jade packages to publish, one "<name> <source.jde>" per line. <name> is the
   # published .so basename (served as jadelang.org/<name>-<platform>.so); the import
   # name (`use ...`) is the consumer's choice at `jade pkg add`. Includes the remote
