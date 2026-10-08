@@ -54,9 +54,10 @@ point at a gateway/proxy.
 Jade runtime loads without the source; the publish-providers workflow builds it per
 platform and serves it at jadelang.org.
 
-Build it with jade v1.1.32 or later. The runtime's value ABI went 1 to 2 in v1.1.31,
-when structs began crossing the native boundary, and a package carrying the old ABI is
-refused at load by v1.1.32 — it is not a source problem, so no edit here fixes it. The
+Build it with the jade it will run under. The runtime refuses a package whose value
+ABI is not exactly its own: it went 1 to 2 in v1.1.31, when structs began crossing the
+native boundary, and reached 5 by v1.3.10. It is not a source problem, so no edit here
+fixes it. The
 workflow pin is the floor, and `tools/scripts/check-package-abi.py` reads the ABI back out
 of each built `.so` and fails the publish if it is short, so the pin cannot drift behind
 the runtime unnoticed again.

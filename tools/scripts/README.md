@@ -38,7 +38,8 @@ this directory puts its parent on `sys.path` and imports from it.
   exits non-zero if a package is stale, which is what `publish-providers` runs before it
   builds. Needs Python 3.11+ for `tomllib`.
 - `check-package-abi.py` — reads the Jade value ABI back out of a built `.so` and fails
-  if it is below a floor (default 2, which jade v1.1.31 introduced). The runtime refuses
+  if it is below a floor (default 2, which jade v1.1.31 introduced; `publish-providers`
+  passes 5, the ABI since jade v1.3.10). The runtime refuses
   a package built against an older ABI, and every package published from the old v1.1.23
   toolchain pin carried the old one. `publish-providers` runs it right after `jade build`
   so a pin drifting behind the runtime cannot ship packages that every consumer is
