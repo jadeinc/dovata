@@ -65,9 +65,11 @@ const JADE_TAG_STRUCT: u8 = 8;
 
 /// The compiler's value ABI this module is written against. It went 1 -> 2 in jade
 /// v1.1.31, when structs began crossing the boundary — which this module depends on,
-/// since both the request and every frame cross as a struct. The compiler refuses a
-/// package whose version it cannot talk to, so this number is load-bearing.
-const JADE_VALUE_ABI: u32 = 2;
+/// since both the request and every frame cross as a struct. 3 to 5 (jade 1.2.2 to
+/// 1.3.10) only added tags this module never sends, bytes, handle and char, and an
+/// argument it does not expect reads as `None`. The compiler refuses a package whose
+/// version is not exactly its own, so this number is load-bearing.
+const JADE_VALUE_ABI: u32 = 5;
 
 #[repr(C)]
 union JadeValData {
@@ -593,8 +595,8 @@ mod tests {
 
     #[test]
     fn value_abi_matches_what_the_compiler_requires() {
-        // The compiler refuses a package whose value ABI it cannot talk to. 2 is the
-        // version structs cross under, introduced in jade v1.1.31.
-        assert_eq!(JADE_VALUE_ABI, 2);
+        // The compiler refuses a package whose value ABI is not its own. 5 is
+        // jade-runtime's RUNTIME_ABI_VERSION since jade v1.3.10.
+        assert_eq!(JADE_VALUE_ABI, 5);
     }
 }
