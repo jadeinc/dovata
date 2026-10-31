@@ -1,4 +1,19 @@
-"""Render real chat templates with jinja2, set up as Hugging Face's transformers sets it up,
+"""Author: Joe Ricks
+File: src/chat/jinja2_cases.py
+Description: Renders real chat templates with jinja2 to make test cases for dovata-chat.
+"""
+import json
+import os
+import struct
+import sys
+import urllib.request
+from datetime import datetime, timezone
+
+import jinja2
+from jinja2.ext import loopcontrols
+from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+USAGE = """Render real chat templates with jinja2, set up as Hugging Face's transformers sets it up,
 and write the results as cases for dovata-chat's `matches_jinja2_cases` test.
 
 Why: dovata-chat renders templates with minijinja, and models were trained on what
@@ -21,16 +36,6 @@ tojson override, raise_exception and strftime_now. The render call mirrors
 tokenizer has passed as keyword arguments. strftime_now is pinned to a UTC time, which
 the test pins too.
 """
-import json
-import os
-import struct
-import sys
-import urllib.request
-from datetime import datetime, timezone
-
-import jinja2
-from jinja2.ext import loopcontrols
-from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 PINNED = 1721984707  # 2024-07-26 09:05:07 UTC; the test pins the same instant.
 
@@ -44,13 +49,44 @@ MODELS = {
 
 
 def make_env():
+    """Purpose: This function builds a jinja2 environment set up the way Hugging Face's
+    transformers sets one up.
+
+    Inputs: none.
+
+    Outputs: the jinja2 environment.
+    """
     def raise_exception(message):
+        """Purpose: This function lets a template refuse a conversation with a message.
+
+        Inputs:
+        - `message`: the template's message.
+
+        Outputs: none. It always raises a `TemplateError`.
+        """
         raise jinja2.exceptions.TemplateError(message)
 
     def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
+        """Purpose: This function prints a value as JSON, the way transformers' `tojson`
+        does.
+
+        Inputs:
+        - `x`: the value to print.
+        - `ensure_ascii`, `indent`, `separators`, `sort_keys`: the `json.dumps`
+          options.
+
+        Outputs: the JSON text.
+        """
         return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
 
     def strftime_now(format):
+        """Purpose: This function formats the pinned test time with a `strftime` format.
+
+        Inputs:
+        - `format`: the format string.
+
+        Outputs: the formatted time.
+        """
         return datetime.fromtimestamp(PINNED, timezone.utc).strftime(format)
 
     env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=[loopcontrols])
@@ -61,6 +97,19 @@ def make_env():
 
 
 def render(template, messages, agp, extra, bos, eos):
+    """Purpose: This function renders one test case with jinja2.
+
+    Inputs:
+    - `template`: the chat template.
+    - `messages`: the conversation.
+    - `agp`: whether to add the generation prompt.
+    - `extra`: extra template values, such as `tools`.
+    - `bos`: the BOS string, or `None`.
+    - `eos`: the EOS string, or `None`.
+
+    Outputs: `{"ok": text}` with the prompt, or `{"raised": message}` if the template
+    refused.
+    """
     kwargs = {}
     if bos is not None:
         kwargs["bos_token"] = bos
@@ -79,13 +128,28 @@ def render(template, messages, agp, extra, bos, eos):
 
 
 def token_string(value):
-    """A tokenizer_config special token: a string, or an AddedToken dict."""
+    """Purpose: This function gets a special token's text from a `tokenizer_config.json`
+    entry.
+
+    Inputs:
+    - `value`: the entry, a string or an AddedToken dict.
+
+    Outputs: the token's text.
+    """
     if isinstance(value, dict):
         return value.get("content")
     return value
 
 
 def fetch_template(repo):
+    """Purpose: This function downloads a model's chat template and special tokens from
+    the Hugging Face Hub.
+
+    Inputs:
+    - `repo`: the model's repo id.
+
+    Outputs: the template, the BOS string and the EOS string.
+    """
     url = f"https://huggingface.co/{repo}/resolve/main/tokenizer_config.json"
     with urllib.request.urlopen(url) as resp:
         config = json.load(resp)
@@ -96,7 +160,13 @@ def fetch_template(repo):
 
 
 def gguf_template(path):
-    """tokenizer.chat_template and the EOS string from a GGUF header, for the `gguf` cases."""
+    """Purpose: This function reads the chat template from a GGUF file's header.
+
+    Inputs:
+    - `path`: the GGUF file.
+
+    Outputs: the template text.
+    """
     data = open(path, "rb").read(64 * 1024 * 1024)
     p = data.index(b"tokenizer.chat_template\x08\x00\x00\x00") + len(b"tokenizer.chat_template") + 4
     (n,) = struct.unpack_from("<Q", data, p)
@@ -104,6 +174,15 @@ def gguf_template(path):
 
 
 def msg(role, content, **extra):
+    """Purpose: This function makes one chat message dict.
+
+    Inputs:
+    - `role`: the role, such as `user`.
+    - `content`: the text, or `None`.
+    - `extra`: any other keys, such as `tool_calls`.
+
+    Outputs: the message dict.
+    """
     return {"role": role, "content": content, **extra}
 
 
@@ -125,10 +204,26 @@ WEATHER = {
 
 
 def tool_call(arguments):
+    """Purpose: This function makes one call to the test weather tool.
+
+    Inputs:
+    - `arguments`: the call's arguments, as a dict or a JSON string.
+
+    Outputs: the tool call dict.
+    """
     return {"type": "function", "function": {"name": "get_weather", "arguments": arguments}}
 
 
 def conversations(args_as_string):
+    """Purpose: This function builds the test conversations every template is rendered
+    with.
+
+    Inputs:
+    - `args_as_string`: whether tool-call arguments are a JSON string instead of a
+      dict.
+
+    Outputs: a list of `(name, messages, add_generation_prompt, extra)` tuples.
+    """
     args = '{"city": "Paris"}' if args_as_string else {"city": "Paris", "unit": "c"}
     sys_user = [msg("system", "You are terse."), msg("user", "Hi there")]
     multi = sys_user + [msg("assistant", "Hello."), msg("user", "Weather?")]
@@ -172,8 +267,15 @@ EXTRA_CASES = {
 
 
 def main():
+    """Purpose: This function renders every case and writes them to the JSON file named
+    on the command line.
+
+    Inputs: none. It reads the output path from `sys.argv`.
+
+    Outputs: none.
+    """
     if len(sys.argv) != 2:
-        sys.exit(__doc__)
+        sys.exit(USAGE)
     sources = []
     for name, (repo, args_as_string) in MODELS.items():
         template, bos, eos = fetch_template(repo)

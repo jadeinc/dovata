@@ -1,6 +1,7 @@
-//! The template environment against `transformers`' behaviour. Expected strings for
-//! `tojson` and `strftime_now` were produced by CPython's `json.dumps` and
-//! `datetime.strftime`, not written by hand.
+//! Author: Joe Ricks
+//! File: src/chat/src/tests/template.rs
+//! Description: Tests the template environment, `tojson` and `strftime_now` against
+//! Python's output.
 
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -12,11 +13,22 @@ use super::fixture;
 use crate::template::{clock, pyjson};
 use crate::{Chat, ChatError, Message};
 
-/// A [`Chat`] over the fixture tokenizer with `template`.
+/// Purpose: This function builds a test `Chat` with a given template.
+///
+/// Inputs:
+/// - `template`: the template source.
+///
+/// Outputs: the `Chat`.
 fn with(template: &str) -> Chat {
     Chat::new(template.into(), fixture::tokenizer(), None, None).unwrap()
 }
 
+/// Purpose: This function renders a template with no messages.
+///
+/// Inputs:
+/// - `template`: the template source.
+///
+/// Outputs: the rendered text.
 fn render(template: &str) -> String {
     with(template).render(&[], false).unwrap()
 }
@@ -107,14 +119,14 @@ fn template_syntax_error_is_reported_at_construction() {
     assert!(err.to_string().contains("chat template"), "{err}");
 }
 
-/// A tool definition with the key order an OpenAI-style client sends, as a struct, so
-/// serialization keeps it.
+/// Purpose: This struct holds a test tool definition, with its fields in a fixed order.
 #[derive(Serialize)]
 struct Tool {
     r#type: &'static str,
     function: Function,
 }
 
+/// Purpose: This struct holds the function part of a test tool definition.
 #[derive(Serialize)]
 struct Function {
     name: &'static str,
@@ -122,6 +134,11 @@ struct Function {
     parameters: serde_json::Value,
 }
 
+/// Purpose: This function builds the test weather tool definition.
+///
+/// Inputs: none.
+///
+/// Outputs: the tool.
 fn weather_tool() -> Tool {
     Tool {
         r#type: "function",
@@ -151,6 +168,7 @@ fn tojson_matches_python_compact() {
 
 #[test]
 fn tojson_keeps_serialized_key_order() {
+    /// Purpose: This struct holds the extra template values for one test.
     #[derive(Serialize)]
     struct Extra {
         tools: Vec<Tool>,

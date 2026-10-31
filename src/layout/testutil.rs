@@ -1,19 +1,13 @@
-//! Synthetic model headers for the layout tests.
-//!
-//! A layout binds against a [`Model`], and a model is a GGUF header: metadata plus a
-//! tensor index. These builders write one in memory, with the keys preflight requires
-//! and a complete index whose offsets are laid out the way gguf.cpp lays them out, so
-//! every built-in layout can be bound on any machine, with no model file. The shapes
-//! are small but follow each architecture's `load_arch_tensors` exactly, and the tensor
-//! types are chosen per test, which is how the same layout is bound to an f16 file and
-//! a quantized one.
+//! Author: Joe Ricks
+//! File: src/layout/testutil.rs
+//! Description: Builds small GGUF headers in memory for the layout tests.
 
 use std::path::PathBuf;
 
 use crate::gguf::{ggml_type_layout, TensorInfo};
 use crate::load::Model;
 
-/// A GGUF header under construction.
+/// Purpose: This struct holds a test GGUF header while it is being built.
 pub(crate) struct Header {
     arch: String,
     kvs: Vec<(String, u32, Vec<u8>)>,
@@ -21,7 +15,13 @@ pub(crate) struct Header {
 }
 
 impl Header {
-    /// The keys every model needs: the architecture and a tokenizer of `n_vocab` tokens.
+    /// Purpose: This function starts a test header with an architecture and a tokenizer.
+    ///
+    /// Inputs:
+    /// - `arch`: the architecture name.
+    /// - `n_vocab`: the number of tokens in the tokenizer.
+    ///
+    /// Outputs: the header.
     pub(crate) fn new(arch: &str, n_vocab: u64) -> Header {
         let mut h = Header { arch: arch.to_owned(), kvs: Vec::new(), tensors: Vec::new() };
         h.str("general.architecture", arch);
@@ -36,6 +36,13 @@ impl Header {
         h
     }
 
+    /// Purpose: This function adds a string key to the header.
+    ///
+    /// Inputs:
+    /// - `key`: the full key.
+    /// - `v`: the value.
+    ///
+    /// Outputs: the header, for chaining.
     pub(crate) fn str(&mut self, key: &str, v: &str) -> &mut Self {
         let mut p = (v.len() as u64).to_le_bytes().to_vec();
         p.extend_from_slice(v.as_bytes());
@@ -43,27 +50,50 @@ impl Header {
         self
     }
 
-    /// `<arch>.<suffix>` as a u32.
+    /// Purpose: This function adds an `<arch>.<suffix>` integer key to the header.
+    ///
+    /// Inputs:
+    /// - `suffix`: the key after the architecture name.
+    /// - `v`: the value.
+    ///
+    /// Outputs: the header, for chaining.
     pub(crate) fn u32(&mut self, suffix: &str, v: u32) -> &mut Self {
         let key = format!("{}.{suffix}", self.arch);
         self.kvs.push((key, 4, v.to_le_bytes().to_vec()));
         self
     }
 
-    /// `<arch>.<suffix>` as an f32.
+    /// Purpose: This function adds an `<arch>.<suffix>` float key to the header.
+    ///
+    /// Inputs:
+    /// - `suffix`: the key after the architecture name.
+    /// - `v`: the value.
+    ///
+    /// Outputs: the header, for chaining.
     pub(crate) fn f32(&mut self, suffix: &str, v: f32) -> &mut Self {
         let key = format!("{}.{suffix}", self.arch);
         self.kvs.push((key, 6, v.to_le_bytes().to_vec()));
         self
     }
 
+    /// Purpose: This function adds a tensor to the header's tensor index.
+    ///
+    /// Inputs:
+    /// - `name`: the tensor's name.
+    /// - `dims`: its dims.
+    /// - `ty`: its ggml type number.
+    ///
+    /// Outputs: the header, for chaining.
     pub(crate) fn tensor(&mut self, name: &str, dims: &[u64], ty: u32) -> &mut Self {
         self.tensors.push((name.to_owned(), dims.to_vec(), ty));
         self
     }
 
-    /// The header bytes, with each tensor's offset aligned to 32 the way gguf.cpp
-    /// writes the data section.
+    /// Purpose: This function writes the header as GGUF bytes.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the bytes.
     pub(crate) fn bytes(&self) -> Vec<u8> {
         let mut b = b"GGUF".to_vec();
         b.extend_from_slice(&3u32.to_le_bytes());
@@ -93,13 +123,17 @@ impl Header {
         b
     }
 
+    /// Purpose: This function opens the header as a model.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the model.
     pub(crate) fn model(&self) -> Model {
         Model::from_headers(&[(PathBuf::from("synthetic.gguf"), self.bytes())]).expect("the synthetic header preflights")
     }
 }
 
-/// A small model shape, large enough that every block-quantized type used in the
-/// tests divides it: rows of 64 and 128, head width 64 so the KV rotation applies.
+/// Purpose: This struct holds the sizes of a small test model.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Shape {
     pub n_layer: u32,
@@ -119,7 +153,14 @@ pub(crate) const SMALL: Shape =
 
 const F32: u32 = 0;
 
-/// The hparams every one of the three architectures reads.
+/// Purpose: This function starts a header with the keys all three test architectures
+/// read.
+///
+/// Inputs:
+/// - `arch`: the architecture name.
+/// - `s`: the model shape.
+///
+/// Outputs: the header.
 fn common(arch: &str, s: &Shape) -> Header {
     let mut h = Header::new(arch, s.n_vocab);
     h.u32("block_count", s.n_layer)
@@ -135,7 +176,16 @@ fn common(arch: &str, s: &Shape) -> Header {
     h
 }
 
-/// Token embeddings, output norm, and the LM head unless the model is tied.
+/// Purpose: This function adds the token embeddings, the output norm and the output
+/// weight.
+///
+/// Inputs:
+/// - `h`: the header to add to.
+/// - `s`: the model shape.
+/// - `ty`: the type of the large weights.
+/// - `tied`: whether to leave out the output weight.
+///
+/// Outputs: none.
 fn ends(h: &mut Header, s: &Shape, ty: u32, tied: bool) {
     h.tensor("token_embd.weight", &[s.n_embd, s.n_vocab], ty);
     h.tensor("output_norm.weight", &[s.n_embd], F32);
@@ -144,7 +194,15 @@ fn ends(h: &mut Header, s: &Shape, ty: u32, tied: bool) {
     }
 }
 
-/// The attention tensors `create_tensor_qkv` and the output projection create.
+/// Purpose: This function adds one layer's attention weights.
+///
+/// Inputs:
+/// - `h`: the header to add to.
+/// - `s`: the model shape.
+/// - `l`: the layer index.
+/// - `ty`: the type of the large weights.
+///
+/// Outputs: none.
 fn attention(h: &mut Header, s: &Shape, l: u32, ty: u32) {
     let q = s.head_dim * s.n_head;
     let kv = s.head_dim * s.n_head_kv;
@@ -155,7 +213,14 @@ fn attention(h: &mut Header, s: &Shape, l: u32, ty: u32) {
     h.tensor(&format!("blk.{l}.attn_output.weight"), &[q, s.n_embd], ty);
 }
 
-/// A qwen3moe header, following `llama_model_qwen3moe::load_arch_tensors`.
+/// Purpose: This function builds a small qwen3moe test header.
+///
+/// Inputs:
+/// - `s`: the model shape.
+/// - `ty`: the type of the large weights.
+/// - `tied`: whether to leave out the output weight.
+///
+/// Outputs: the header.
 pub(crate) fn qwen3moe(s: &Shape, ty: u32, tied: bool) -> Header {
     let mut h = common("qwen3moe", s);
     h.u32("expert_count", u32::try_from(s.n_expert).unwrap())
@@ -175,7 +240,14 @@ pub(crate) fn qwen3moe(s: &Shape, ty: u32, tied: bool) -> Header {
     h
 }
 
-/// A qwen3 header, following `llama_model_qwen3::load_arch_tensors`.
+/// Purpose: This function builds a small qwen3 test header.
+///
+/// Inputs:
+/// - `s`: the model shape.
+/// - `ty`: the type of the large weights.
+/// - `tied`: whether to leave out the output weight.
+///
+/// Outputs: the header.
 pub(crate) fn qwen3(s: &Shape, ty: u32, tied: bool) -> Header {
     let mut h = common("qwen3", s);
     ends(&mut h, s, ty, tied);
@@ -191,8 +263,15 @@ pub(crate) fn qwen3(s: &Shape, ty: u32, tied: bool) -> Header {
     h
 }
 
-/// A llama header, following `llama_model_llama::load_arch_tensors`: dense, or with
-/// `moe` the Mixtral layout of experts `n_ff` wide.
+/// Purpose: This function builds a small llama test header, dense or with experts.
+///
+/// Inputs:
+/// - `s`: the model shape.
+/// - `ty`: the type of the large weights.
+/// - `tied`: whether to leave out the output weight.
+/// - `moe`: whether to add experts.
+///
+/// Outputs: the header.
 pub(crate) fn llama(s: &Shape, ty: u32, tied: bool, moe: bool) -> Header {
     let mut h = common("llama", s);
     if moe {

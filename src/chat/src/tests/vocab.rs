@@ -1,8 +1,16 @@
-//! The vocabulary check: refuse a mismatched pair, accept converter padding.
+//! Author: Joe Ricks
+//! File: src/chat/src/tests/vocab.rs
+//! Description: Tests the vocabulary check.
 
 use super::fixture::{self, Header, WORDS};
 use crate::{vocab, Chat, ChatError, Mismatch};
 
+/// Purpose: This function builds a `Chat` from a test header and the test tokenizer.
+///
+/// Inputs:
+/// - `header`: the test header.
+///
+/// Outputs: the `Chat`, or the error the vocabulary check returned.
 fn build(header: Header) -> Result<Chat, ChatError> {
     Chat::from_gguf(&header.parse(), fixture::tokenizer())
 }

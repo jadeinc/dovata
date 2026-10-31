@@ -1,28 +1,8 @@
-//! Placing short-lived tensors in one region so that ones never alive at the same time
-//! share bytes.
-//!
-//! ## Why it matters
-//!
-//! One forward step of a 48-layer model makes thousands of intermediate tensors, and
-//! almost all of them die a few ops after they are made. Giving each its own bytes would
-//! need gigabytes of scratch. Reusing memory between tensors whose lifetimes do not
-//! overlap brings that down to roughly the largest few that are alive at once.
-//!
-//! ## How
-//!
-//! Greedy by size, the method TensorFlow Lite's arena planner uses: largest request
-//! first, each at the lowest aligned offset that does not overlap any already-placed
-//! request alive at the same time. It is not optimal; the problem is NP-hard, and greedy
-//! by size is close in practice.
-//!
-//! ## Why determinism is a requirement
-//!
-//! The compiler bakes these offsets into the program as constants. If the same model
-//! and layout could produce different offsets on two runs, a rebuild would silently
-//! change the binary. Ties are broken by first use and then by name, so the result
-//! depends only on the requests, never on their order or on hashing.
+//! Author: Joe Ricks
+//! File: src/plan/arena.rs
+//! Description: Places a step's short-lived tensors in one shared memory region.
 
-/// One tensor the arena must place.
+/// Purpose: This struct holds one tensor the arena must place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     /// The tensor's name. Used only to break ties.
@@ -38,12 +18,18 @@ pub struct Request {
 }
 
 impl Request {
+    /// Purpose: This function checks whether two tensors are alive during the same op.
+    ///
+    /// Inputs:
+    /// - `other`: the second tensor; `self` is the first.
+    ///
+    /// Outputs: `true` when their op ranges overlap.
     fn overlaps_in_time(&self, other: &Request) -> bool {
         self.first <= other.last && other.first <= self.last
     }
 }
 
-/// Where each request landed.
+/// Purpose: This struct holds where the arena placed each tensor, and the arena's size.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
     /// `offsets[i]` is the offset of `requests[i]`.
@@ -52,11 +38,24 @@ pub struct Placement {
     pub size: u64,
 }
 
+/// Purpose: This function rounds a byte offset up to a multiple of an alignment.
+///
+/// Inputs:
+/// - `x`: the offset.
+/// - `align`: the alignment, a power of two.
+///
+/// Outputs: the rounded offset.
 fn align_up(x: u64, align: u64) -> u64 {
     x.div_ceil(align) * align
 }
 
-/// Place every request. Same requests in any order give the same offsets.
+/// Purpose: This function places a step's short-lived tensors in one shared memory
+/// region.
+///
+/// Inputs:
+/// - `requests`: the tensors to place, with their sizes and lifetimes.
+///
+/// Outputs: each tensor's byte offset in the region, and the region's total size.
 pub fn assign(requests: &[Request]) -> Placement {
     let mut order: Vec<usize> = (0..requests.len()).collect();
     order.sort_by(|&a, &b| {
@@ -94,9 +93,14 @@ pub fn assign(requests: &[Request]) -> Placement {
     Placement { offsets, size }
 }
 
-/// Check a placement: every offset aligned, and no two requests alive at the same time
-/// share a byte. The planner calls this on its own output, because a violation here
-/// means two tensors overwrite each other on the GPU, which no later check would catch.
+/// Purpose: This function checks that a placement is aligned and that no two live tensors
+/// share a byte.
+///
+/// Inputs:
+/// - `requests`: the tensors that were placed.
+/// - `p`: the placement [`assign`] returned for them.
+///
+/// Outputs: `Ok(())`, or an error naming the first bad tensor or pair.
 pub fn check(requests: &[Request], p: &Placement) -> Result<(), String> {
     for (i, r) in requests.iter().enumerate() {
         if p.offsets[i] % r.align != 0 {
@@ -125,6 +129,15 @@ pub fn check(requests: &[Request], p: &Placement) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Purpose: This function builds a test tensor request with a 256-byte alignment.
+    ///
+    /// Inputs:
+    /// - `name`: the tensor's name.
+    /// - `bytes`: its size in bytes.
+    /// - `first`: the first op that uses it.
+    /// - `last`: the last op that uses it.
+    ///
+    /// Outputs: the [`Request`].
     fn req(name: &str, bytes: u64, first: u32, last: u32) -> Request {
         Request { name: name.into(), bytes, align: 256, first, last }
     }

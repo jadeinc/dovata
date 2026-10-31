@@ -1,43 +1,7 @@
-//! Binding: applying a layout to one model and one set of options, producing the
-//! [`BoundGraph`] the planner reads.
-//!
-//! ## What a bound graph is
-//!
-//! It is one forward step over `n_tokens` tokens, written out in full: every op of every
-//! layer in execution order, and every tensor those ops touch, each with a concrete
-//! shape, `ggml_type` and byte size. Nothing in it refers back to the layout or the
-//! model's metadata. The planner places its tensors; the compiler generates a kernel per
-//! op.
-//!
-//! ## What binding checks
-//!
-//! - The layout is for this model's architecture.
-//! - Every weight the layout requires is in the file, with the shape the layout states.
-//! - Every tensor an op reads resolves: a weight, a declared input, KV or state tensor,
-//!   or an activation an earlier op produced. Using one before it is produced is its own
-//!   error, so a misordered layout is told apart from a misspelled one.
-//! - Every op's inputs satisfy the shape rule ggml's own constructor asserts, and any
-//!   `dims` or `dtype` the op states matches what the rule produces.
-//! - Every tensor in the file is read by at least one op, or is listed in `unused` with
-//!   a reason. A layout cannot drop a weight without saying so.
-//!
-//! Weight types are never part of the layout. A weight's `ggml_type` and size come from
-//! the file, so a Q4_K_M file and a BF16 file of one model bind to the same layout and
-//! differ only in those two fields.
-//!
-//! ## Names
-//!
-//! Variables in a layout are names an op assigns with `out`, as in llama.cpp's
-//! `cur = ggml_rms_norm(ctx0, cur, eps)`; assigning a name again gives a new tensor and
-//! leaves the old one for the ops that already read it. A name first assigned in the
-//! prologue lives for the whole step, which is how `inpL` carries from one layer to the
-//! next. A name first assigned in the block lives for one layer only, so a block cannot
-//! read the previous layer's value by accident.
-//!
-//! A block activation's bound name is the variable and the layer, `ffn_inp-3`, which is
-//! how llama.cpp's `cb()` names graph tensors, so a bound graph can be compared with a
-//! llama.cpp graph dump name for name. A second assignment of a name in the same layer
-//! gets a `#1` suffix, then `#2`.
+//! Author: Joe Ricks
+//! File: src/layout/bind.rs
+//! Description: Binds a layout to one model, giving every op and tensor of one forward
+//! step a concrete shape and size.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -52,7 +16,7 @@ use super::ops::{self, Init, Kind, TInfo};
 use super::symbols::Hparams;
 use super::LayoutError;
 
-/// What binding needs besides the model: the sizes of one step and the KV cache types.
+/// Purpose: This struct holds one forward step's sizes and its KV cache types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BindOptions {
     /// KV cache length in tokens. The KV tensors are sized for this many cells, and the
@@ -71,6 +35,13 @@ pub struct BindOptions {
 }
 
 impl Serialize for BindOptions {
+    /// Purpose: This function writes bind options for JSON, with the KV cache types by
+    /// name.
+    ///
+    /// Inputs:
+    /// - `s`: the serializer.
+    ///
+    /// Outputs: the serializer's result.
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let mut st = s.serialize_struct("BindOptions", 5)?;
         st.serialize_field("n_ctx", &self.n_ctx)?;
@@ -82,19 +53,23 @@ impl Serialize for BindOptions {
     }
 }
 
-/// A tensor's index in [`BoundGraph::tensors`].
+/// Purpose: This struct holds a tensor's index in a bound graph's tensor list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct TensorId(pub u32);
 
 impl TensorId {
-    /// The index into [`BoundGraph::tensors`].
+    /// Purpose: This function returns a tensor id as a list index.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the index.
     pub fn index(self) -> usize {
         self.0 as usize
     }
 }
 
-/// What a tensor is, which decides where the planner puts it.
+/// Purpose: This enum lists the kinds of tensor in a bound graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TensorKind {
@@ -132,7 +107,7 @@ pub enum TensorKind {
     },
 }
 
-/// One tensor of the step.
+/// Purpose: This struct holds one tensor of a bound forward step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoundTensor {
     /// The model's name for a weight; the layout's name for an input, KV or state
@@ -155,7 +130,7 @@ pub struct BoundTensor {
     pub output: bool,
 }
 
-/// A resolved op parameter. Floats are kept as f64 and ggml stores them as f32.
+/// Purpose: This enum holds one op parameter's concrete value.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Param {
@@ -164,7 +139,7 @@ pub enum Param {
     Ints(Vec<i64>),
 }
 
-/// One ggml node of the step.
+/// Purpose: This struct holds one ggml op of a bound forward step.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BoundOp {
     /// The layout op name: a ggml op in lower case. [`super::ops::ggml_enum`] gives the
@@ -182,7 +157,7 @@ pub struct BoundOp {
     pub params: BTreeMap<String, Param>,
 }
 
-/// One forward step of one model, ready to plan.
+/// Purpose: This struct holds every op and tensor of one model's forward step.
 #[derive(Debug, Clone, Serialize)]
 pub struct BoundGraph {
     /// `general.architecture`.
@@ -201,17 +176,32 @@ pub struct BoundGraph {
 }
 
 impl BoundGraph {
-    /// One tensor.
+    /// Purpose: This function returns one tensor of the bound graph.
+    ///
+    /// Inputs:
+    /// - `id`: the tensor's id.
+    ///
+    /// Outputs: the tensor.
     pub fn tensor(&self, id: TensorId) -> &BoundTensor {
         &self.tensors[id.index()]
     }
 
-    /// A tensor by its bound name.
+    /// Purpose: This function finds a tensor by its bound name.
+    ///
+    /// Inputs:
+    /// - `name`: the bound name, such as `ffn_inp-3`.
+    ///
+    /// Outputs: the tensor's id, or `None`.
     pub fn find(&self, name: &str) -> Option<TensorId> {
         self.tensors.iter().position(|t| t.name == name).map(|i| TensorId(u32::try_from(i).unwrap_or(u32::MAX)))
     }
 
-    /// The tensor that owns `id`'s memory: `id` itself, or the `of` of a view.
+    /// Purpose: This function returns the tensor that owns a tensor's memory.
+    ///
+    /// Inputs:
+    /// - `id`: the tensor's id.
+    ///
+    /// Outputs: the tensor itself, or the tensor a view looks into.
     pub fn storage(&self, id: TensorId) -> TensorId {
         match self.tensor(id).kind {
             TensorKind::View { of, .. } => of,
@@ -219,13 +209,18 @@ impl BoundGraph {
         }
     }
 
-    /// Ops whose layer is `layer`.
+    /// Purpose: This function lists the ops of one layer.
+    ///
+    /// Inputs:
+    /// - `layer`: the layer index.
+    ///
+    /// Outputs: the ops, in run order.
     pub fn layer_ops(&self, layer: u32) -> impl Iterator<Item = &BoundOp> {
         self.ops.iter().filter(move |o| o.layer == Some(layer))
     }
 }
 
-/// Whether a weight the layout declares is in the file.
+/// Purpose: This enum records whether a declared weight is in the model file.
 #[derive(Debug, Clone, Copy)]
 enum WeightState {
     /// In the file, or its fallback is.
@@ -234,6 +229,7 @@ enum WeightState {
     Absent,
 }
 
+/// Purpose: This struct holds the state of binding one layout to one model.
 struct Binder<'a> {
     layout: &'a Layout,
     model: &'a Model,
@@ -252,7 +248,7 @@ struct Binder<'a> {
     names: HashMap<String, u32>,
 }
 
-/// The scope an expression is evaluated in.
+/// Purpose: This struct holds the scope an expression is evaluated in during binding.
 struct Eval<'b, 'm> {
     hp: &'b Hparams<'m>,
     model: &'b Model,
@@ -262,6 +258,13 @@ struct Eval<'b, 'm> {
 }
 
 impl Scope for Eval<'_, '_> {
+    /// Purpose: This function returns the value of a name an expression reads during
+    /// binding.
+    ///
+    /// Inputs:
+    /// - `name`: a symbol, `L`, a loop variable, or `src.*`.
+    ///
+    /// Outputs: the value, or an error.
     fn name(&self, name: &str) -> Result<Value, String> {
         if name == "L" {
             return self.layer.map(|l| Value::Int(i64::from(l))).ok_or_else(|| "L outside the block".into());
@@ -284,10 +287,23 @@ impl Scope for Eval<'_, '_> {
         self.hp.value(name, self.layer)
     }
 
+    /// Purpose: This function tells whether the model file holds a tensor.
+    ///
+    /// Inputs:
+    /// - `template`: the tensor name, with its placeholders still in it.
+    ///
+    /// Outputs: `true` when it does.
     fn has(&self, template: &str) -> Result<bool, String> {
         Ok(self.model.tensor(&expand(template, self.layer, self.var)).is_some())
     }
 
+    /// Purpose: This function returns the bytes `n` elements of the op's first input type
+    /// take.
+    ///
+    /// Inputs:
+    /// - `n`: the element count.
+    ///
+    /// Outputs: the size in bytes, or an error.
     fn row_size(&self, n: i64) -> Result<i64, String> {
         let src = self.src.ok_or("row_size without an input")?;
         let n = u64::try_from(n).map_err(|_| "row_size of a negative count")?;
@@ -295,8 +311,14 @@ impl Scope for Eval<'_, '_> {
     }
 }
 
-/// Substitute `{L}` and the loop variable into a tensor name. The parser has already
-/// refused any other placeholder.
+/// Purpose: This function fills the layer index and loop value into a tensor name.
+///
+/// Inputs:
+/// - `template`: the name as the layout writes it.
+/// - `layer`: the layer index, or `None`.
+/// - `var`: the loop variable and its value, or `None`.
+///
+/// Outputs: the full tensor name.
 fn expand(template: &str, layer: Option<u32>, var: Option<(&str, i64)>) -> String {
     let mut out = template.to_owned();
     if let Some(l) = layer {
@@ -308,7 +330,12 @@ fn expand(template: &str, layer: Option<u32>, var: Option<(&str, i64)>) -> Strin
     out
 }
 
-/// ggml's `ne` with trailing 1s dropped, keeping at least one dim.
+/// Purpose: This function drops trailing 1s from a tensor's four dims.
+///
+/// Inputs:
+/// - `ne`: the four dims.
+///
+/// Outputs: the dims, at least one.
 fn trim(ne: [u64; 4]) -> Vec<u64> {
     let mut n = 4;
     while n > 1 && ne[n - 1] == 1 {
@@ -317,6 +344,12 @@ fn trim(ne: [u64; 4]) -> Vec<u64> {
     ne[..n].to_vec()
 }
 
+/// Purpose: This function pads dims out to four with 1s.
+///
+/// Inputs:
+/// - `dims`: the dims.
+///
+/// Outputs: the four dims.
 fn pad(dims: &[u64]) -> [u64; 4] {
     let mut ne = [1u64; 4];
     for (i, d) in dims.iter().take(4).enumerate() {
@@ -326,7 +359,13 @@ fn pad(dims: &[u64]) -> [u64; 4] {
 }
 
 impl Layout {
-    /// Apply this layout to a model. See the module docs for what is checked.
+    /// Purpose: This function binds the layout to a model.
+    ///
+    /// Inputs:
+    /// - `model`: the opened GGUF model.
+    /// - `opts`: the step's sizes and KV cache types.
+    ///
+    /// Outputs: the bound graph, or an error naming the first problem.
     pub fn bind(&self, model: &Model, opts: &BindOptions) -> Result<BoundGraph, LayoutError> {
         if model.architecture() != self.arch {
             return Err(LayoutError::WrongArch { layout: self.arch.clone(), model: model.architecture().to_owned() });
@@ -382,10 +421,25 @@ impl Layout {
 }
 
 impl<'a> Binder<'a> {
+    /// Purpose: This function builds the scope for evaluating an expression.
+    ///
+    /// Inputs:
+    /// - `layer`: the layer index, or `None` outside the block.
+    /// - `var`: the loop variable and its value, or `None`.
+    /// - `src`: the op's first input, or `None`.
+    ///
+    /// Outputs: the scope.
     fn eval(&self, layer: Option<u32>, var: Option<(&'a str, i64)>, src: Option<TInfo>) -> Eval<'_, 'a> {
         Eval { hp: &self.hp, model: self.model, layer, var, src }
     }
 
+    /// Purpose: This function adds a tensor to the bound graph.
+    ///
+    /// Inputs:
+    /// - `t`: the tensor.
+    /// - `shape`: its shape, strides and type.
+    ///
+    /// Outputs: the new tensor's id.
     fn push(&mut self, t: BoundTensor, shape: TInfo) -> TensorId {
         let id = TensorId(u32::try_from(self.tensors.len()).unwrap_or(u32::MAX));
         *self.names.entry(t.name.clone()).or_insert(0) += 1;
@@ -394,7 +448,12 @@ impl<'a> Binder<'a> {
         id
     }
 
-    /// A name no tensor has yet: the base, then `base#1`, `base#2`.
+    /// Purpose: This function picks a tensor name not used yet.
+    ///
+    /// Inputs:
+    /// - `base`: the wanted name.
+    ///
+    /// Outputs: `base`, or `base#1`, `base#2` and so on.
     fn unique(&mut self, base: String) -> String {
         match self.names.get(&base) {
             None => base,
@@ -412,7 +471,11 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// Every tensor of the file, in file order, as a weight.
+    /// Purpose: This function adds every tensor of the model file as a weight.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `Ok(())`, or an error for a type dovata cannot size.
     fn file_tensors(&mut self) -> Result<(), LayoutError> {
         for t in self.model.tensors() {
             let info = t.info;
@@ -437,11 +500,21 @@ impl<'a> Binder<'a> {
         Ok(())
     }
 
-    /// The layers a declaration applies to: every layer when its name has `{L}`.
+    /// Purpose: This function lists the layers a declared name stands for.
+    ///
+    /// Inputs:
+    /// - `name`: the declared name.
+    ///
+    /// Outputs: every layer when the name has `{L}`, else one `None`.
     fn instances(&self, name: &str) -> Vec<Option<u32>> {
         if name.contains("{L}") { (0..self.hp.n_layer()).map(Some).collect() } else { vec![None] }
     }
 
+    /// Purpose: This function checks the layout's weights against the model file.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `Ok(())`, or an error for a missing or wrongly shaped weight.
     fn weight_decls(&mut self) -> Result<(), LayoutError> {
         let layout = self.layout;
         for w in &layout.weights {
@@ -482,6 +555,13 @@ impl<'a> Binder<'a> {
         Ok(())
     }
 
+    /// Purpose: This function adds the layout's declared inputs, KV cache and state
+    /// tensors.
+    ///
+    /// Inputs:
+    /// - `opts`: the bind options.
+    ///
+    /// Outputs: `Ok(())`, or an error.
     fn tensor_decls(&mut self, opts: &BindOptions) -> Result<(), LayoutError> {
         let layout = self.layout;
         for t in &layout.tensors {
@@ -516,6 +596,13 @@ impl<'a> Binder<'a> {
         Ok(())
     }
 
+    /// Purpose: This function binds every op of one layout section.
+    ///
+    /// Inputs:
+    /// - `specs`: the section's ops.
+    /// - `layer`: the layer index, or `None` outside the block.
+    ///
+    /// Outputs: `Ok(())`, or the first error.
     fn section(&mut self, specs: &'a [OpSpec], layer: Option<u32>) -> Result<(), LayoutError> {
         for spec in specs {
             let site = |var: Option<(&str, i64)>| {
@@ -545,7 +632,15 @@ impl<'a> Binder<'a> {
         Ok(())
     }
 
-    /// Find the tensor an input name means here.
+    /// Purpose: This function finds the tensor an op input name refers to.
+    ///
+    /// Inputs:
+    /// - `name`: the full name.
+    /// - `template`: the name as the layout writes it.
+    /// - `optional`: whether the input may be absent.
+    /// - `at`: the place in the layout file, for the error.
+    ///
+    /// Outputs: the tensor's id, `None` for an absent optional input, or an error.
     fn resolve(&mut self, name: &str, template: &str, optional: bool, at: &str) -> Result<Option<TensorId>, LayoutError> {
         if let Some(id) = self.env.get(name) {
             return Ok(Some(*id));
@@ -576,6 +671,15 @@ impl<'a> Binder<'a> {
         Err(LayoutError::UnknownTensor { name: name.to_owned(), at: at.to_owned() })
     }
 
+    /// Purpose: This function binds one op and adds its result tensor.
+    ///
+    /// Inputs:
+    /// - `spec`: the op from the layout.
+    /// - `layer`: the layer index, or `None` outside the block.
+    /// - `var`: the loop variable and its value, or `None`.
+    /// - `at`: the place in the layout file, for the error.
+    ///
+    /// Outputs: `Ok(())`, or an error.
     fn op(&mut self, spec: &'a OpSpec, layer: Option<u32>, var: Option<(&'a str, i64)>, at: &str) -> Result<(), LayoutError> {
         let eval_err = |detail: String| LayoutError::Eval { at: at.to_owned(), detail };
         if let Some(cond) = &spec.when {
@@ -678,7 +782,12 @@ impl<'a> Binder<'a> {
         Ok(())
     }
 
-    /// Every file tensor must be read by an op or listed as unused.
+    /// Purpose: This function checks that every model file tensor is read by an op or
+    /// listed as unused.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `Ok(())`, or an error listing the unread tensors.
     fn unreferenced(&self) -> Result<(), LayoutError> {
         let mut unused: HashSet<String> = HashSet::new();
         for u in &self.layout.unused {

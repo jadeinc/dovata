@@ -43,6 +43,34 @@ testing only. It places the tensors for real and runs one simple call over each,
 prove the weights land where the plan says on split memory: VRAM and host RAM together,
 more than one GPU, or Apple's unified memory.
 
+## Why each capability sits where it does
+
+Every child of `src/` is one capability, named for what it does, and the ones that can
+be compiled out sit behind a cargo feature. They are flat rather than nested, because
+the grouping that helps a reader is the table above, not a directory tree. A flat tree
+invites one question about each directory: why is it here, and not inside a neighbor?
+
+- `load/` is separate from `gguf/` because it is policy. The GGUF reader reports what
+  any file says, even a truncated one, and `load/` decides whether that is enough to
+  plan from.
+- `gguf/` has no dependencies, because it has to run on a laptop against a model no GPU
+  has touched. `load::preflight` reads every model through it, and `gguf-inspect`, a
+  binary of this package, is its command-line tool.
+- `hub/` is a peer of `load/`, not part of it, because it is the one capability that
+  talks to the network. Its pure half, which picks the file to download, always builds;
+  the download itself is behind the `hub` feature.
+- `quantize/` is never called implicitly. Fetching and planning never quantize, so a
+  program that wants a smaller model, such as the Jade compiler, calls it directly. The
+  quant-type table always builds; the call into llama.cpp is behind the `quantize`
+  feature.
+- `layout/` is separate from the planner because a layout is the contract with the Jade
+  compiler's kernels, and the planner only decides where its tensors live. Each built-in
+  layout is one architecture dovata supports.
+- `plan/` is separate from `layout/` because the same layout plans differently on every
+  target machine. It hands the compiler an address table of region and offset pairs.
+- `moe/` is behind the `moe` feature. The planner will use its ranking to decide which
+  experts stay resident in VRAM.
+
 Outside `src/`:
 
 | | |

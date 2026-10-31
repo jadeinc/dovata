@@ -1,27 +1,6 @@
-//! Writing a GGUF file: metadata, the tensor index, and aligned tensor data.
-//!
-//! # Why dovata writes GGUF at all
-//!
-//! dovata never makes a model anyone runs; llama.cpp's quantizer writes the real outputs.
-//! This writer exists for fixtures. The quantize tests need a small model that
-//! llama.cpp's loader accepts, and the reference backend, `refback`, needs models whose
-//! every byte is known, so it can check that each tensor landed where the plan says. A
-//! binary fixture checked into the repo is something nobody can review. Writing it from
-//! a few lines of Rust keeps it readable and lets each test pick its own shapes.
-//!
-//! # What it matches
-//!
-//! The bytes follow `gguf_write_out` in the vendored `ggml/src/gguf.cpp`, format version
-//! 3: the header, the metadata, the tensor index, zero padding up to the alignment, and
-//! then each tensor's data, itself padded to the alignment. gguf.cpp's reader refuses a
-//! tensor whose offset is not the running total of the padded sizes before it, so the
-//! offsets are worked out here and never taken from the caller. The alignment is
-//! `general.alignment` when the caller sets it, and 32 otherwise, the same rule the
-//! reader in [`super`] applies.
-//!
-//! It is small on purpose. A [`Writer`] holds everything in memory and
-//! [`Writer::to_bytes`] lays it out. Fixtures are kilobytes; a real model is not
-//! something to build this way.
+//! Author: Joe Ricks
+//! File: src/gguf/write.rs
+//! Description: Writes small GGUF files for test fixtures.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -38,16 +17,14 @@ pub const MAX_DIMS: usize = 4;
 /// The GGUF format version this writes.
 pub const VERSION: u32 = 3;
 
-/// A GGUF file being put together in memory.
-///
-/// Metadata keeps the order it was set in, and tensors keep the order they were added
-/// in, so the same calls always give the same bytes.
+/// Purpose: This struct holds a GGUF file being built in memory for a test fixture.
 #[derive(Debug, Clone, Default)]
 pub struct Writer {
     metadata: Vec<(String, Value)>,
     tensors: Vec<Tensor>,
 }
 
+/// Purpose: This struct holds one tensor added to a [`Writer`], with its data.
 #[derive(Debug, Clone)]
 struct Tensor {
     name: String,
@@ -57,13 +34,23 @@ struct Tensor {
 }
 
 impl Writer {
-    /// An empty file: no metadata and no tensors.
+    /// Purpose: This function creates an empty GGUF file in memory.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: an empty [`Writer`].
     pub fn new() -> Writer {
         Writer::default()
     }
 
-    /// Set a metadata key. Setting a key again replaces its value and keeps its place,
-    /// because GGUF does not allow a key twice.
+    /// Purpose: This function sets one metadata key, replacing its value if it is already
+    /// set.
+    ///
+    /// Inputs:
+    /// - `key`: the full metadata key.
+    /// - `value`: the value.
+    ///
+    /// Outputs: the writer, for chaining.
     pub fn kv(&mut self, key: impl Into<String>, value: Value) -> &mut Writer {
         let key = key.into();
         match self.metadata.iter_mut().find(|(k, _)| *k == key) {
@@ -73,21 +60,39 @@ impl Writer {
         self
     }
 
-    /// Add a tensor of any `ggml_type` from its raw bytes. `dims` is fastest-varying
-    /// first, as in [`TensorInfo::dims`]. The byte count is checked against the type's
-    /// block layout when the file is laid out, not here, so calls can be chained.
+    /// Purpose: This function adds a tensor of any ggml type from its raw bytes.
+    ///
+    /// Inputs:
+    /// - `name`: the tensor's name.
+    /// - `dims`: its shape, fastest-varying first.
+    /// - `ggml_type`: its `ggml_type` number.
+    /// - `data`: its encoded bytes.
+    ///
+    /// Outputs: the writer, for chaining.
     pub fn tensor(&mut self, name: impl Into<String>, dims: &[u64], ggml_type: u32, data: Vec<u8>) -> &mut Writer {
         self.tensors.push(Tensor { name: name.into(), dims: dims.to_vec(), kind: ggml_type, data });
         self
     }
 
-    /// Add an `F32` tensor from its values.
+    /// Purpose: This function adds an F32 tensor from its values.
+    ///
+    /// Inputs:
+    /// - `name`: the tensor's name.
+    /// - `dims`: its shape, fastest-varying first.
+    /// - `values`: its elements.
+    ///
+    /// Outputs: the writer, for chaining.
     pub fn f32_tensor(&mut self, name: impl Into<String>, dims: &[u64], values: &[f32]) -> &mut Writer {
         let data = values.iter().flat_map(|v| v.to_le_bytes()).collect();
         self.tensor(name, dims, 0, data)
     }
 
-    /// Lay the file out. Fails on anything gguf.cpp would refuse to read back.
+    /// Purpose: This function lays out the whole GGUF file in memory.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the file's bytes, or a [`WriteError`] for anything a GGUF reader would
+    /// refuse.
     pub fn to_bytes(&self) -> Result<Vec<u8>, WriteError> {
         let alignment = self.alignment()?;
 
@@ -128,14 +133,23 @@ impl Writer {
         Ok(b)
     }
 
-    /// Lay the file out and write it to `path`.
+    /// Purpose: This function lays out the GGUF file and writes it to disk.
+    ///
+    /// Inputs:
+    /// - `path`: the file to write.
+    ///
+    /// Outputs: `Ok(())`, or a [`WriteError`].
     pub fn write(&self, path: &Path) -> Result<(), WriteError> {
         let bytes = self.to_bytes()?;
         std::fs::write(path, bytes).map_err(|e| WriteError::Io { path: path.display().to_string(), detail: e.to_string() })
     }
 
-    /// `general.alignment` if set, else the default. The reader refuses anything but a
-    /// `u32` power of two, so this does too.
+    /// Purpose: This function returns the alignment the file's tensor data will use.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `general.alignment` if set, else 32, or an error when the key is not a
+    /// `u32` power of two.
     fn alignment(&self) -> Result<u64, WriteError> {
         match self.metadata.iter().find(|(k, _)| k == KEY_ALIGNMENT) {
             None => Ok(DEFAULT_ALIGNMENT),
@@ -145,7 +159,12 @@ impl Writer {
     }
 }
 
-/// The data size a tensor's shape and type call for, checked against what it holds.
+/// Purpose: This function checks one tensor against what a GGUF reader accepts.
+///
+/// Inputs:
+/// - `t`: the tensor.
+///
+/// Outputs: its data size, or a [`WriteError`].
 fn check_tensor(t: &Tensor) -> Result<u64, WriteError> {
     if t.name.len() > MAX_NAME_LEN {
         return Err(WriteError::NameTooLong(t.name.clone()));
@@ -164,7 +183,12 @@ fn check_tensor(t: &Tensor) -> Result<u64, WriteError> {
     Ok(expected)
 }
 
-/// The GGUF type tag for a value, the same numbering the reader decodes.
+/// Purpose: This function returns the GGUF type tag of a metadata value.
+///
+/// Inputs:
+/// - `v`: the value.
+///
+/// Outputs: the tag, 0 to 12.
 fn tag(v: &Value) -> u32 {
     match v {
         Value::U8(_) => 0,
@@ -183,14 +207,26 @@ fn tag(v: &Value) -> u32 {
     }
 }
 
+/// Purpose: This function appends a GGUF string to the file bytes.
+///
+/// Inputs:
+/// - `b`: the file bytes.
+/// - `s`: the string.
+///
+/// Outputs: none.
 fn put_string(b: &mut Vec<u8>, s: &str) {
     b.extend_from_slice(&(s.len() as u64).to_le_bytes());
     b.extend_from_slice(s.as_bytes());
 }
 
-/// A value's bytes after its type tag. An array writes its element tag and length
-/// first, and every element must share that tag: GGUF arrays are homogeneous, and an
-/// empty one would have no element type to write.
+/// Purpose: This function appends a metadata value's bytes to the file.
+///
+/// Inputs:
+/// - `b`: the file bytes.
+/// - `key`: the value's key, for error messages.
+/// - `v`: the value.
+///
+/// Outputs: `Ok(())`, or an error for an empty, nested or mixed array.
 fn put_payload(b: &mut Vec<u8>, key: &str, v: &Value) -> Result<(), WriteError> {
     match v {
         Value::U8(x) => b.push(*x),
@@ -224,12 +260,19 @@ fn put_payload(b: &mut Vec<u8>, key: &str, v: &Value) -> Result<(), WriteError> 
     Ok(())
 }
 
+/// Purpose: This function appends zero bytes up to the next multiple of the alignment.
+///
+/// Inputs:
+/// - `b`: the file bytes.
+/// - `alignment`: the alignment.
+///
+/// Outputs: none.
 fn pad(b: &mut Vec<u8>, alignment: u64) {
     let len = b.len() as u64;
     b.resize(len.div_ceil(alignment).saturating_mul(alignment) as usize, 0);
 }
 
-/// Why a file could not be laid out or written.
+/// Purpose: This enum lists the errors writing a GGUF file can return.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteError {
     /// `general.alignment` is not a `u32` power of two.
@@ -258,6 +301,12 @@ pub enum WriteError {
 }
 
 impl fmt::Display for WriteError {
+    /// Purpose: This function formats GGUF writer errors.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             WriteError::BadAlignment => write!(f, "{KEY_ALIGNMENT} must be a u32 power of two"),
@@ -288,6 +337,11 @@ mod tests {
     use super::*;
     use crate::gguf::Gguf;
 
+    /// Purpose: This function lists one test metadata value of every GGUF type.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the keys and values.
     fn every_value_type() -> Vec<(&'static str, Value)> {
         vec![
             ("t.u8", Value::U8(200)),

@@ -1,33 +1,6 @@
-//! A pure-Rust reader for the GGUF header: the metadata, the tensor index, and where
-//! the tensor data starts.
-//!
-//! # Why this exists
-//!
-//! Everything dovata decides about a model comes from this header. The planner needs
-//! every tensor's name, shape, `ggml_type`, byte size and file offset to place it in
-//! memory, and the layout binder needs the architecture and hyperparameters to pick and
-//! check a layout. None of that needs the tensor data, so none of it needs llama.cpp.
-//!
-//! It has no dependencies and never reads the tensor data. It runs on a laptop, and,
-//! because a GGUF puts all its metadata and its tensor index up front, it works on the
-//! first few megabytes of a file fetched with an HTTP range request. You can plan a
-//! model before downloading 18 GB of it.
-//!
-//! # What it deliberately does not do
-//!
-//! It does not decide whether llama.cpp *supports* an architecture. That answer lives
-//! in llama.cpp's `LLM_ARCH_NAMES` table at whatever commit we have pinned, it changes
-//! release to release, and a copy of it here would rot into a confident lie. This module
-//! reports what the file claims; [`Report`] pairs that with the keys llama.cpp is known
-//! to read. Which architectures dovata can *plan* is a separate question, answered by
-//! the built-in layouts.
-//!
-//! # Format
-//!
-//! GGUF is a header of typed key/value metadata followed by a tensor index and then the
-//! tensor data. Little-endian throughout. Versions 2 and 3 use 64-bit lengths and counts;
-//! version 1 used 32-bit ones and predates every model we ship, so it is rejected with a
-//! clear message rather than half-supported.
+//! Author: Joe Ricks
+//! File: src/gguf/mod.rs
+//! Description: Reads a GGUF model file's header without llama.cpp.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -66,7 +39,7 @@ pub const KEY_SPLIT_TENSORS_COUNT: &str = "split.tensors.count";
 /// in the vendored `ggml/include/gguf.h`.
 pub const DEFAULT_ALIGNMENT: u64 = 32;
 
-/// A parsed GGUF metadata value. Mirrors the format's type tags one for one.
+/// Purpose: This enum holds one parsed GGUF metadata value, one variant per GGUF type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     U8(u8),
@@ -87,7 +60,11 @@ pub enum Value {
 }
 
 impl Value {
-    /// The value as a string slice, if it is one.
+    /// Purpose: This function returns a metadata value as a string, if it is one.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the string, or `None` for any other type.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::String(s) => Some(s),
@@ -95,9 +72,13 @@ impl Value {
         }
     }
 
-    /// The value widened to `u64`, for any unsigned or non-negative signed integer.
-    /// Hyperparameters are written with whatever width the converter felt like, so
-    /// reading them by concrete type is a portability bug waiting to happen.
+    /// Purpose: This function returns a metadata value as a `u64`, whatever integer width
+    /// it was written at.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the number, or `None` for a negative integer or a value that is not an
+    /// integer.
     pub fn as_u64(&self) -> Option<u64> {
         match *self {
             Value::U8(v) => Some(u64::from(v)),
@@ -112,7 +93,11 @@ impl Value {
         }
     }
 
-    /// Number of elements, for an array.
+    /// Purpose: This function returns how many elements a metadata array holds.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the count, or `None` when the value is not an array.
     pub fn len(&self) -> Option<usize> {
         match self {
             Value::Array(v) => Some(v.len()),
@@ -120,7 +105,11 @@ impl Value {
         }
     }
 
-    /// The short type name, as GGUF spells it.
+    /// Purpose: This function returns the GGUF name of a metadata value's type.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: a name such as `u32`, `str` or `array`.
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::U8(_) => "u8",
@@ -141,6 +130,12 @@ impl Value {
 }
 
 impl fmt::Display for Value {
+    /// Purpose: This function formats a GGUF metadata value as one short line of text.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::U8(v) => write!(f, "{v}"),
@@ -167,8 +162,8 @@ impl fmt::Display for Value {
     }
 }
 
-/// One entry of the tensor index: enough to know what a tensor is called, how big it is,
-/// and what type it was quantized to. The tensor *data* is never read.
+/// Purpose: This struct holds one entry of a GGUF tensor index: a tensor's name, shape,
+/// type and data offset.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TensorInfo {
     /// Name, e.g. `blk.0.attn_q.weight`. llama.cpp matches these against the per-arch
@@ -184,19 +179,22 @@ pub struct TensorInfo {
 }
 
 impl TensorInfo {
-    /// Element count, the product of the dimensions.
+    /// Purpose: This function returns how many elements a tensor holds.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the product of its dimensions.
     pub fn elements(&self) -> u64 {
         self.dims.iter().product()
     }
 
-    /// Size of the tensor's data in bytes, the way ggml's `ggml_nbytes` computes it for
-    /// a contiguous tensor.
+    /// Purpose: This function returns the size of a tensor's data in bytes, as ggml's
+    /// `ggml_nbytes` computes it.
     ///
-    /// Quantized types store whole blocks, so the first dimension has to be a multiple
-    /// of the block size; ggml refuses a row that is not. `None` when the type is one
-    /// [`ggml_type_layout`] does not know, when the first dimension does not divide into
-    /// blocks, or when the product overflows. A guessed size here would place the next
-    /// tensor on top of this one.
+    /// Inputs: none.
+    ///
+    /// Outputs: the byte count, or `None` when the type is unknown, the first dimension
+    /// does not divide into whole blocks, or the size overflows.
     pub fn bytes(&self) -> Option<u64> {
         let (block_elems, block_bytes) = ggml_type_layout(self.kind)?;
         let row = *self.dims.first().unwrap_or(&1);
@@ -208,9 +206,8 @@ impl TensorInfo {
     }
 }
 
-/// Where a file sits in a split model. Large uploads come as several files named
-/// `<name>-00001-of-00003.gguf`, written by llama.cpp's `gguf-split`. Only part 0 carries
-/// the model's metadata; every part carries its own tensor index and data.
+/// Purpose: This struct holds where a file sits in a model split across several GGUF
+/// files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Split {
     /// This file's index, from 0.
@@ -221,7 +218,7 @@ pub struct Split {
     pub tensors_count: u64,
 }
 
-/// A parsed GGUF header.
+/// Purpose: This struct holds a parsed GGUF header: its metadata and tensor index.
 #[derive(Debug, Clone)]
 pub struct Gguf {
     /// Format version. 2 and 3 are supported.
@@ -248,11 +245,14 @@ pub struct Gguf {
 }
 
 impl Gguf {
-    /// Parse a GGUF header from bytes.
+    /// Purpose: This function parses a GGUF header from the bytes at the start of a model
+    /// file.
     ///
-    /// The input may be a whole model file or just its leading bytes. Metadata must be
-    /// complete or this errors; a tensor index cut short only sets [`Gguf::truncated`],
-    /// because reading a header over an HTTP range request is a first-class use.
+    /// Inputs:
+    /// - `bytes`: a whole GGUF file, or only its first bytes.
+    ///
+    /// Outputs: the parsed [`Gguf`], or an [`Error`] when the bytes are not a usable GGUF
+    /// header.
     pub fn parse(bytes: &[u8]) -> Result<Gguf, Error> {
         let mut r = Reader { bytes, pos: 0 };
 
@@ -313,26 +313,43 @@ impl Gguf {
         Ok(Gguf { version, tensor_count, metadata, tensors, truncated, alignment, data_offset })
     }
 
-    /// Look up one tensor by name.
+    /// Purpose: This function finds one tensor in the tensor index by name.
+    ///
+    /// Inputs:
+    /// - `name`: the tensor's name.
+    ///
+    /// Outputs: the tensor's entry, or `None`.
     pub fn tensor(&self, name: &str) -> Option<&TensorInfo> {
         self.tensors.iter().find(|t| t.name == name)
     }
 
-    /// Where a tensor's data starts in the file: [`Gguf::data_offset`] plus the
-    /// tensor's own offset. `None` for a truncated index.
+    /// Purpose: This function returns where a tensor's data starts, counted from the
+    /// start of the file.
+    ///
+    /// Inputs:
+    /// - `t`: a tensor from this header's index.
+    ///
+    /// Outputs: the offset, or `None` when the tensor index is truncated.
     pub fn file_offset(&self, t: &TensorInfo) -> Option<u64> {
         self.data_offset?.checked_add(t.offset)
     }
 
-    /// The `llama_ftype` the file declares in `general.file_type`, such as 15 for
-    /// `Q4_K_M`. A label for the file as a whole; individual tensors keep their own
-    /// types, and a "Q4_K_M" file still holds F32 norms and Q6_K output weights.
+    /// Purpose: This function returns the file's quantization type from
+    /// `general.file_type`.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the `llama_ftype` number, or `None` when the key is absent.
     pub fn file_type(&self) -> Option<u32> {
         self.u64(KEY_FILE_TYPE).and_then(|v| u32::try_from(v).ok())
     }
 
-    /// Where this file sits in a split model, or `None` when the model is one file.
-    /// A file that declares `split.count` of 1 is not split either.
+    /// Purpose: This function returns where this file sits in a model split across
+    /// several files.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the part number and counts, or `None` when the model is one file.
     pub fn split(&self) -> Option<Split> {
         let count = u16::try_from(self.u64(KEY_SPLIT_COUNT)?).ok()?;
         if count <= 1 {
@@ -345,43 +362,60 @@ impl Gguf {
         })
     }
 
-    /// Look up one metadata key.
+    /// Purpose: This function finds one metadata value by key.
+    ///
+    /// Inputs:
+    /// - `key`: the full metadata key, such as `general.architecture`.
+    ///
+    /// Outputs: the value, or `None` when the key is absent.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.metadata.iter().find(|(k, _)| k == key).map(|(_, v)| v)
     }
 
-    /// A metadata key as a string.
+    /// Purpose: This function finds one metadata value by key and returns it as a string.
+    ///
+    /// Inputs:
+    /// - `key`: the full metadata key.
+    ///
+    /// Outputs: the string, or `None`.
     pub fn string(&self, key: &str) -> Option<&str> {
         self.get(key).and_then(Value::as_str)
     }
 
-    /// A metadata key as an unsigned integer, whatever width it was written at.
+    /// Purpose: This function finds one metadata value by key and returns it as a `u64`.
+    ///
+    /// Inputs:
+    /// - `key`: the full metadata key.
+    ///
+    /// Outputs: the number, or `None`.
     pub fn u64(&self, key: &str) -> Option<u64> {
         self.get(key).and_then(Value::as_u64)
     }
 
-    /// The architecture string — `general.architecture`.
+    /// Purpose: This function returns the model architecture from `general.architecture`.
     ///
-    /// This is the field that decides whether the file loads at all. llama.cpp looks it
-    /// up in `LLM_ARCH_NAMES`; a miss is the `unknown model architecture` error, and a
-    /// hit selects the hyperparameter keys and tensor-name mapping everything after it
-    /// depends on. It is a controlled vocabulary — `qwen3moe`, `llama`, `gemma3` — not
-    /// a marketing name, so a "Qwen3.5" release may well still declare `qwen3moe`.
+    /// Inputs: none.
+    ///
+    /// Outputs: a name such as `qwen3moe`, or `None` when the key is absent.
     pub fn architecture(&self) -> Option<&str> {
         self.string(KEY_ARCHITECTURE)
     }
 
-    /// The human-readable name — `general.name`.
+    /// Purpose: This function returns the model name from `general.name`.
     ///
-    /// Free text set by whoever ran the conversion. llama.cpp does nothing with it, and
-    /// neither does dovata's planning: two GGUFs of the same model from different
-    /// publishers often disagree here. Select on [`Gguf::architecture`] instead.
+    /// Inputs: none.
+    ///
+    /// Outputs: the name, or `None` when the key is absent.
     pub fn name(&self) -> Option<&str> {
         self.string(KEY_NAME)
     }
 
-    /// Every metadata key under the architecture's own namespace, in file order.
-    /// These are the hyperparameters llama.cpp reads once it knows the arch.
+    /// Purpose: This function lists the metadata keys under the architecture's own
+    /// prefix.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: each key and value, in file order.
     pub fn arch_params(&self) -> Vec<(&str, &Value)> {
         let Some(arch) = self.architecture() else {
             return Vec::new();
@@ -394,17 +428,23 @@ impl Gguf {
             .collect()
     }
 
-    /// True when the file declares a mixture-of-experts model, i.e. it carries a
-    /// non-zero expert count. Decided from metadata, not from the arch name, because
-    /// several architectures cover both dense and MoE variants.
+    /// Purpose: This function checks whether the file declares a mixture-of-experts
+    /// model.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `true` when `<arch>.expert_count` is above zero.
     pub fn is_moe(&self) -> bool {
         self.architecture()
             .and_then(|a| self.u64(&format!("{a}.expert_count")))
             .is_some_and(|n| n > 0)
     }
 
-    /// Quantization mix: how many tensors of each `ggml_type`, most common first.
-    /// Empty when the tensor index was truncated away.
+    /// Purpose: This function counts how many tensors have each tensor type.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: each type name and count, most common first.
     pub fn quant_mix(&self) -> Vec<(&'static str, usize)> {
         let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
         for t in &self.tensors {
@@ -415,13 +455,18 @@ impl Gguf {
         v
     }
 
-    /// Check the file against the keys llama.cpp reads for its declared architecture.
+    /// Purpose: This function checks the file against the metadata keys llama.cpp reads.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: a [`Report`] of each key, whether it is required, and what was found.
     pub fn report(&self) -> Report {
         Report::of(self)
     }
 }
 
-/// Whether a key llama.cpp reads is present, and what happens when it is not.
+/// Purpose: This struct holds whether one metadata key llama.cpp reads is present in a
+/// GGUF file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Check {
     /// The fully-qualified metadata key, with the architecture already substituted in.
@@ -435,19 +480,18 @@ pub struct Check {
 }
 
 impl Check {
-    /// A required key that is not there.
+    /// Purpose: This function checks whether a required metadata key is missing.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `true` when the key is required and absent.
     pub fn is_blocking(&self) -> bool {
         self.required && self.found.is_none()
     }
 }
 
-/// The result of checking a file against what llama.cpp reads.
-///
-/// This is a *guide*, not a transcription of the loader. The set of keys any one
-/// architecture demands lives in llama.cpp's `llm_load_hparams` and moves; what is
-/// listed here is the core every architecture in the llama family shares, plus the MoE
-/// and tokenizer keys. A clean report means "nothing obviously missing", never
-/// "guaranteed to load".
+/// Purpose: This struct holds the result of checking a GGUF file against the metadata
+/// keys llama.cpp reads.
 #[derive(Debug, Clone)]
 pub struct Report {
     /// The declared architecture, if any.
@@ -459,6 +503,13 @@ pub struct Report {
 }
 
 impl Report {
+    /// Purpose: This function builds the report of which llama.cpp metadata keys a header
+    /// has.
+    ///
+    /// Inputs:
+    /// - `g`: the parsed GGUF header.
+    ///
+    /// Outputs: the [`Report`].
     fn of(g: &Gguf) -> Report {
         let arch = g.architecture().map(str::to_owned);
         let mut checks = Vec::new();
@@ -539,13 +590,17 @@ impl Report {
         Report { architecture: Some(arch), name: g.name().map(str::to_owned), checks }
     }
 
-    /// Required keys that are missing. Empty is the good case.
+    /// Purpose: This function lists the required metadata keys that are missing.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the failed required checks; empty when nothing is missing.
     pub fn blocking(&self) -> Vec<&Check> {
         self.checks.iter().filter(|c| c.is_blocking()).collect()
     }
 }
 
-/// What went wrong reading a header.
+/// Purpose: This enum lists the errors reading a GGUF header can return.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     /// The first four bytes were not `GGUF`.
@@ -565,12 +620,25 @@ pub enum Error {
 }
 
 impl Error {
+    /// Purpose: This function wraps a header error with the index of the metadata entry
+    /// it happened in.
+    ///
+    /// Inputs:
+    /// - `index`: the metadata entry's position, from 0.
+    ///
+    /// Outputs: an [`Error::AtKv`].
     fn at_kv(self, index: u64) -> Error {
         Error::AtKv { index, inner: Box::new(self) }
     }
 }
 
 impl fmt::Display for Error {
+    /// Purpose: This function formats GGUF header reading errors.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::NotGguf { found } => {
@@ -596,15 +664,20 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// A cursor over the header bytes. Every read is bounds-checked; nothing panics on a
-/// malformed or truncated file, because "point this at a half-downloaded model" is a
-/// thing people will do.
+/// Purpose: This struct reads values from GGUF header bytes, checking every read against
+/// the end of the input.
 struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Reader<'a> {
+    /// Purpose: This function reads the next `n` bytes of the header.
+    ///
+    /// Inputs:
+    /// - `n`: how many bytes to read.
+    ///
+    /// Outputs: the bytes, or an error when the input ends first.
     fn take(&mut self, n: usize) -> Result<&'a [u8], Error> {
         let end = self.pos.checked_add(n).ok_or(Error::Implausible("length overflow"))?;
         if end > self.bytes.len() {
@@ -615,16 +688,32 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
+    /// Purpose: This function reads a little-endian `u32` from the header.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the number, or an error when the input ends first.
     fn u32(&mut self) -> Result<u32, Error> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
+    /// Purpose: This function reads a little-endian `u64` from the header.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the number, or an error when the input ends first.
     fn u64(&mut self) -> Result<u64, Error> {
         let b = self.take(8)?;
         Ok(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
     }
 
+    /// Purpose: This function reads a GGUF string, a length followed by UTF-8 bytes, from
+    /// the header.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the string, or an error when it is cut off or not UTF-8.
     fn string(&mut self) -> Result<String, Error> {
         let len = self.u64()?;
         // A length longer than the whole input is either corruption or a wrong-endian
@@ -634,11 +723,22 @@ impl<'a> Reader<'a> {
         std::str::from_utf8(b).map(str::to_owned).map_err(|_| Error::BadUtf8)
     }
 
+    /// Purpose: This function reads one metadata value and its type tag from the header.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the value, or an error.
     fn value(&mut self) -> Result<Value, Error> {
         let tag = self.u32()?;
         self.value_of_type(tag)
     }
 
+    /// Purpose: This function reads one metadata value of a known type from the header.
+    ///
+    /// Inputs:
+    /// - `tag`: the GGUF type tag, 0 to 12.
+    ///
+    /// Outputs: the value, or an error.
     fn value_of_type(&mut self, tag: u32) -> Result<Value, Error> {
         Ok(match tag {
             0 => Value::U8(self.take(1)?[0]),
@@ -684,6 +784,11 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// Purpose: This function reads one tensor index entry from the header.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the tensor's name, shape, type and offset, or an error.
     fn tensor_info(&mut self) -> Result<TensorInfo, Error> {
         let name = self.string()?;
         let n_dims = self.u32()?;
@@ -700,11 +805,12 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Name for a `ggml_type` tag.
+/// Purpose: This function returns the name of a ggml tensor type.
 ///
-/// Only the types we might actually meet in a published GGUF are named. The enum grows
-/// upstream every few releases, so an unknown tag renders as `type N` rather than being
-/// guessed at — a wrong quant name in a report is worse than an honest number.
+/// Inputs:
+/// - `t`: the `ggml_type` number.
+///
+/// Outputs: a name such as `Q4_K`, or `type ?` when unknown.
 pub fn ggml_type_name(t: u32) -> &'static str {
     match t {
         0 => "F32",
@@ -745,13 +851,12 @@ pub fn ggml_type_name(t: u32) -> &'static str {
     }
 }
 
-/// How a `ggml_type` stores its elements: `(elements per block, bytes per block)`.
+/// Purpose: This function returns how a ggml tensor type packs its elements into blocks.
 ///
-/// Copied from `type_traits` in the vendored `ggml/src/ggml.c`, read through
-/// `ggml_get_type_traits` rather than worked out from the struct definitions. Plain
-/// types are blocks of one element. Retired tags, such as 4, 5 and 31 to 33, return
-/// `None`, and so does any tag newer than this table: a size that is wrong by a few
-/// bytes per block makes every offset after it wrong.
+/// Inputs:
+/// - `t`: the `ggml_type` number.
+///
+/// Outputs: `(elements per block, bytes per block)`, or `None` when unknown.
 pub fn ggml_type_layout(t: u32) -> Option<(u64, u64)> {
     Some(match t {
         0 => (1, 4),      // F32
@@ -792,7 +897,13 @@ pub fn ggml_type_layout(t: u32) -> Option<(u64, u64)> {
     })
 }
 
-/// Truncate for display, with an ellipsis when something was cut.
+/// Purpose: This function shortens a string for display, adding an ellipsis when it cuts.
+///
+/// Inputs:
+/// - `s`: the text.
+/// - `max`: the most characters to keep.
+///
+/// Outputs: the shortened text.
 fn elide(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();
@@ -805,8 +916,13 @@ fn elide(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
-    /// Build a minimal but well-formed GGUF header in memory, so the parser is tested
-    /// without a model file. Values are `(key, type tag, encoded bytes)`.
+    /// Purpose: This function builds a small test GGUF header in memory.
+    ///
+    /// Inputs:
+    /// - `kvs`: metadata entries, as `(key, type tag, encoded value)`.
+    /// - `tensor_count`: the tensor count the header declares.
+    ///
+    /// Outputs: the header bytes, with no tensor index entries.
     fn build(kvs: &[(&str, u32, Vec<u8>)], tensor_count: u64) -> Vec<u8> {
         let mut b = Vec::new();
         b.extend_from_slice(&MAGIC);
@@ -822,12 +938,24 @@ mod tests {
         b
     }
 
+    /// Purpose: This function encodes a string as a test metadata value.
+    ///
+    /// Inputs:
+    /// - `s`: the string.
+    ///
+    /// Outputs: the type tag and the encoded bytes.
     fn str_val(s: &str) -> (u32, Vec<u8>) {
         let mut v = (s.len() as u64).to_le_bytes().to_vec();
         v.extend_from_slice(s.as_bytes());
         (8, v)
     }
 
+    /// Purpose: This function encodes a `u32` as a test metadata value.
+    ///
+    /// Inputs:
+    /// - `n`: the number.
+    ///
+    /// Outputs: the type tag and the encoded bytes.
     fn u32_val(n: u32) -> (u32, Vec<u8>) {
         (4, n.to_le_bytes().to_vec())
     }
@@ -945,7 +1073,16 @@ mod tests {
         assert!(moe.report().checks.iter().any(|c| c.key == "qwen3moe.expert_used_count"));
     }
 
-    /// One tensor-index entry, encoded the way gguf.cpp writes it.
+    /// Purpose: This function encodes one test tensor index entry the way gguf.cpp writes
+    /// it.
+    ///
+    /// Inputs:
+    /// - `name`: the tensor's name.
+    /// - `dims`: its shape.
+    /// - `kind`: its `ggml_type` number.
+    /// - `offset`: its offset in the data section.
+    ///
+    /// Outputs: the encoded entry.
     fn tensor_entry(name: &str, dims: &[u64], kind: u32, offset: u64) -> Vec<u8> {
         let mut b = (name.len() as u64).to_le_bytes().to_vec();
         b.extend_from_slice(name.as_bytes());

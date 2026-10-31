@@ -1,24 +1,6 @@
-//! A model as dovata plans it: one GGUF file, or every part of a split one.
-//!
-//! ## Why split models are one value
-//!
-//! Large uploads come as several files, `<name>-00001-of-00003.gguf` and so on, written
-//! by llama.cpp's `gguf-split`. Part 1 carries the model's metadata; every part carries
-//! its own tensor index and its own data section. A split model is still one model, so
-//! everything after this point sees one [`Model`] with one list of tensors, each tagged
-//! with the part it lives in.
-//!
-//! The parts are not merged into one file. Each keeps its own file offsets, so on a CPU
-//! target the planner maps each part as its own region and addresses its tensors at
-//! their offsets in that file. A merge would copy hundreds of gigabytes to save nothing.
-//!
-//! ## What is checked
-//!
-//! Part 1 passes [`Preflight`]. Every other part must be a complete header whose
-//! `split.no` and `split.count` match its place, the tensor counts must add up to
-//! `split.tensors.count`, and no tensor name may appear twice. A mismatch here means a
-//! part from a different upload or a different quantization, which would otherwise plan
-//! fine and compute garbage.
+//! Author: Joe Ricks
+//! File: src/load/model.rs
+//! Description: Opens a model stored in one GGUF file or split across several.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -28,7 +10,8 @@ use sha2::{Digest, Sha256};
 use crate::gguf::{Gguf, TensorInfo};
 use crate::load::preflight::{self, Preflight};
 
-/// One tensor of the model, wherever it lives.
+/// Purpose: This struct holds one tensor of a model, with the part file it is in and its
+/// offset there.
 #[derive(Debug, Clone, Copy)]
 pub struct TensorRef<'a> {
     /// Which part file holds it, from 0. Always 0 for a one-file model.
@@ -39,7 +22,8 @@ pub struct TensorRef<'a> {
     pub file_offset: u64,
 }
 
-/// A model that passed preflight, with every part's header read.
+/// Purpose: This struct holds a model that passed preflight, with every part file's
+/// header.
 #[derive(Debug, Clone)]
 pub struct Model {
     /// Part 1's preflight, including its parsed header.
@@ -52,9 +36,8 @@ pub struct Model {
     identity: Vec<PartIdentity>,
 }
 
-/// What identifies one part file, so a program can refuse a file other than the one a
-/// plan was made from. The plan's offsets are compiled in as constants; mapping a
-/// different file would read the wrong bytes with no error.
+/// Purpose: This struct holds what identifies one GGUF part file: its header hash and
+/// expected size.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct PartIdentity {
     /// SHA-256 of the file's first `data_offset` bytes, the metadata and the tensor
@@ -68,6 +51,13 @@ pub struct PartIdentity {
 }
 
 impl PartIdentity {
+    /// Purpose: This function computes a part file's header hash and expected file size.
+    ///
+    /// Inputs:
+    /// - `bytes`: the start of the file, holding its whole header.
+    /// - `g`: the same bytes, parsed.
+    ///
+    /// Outputs: the [`PartIdentity`].
     fn of(bytes: &[u8], g: &Gguf) -> PartIdentity {
         let data = g.data_offset.unwrap_or(bytes.len() as u64);
         let header = &bytes[..usize::try_from(data).unwrap_or(bytes.len()).min(bytes.len())];
@@ -81,8 +71,14 @@ impl PartIdentity {
 }
 
 impl Model {
-    /// Open a model from its first file. For a split model, the other parts are found
-    /// next to it by llama.cpp's naming rule, `<prefix>-%05d-of-%05d.gguf`.
+    /// Purpose: This function opens a model from its file, or from the first part of a
+    /// split model.
+    ///
+    /// Inputs:
+    /// - `path`: the model file, or its first part.
+    ///
+    /// Outputs: the [`Model`], or an [`Error`] when a file is unreadable or does not
+    /// belong.
     pub fn open(path: &Path) -> Result<Model, Error> {
         let first = read_head(path).map_err(|detail| preflight::Error::Unreadable { path: path.display().to_string(), detail })?;
         let preflight = Preflight::evaluate(&first)?;
@@ -93,8 +89,12 @@ impl Model {
         Self::read_rest(preflight, &first, paths)
     }
 
-    /// Open a model from an explicit list of part files, part 1 first, such as the list
-    /// a Hub download returns.
+    /// Purpose: This function opens a model from a list of its part files.
+    ///
+    /// Inputs:
+    /// - `paths`: every part file, first part first.
+    ///
+    /// Outputs: the [`Model`], or an [`Error`].
     pub fn from_parts(paths: &[PathBuf]) -> Result<Model, Error> {
         let path = paths.first().ok_or(Error::NoParts)?;
         let first = read_head(path).map_err(|detail| preflight::Error::Unreadable { path: path.display().to_string(), detail })?;
@@ -102,6 +102,15 @@ impl Model {
         Self::read_rest(preflight, &first, paths.to_vec())
     }
 
+    /// Purpose: This function reads the headers of every part after the first and checks
+    /// the set.
+    ///
+    /// Inputs:
+    /// - `preflight`: the first part's preflight result.
+    /// - `first`: the first part's header bytes.
+    /// - `paths`: every part's path, first part first.
+    ///
+    /// Outputs: the [`Model`], or an [`Error`].
     fn read_rest(preflight: Preflight, first: &[u8], paths: Vec<PathBuf>) -> Result<Model, Error> {
         let mut identity = vec![PartIdentity::of(first, &preflight.gguf)];
         let mut rest = Vec::new();
@@ -115,8 +124,12 @@ impl Model {
         Self::assemble(preflight, paths, rest, identity)
     }
 
-    /// Build a model from header bytes already in memory, part 1 first. Pure, so this is
-    /// what the tests across the crate use. The paths are labels only.
+    /// Purpose: This function builds a model from GGUF header bytes already in memory.
+    ///
+    /// Inputs:
+    /// - `parts`: each part's path and header bytes, first part first.
+    ///
+    /// Outputs: the [`Model`], or an [`Error`].
     pub fn from_headers(parts: &[(PathBuf, Vec<u8>)]) -> Result<Model, Error> {
         let (first_path, first) = parts.first().ok_or(Error::NoParts)?;
         let preflight = Preflight::evaluate(first)?;
@@ -132,6 +145,16 @@ impl Model {
         Self::assemble(preflight, paths, rest, identity)
     }
 
+    /// Purpose: This function checks that a set of part files forms one complete model
+    /// and builds it.
+    ///
+    /// Inputs:
+    /// - `preflight`: the first part's preflight result.
+    /// - `paths`: every part's path.
+    /// - `rest`: the parsed headers of the later parts.
+    /// - `identity`: every part's identity.
+    ///
+    /// Outputs: the [`Model`], or an [`Error`] naming the first failed check.
     fn assemble(preflight: Preflight, paths: Vec<PathBuf>, rest: Vec<Gguf>, identity: Vec<PartIdentity>) -> Result<Model, Error> {
         let expected = preflight.split.map_or(1, |s| usize::from(s.count));
         if paths.len() != expected {
@@ -166,31 +189,49 @@ impl Model {
         Ok(model)
     }
 
-    /// `general.architecture`.
+    /// Purpose: This function returns the model's architecture, such as `qwen3moe`.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the `general.architecture` string.
     pub fn architecture(&self) -> &str {
         &self.preflight.architecture
     }
 
-    /// Part 1's header, the one with the model's metadata.
+    /// Purpose: This function returns the first part's GGUF header, which holds the
+    /// model's metadata.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the header.
     pub fn meta(&self) -> &Gguf {
         &self.preflight.gguf
     }
 
-    /// How many files the model is stored in.
+    /// Purpose: This function returns how many files the model is stored in.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the part count.
     pub fn part_count(&self) -> usize {
         1 + self.rest.len()
     }
 
-    /// One part's header, from 0.
+    /// Purpose: This function returns one part file's GGUF header.
     ///
-    /// # Panics
+    /// Inputs:
+    /// - `i`: the part's index, from 0.
     ///
-    /// When `i` is not below [`Model::part_count`].
+    /// Outputs: the header; panics when `i` is not below [`Model::part_count`].
     pub fn part(&self, i: usize) -> &Gguf {
         if i == 0 { &self.preflight.gguf } else { &self.rest[i - 1] }
     }
 
-    /// Every tensor, part by part, each in its file's index order.
+    /// Purpose: This function lists every tensor of the model across all its part files.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: each tensor with its part and file offset.
     pub fn tensors(&self) -> impl Iterator<Item = TensorRef<'_>> {
         (0..self.part_count()).flat_map(move |i| {
             let g = self.part(i);
@@ -205,19 +246,33 @@ impl Model {
         })
     }
 
-    /// One tensor by name.
+    /// Purpose: This function finds one tensor of the model by name.
+    ///
+    /// Inputs:
+    /// - `name`: the tensor's name.
+    ///
+    /// Outputs: the tensor, or `None`.
     pub fn tensor(&self, name: &str) -> Option<TensorRef<'_>> {
         self.tensors().find(|t| t.info.name == name)
     }
 
-    /// Each part's identity, part 1 first.
+    /// Purpose: This function returns each part file's header hash and expected size.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: one [`PartIdentity`] per part, first part first.
     pub fn identity(&self) -> &[PartIdentity] {
         &self.identity
     }
 }
 
-/// Read the first [`preflight::HEADER_BUDGET`] bytes of a file. Later parts carry no
-/// metadata, so preflight does not apply to them; [`Model::assemble`] checks them.
+/// Purpose: This function reads at most [`preflight::HEADER_BUDGET`] bytes from the start
+/// of a file.
+///
+/// Inputs:
+/// - `path`: the file.
+///
+/// Outputs: the bytes, or the I/O error's text.
 fn read_head(path: &Path) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -226,9 +281,14 @@ fn read_head(path: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// The paths of every part of a split model, from the path of any one of them, by
-/// llama.cpp's `llama_split_path` rule: `<prefix>-%05d-of-%05d.gguf`. `None` when the
-/// file name does not follow it.
+/// Purpose: This function names every part file of a split model by llama.cpp's naming
+/// rule.
+///
+/// Inputs:
+/// - `path`: the path of any part.
+/// - `count`: how many parts the model has.
+///
+/// Outputs: every part's path, or `None` when the name does not follow the rule.
 pub fn split_paths(path: &Path, count: u16) -> Option<Vec<PathBuf>> {
     let name = path.file_name()?.to_str()?;
     let stem = name.strip_suffix(".gguf")?;
@@ -249,7 +309,7 @@ pub fn split_paths(path: &Path, count: u16) -> Option<Vec<PathBuf>> {
     Some((1..=count).map(|i| dir.join(format!("{prefix}-{i:05}-of-{count:05}.gguf"))).collect())
 }
 
-/// Why a model could not be opened.
+/// Purpose: This enum lists the errors opening a model can return.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     /// Part 1 failed preflight.
@@ -270,12 +330,24 @@ pub enum Error {
 }
 
 impl From<preflight::Error> for Error {
+    /// Purpose: This function converts a preflight error into a model-opening error.
+    ///
+    /// Inputs:
+    /// - `e`: the preflight error.
+    ///
+    /// Outputs: an [`Error::Preflight`].
     fn from(e: preflight::Error) -> Self {
         Error::Preflight(e)
     }
 }
 
 impl fmt::Display for Error {
+    /// Purpose: This function formats model-opening errors.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Preflight(e) => write!(f, "{e}"),
@@ -304,7 +376,13 @@ mod tests {
     use super::*;
     use crate::load::preflight::tests::header_with;
 
-    /// Append a tensor index to a header built by `header_with`, fixing its tensor count.
+    /// Purpose: This function appends a tensor index to a test GGUF header.
+    ///
+    /// Inputs:
+    /// - `b`: the header bytes.
+    /// - `tensors`: each tensor as `(name, shape, ggml_type, offset)`.
+    ///
+    /// Outputs: the header with its tensor index.
     fn with_tensors(mut b: Vec<u8>, tensors: &[(&str, &[u64], u32, u64)]) -> Vec<u8> {
         b[8..16].copy_from_slice(&(tensors.len() as u64).to_le_bytes());
         for (name, dims, kind, offset) in tensors {
@@ -320,6 +398,14 @@ mod tests {
         b
     }
 
+    /// Purpose: This function builds the `split.*` metadata entries for a test part file.
+    ///
+    /// Inputs:
+    /// - `no`: the part's number, from 0.
+    /// - `count`: how many parts there are.
+    /// - `total`: the tensor count across all parts.
+    ///
+    /// Outputs: the entries, as `(key, type tag, encoded value)`.
     fn split_kv(no: u16, count: u16, total: i32) -> Vec<(&'static str, u32, Vec<u8>)> {
         vec![
             ("split.no", 2, no.to_le_bytes().to_vec()),
@@ -328,7 +414,16 @@ mod tests {
         ]
     }
 
-    /// A later part: only the split keys, the way gguf-split writes it.
+    /// Purpose: This function builds the GGUF header of a later part of a test split
+    /// model.
+    ///
+    /// Inputs:
+    /// - `no`: the part's number, from 0.
+    /// - `count`: how many parts there are.
+    /// - `total`: the tensor count across all parts.
+    /// - `tensors`: this part's tensors as `(name, shape, ggml_type, offset)`.
+    ///
+    /// Outputs: the header bytes.
     fn later_part(no: u16, count: u16, total: i32, tensors: &[(&str, &[u64], u32, u64)]) -> Vec<u8> {
         let kvs = split_kv(no, count, total);
         let mut b = b"GGUF".to_vec();

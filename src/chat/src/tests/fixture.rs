@@ -1,10 +1,7 @@
-//! Fixtures built in the test: a GGUF header, a `tokenizer.json`, and a scratch
-//! directory to write them to.
-//!
-//! Both model files are tiny and made from the same word list, so they agree by
-//! construction, and a test breaks the agreement on purpose when it wants a mismatch.
-//! The tokenizer is a WordLevel model over whitespace-split words: the smallest real
-//! `tokenizer.json` that still has added special tokens and a BOS post-processor.
+//! Author: Joe Ricks
+//! File: src/chat/src/tests/fixture.rs
+//! Description: Builds the test fixtures: a small GGUF header, a matching
+//! `tokenizer.json`, and a scratch folder.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -35,7 +32,11 @@ const SPECIAL: usize = 4;
 /// ChatML, as Qwen2 and many fine-tunes ship it, in its usual one-line form.
 pub(crate) const CHATML: &str = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}";
 
-/// The fixture `tokenizer.json`, as text.
+/// Purpose: This function builds the test `tokenizer.json`.
+///
+/// Inputs: none.
+///
+/// Outputs: the JSON text.
 pub(crate) fn tokenizer_json() -> String {
     let added: Vec<_> = WORDS[..SPECIAL]
         .iter()
@@ -75,11 +76,16 @@ pub(crate) fn tokenizer_json() -> String {
     .to_string()
 }
 
+/// Purpose: This function loads the test tokenizer.
+///
+/// Inputs: none.
+///
+/// Outputs: the tokenizer.
 pub(crate) fn tokenizer() -> Tokenizer {
     tokenizer_json().parse().expect("fixture tokenizer.json parses")
 }
 
-/// One metadata value, in the subset of GGUF types the fixtures need.
+/// Purpose: This enum holds one metadata value of the test GGUF header.
 enum Kv {
     Str(String),
     U32(u32),
@@ -87,15 +93,25 @@ enum Kv {
     I32s(Vec<i32>),
 }
 
-/// A GGUF v3 header with no tensors, built key by key.
+/// Purpose: This struct holds a test GGUF header, built key by key.
 pub(crate) struct Header(Vec<(String, Kv)>);
 
 impl Header {
+    /// Purpose: This function starts a test GGUF header with only its architecture set.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the header.
     pub(crate) fn empty() -> Header {
         Header(vec![("general.architecture".into(), Kv::Str("llama".into()))])
     }
 
-    /// The fixture model: the vocabulary, BOS and EOS, and ChatML.
+    /// Purpose: This function builds the test GGUF header with its tokens, BOS, EOS and
+    /// ChatML template.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the header.
     pub(crate) fn chatml() -> Header {
         Header::empty()
             .tokens(WORDS)
@@ -104,34 +120,85 @@ impl Header {
             .str("tokenizer.chat_template", CHATML)
     }
 
+    /// Purpose: This function sets a string key in the test header.
+    ///
+    /// Inputs:
+    /// - `key`: the key.
+    /// - `value`: the string.
+    ///
+    /// Outputs: the header.
     pub(crate) fn str(self, key: &str, value: &str) -> Header {
         self.set(key, Kv::Str(value.into()))
     }
 
+    /// Purpose: This function sets a number key in the test header.
+    ///
+    /// Inputs:
+    /// - `key`: the key.
+    /// - `value`: the number.
+    ///
+    /// Outputs: the header.
     pub(crate) fn u32(self, key: &str, value: u32) -> Header {
         self.set(key, Kv::U32(value))
     }
 
+    /// Purpose: This function sets the token list in the test header.
+    ///
+    /// Inputs:
+    /// - `tokens`: the tokens, in id order.
+    ///
+    /// Outputs: the header.
     pub(crate) fn tokens(self, tokens: &[&str]) -> Header {
         self.set("tokenizer.ggml.tokens", Kv::Strs(tokens.iter().map(|s| (*s).to_owned()).collect()))
     }
 
+    /// Purpose: This function sets the token types in the test header.
+    ///
+    /// Inputs:
+    /// - `types`: one type per token, in id order.
+    ///
+    /// Outputs: the header.
     pub(crate) fn token_types(self, types: &[i32]) -> Header {
         self.set("tokenizer.ggml.token_type", Kv::I32s(types.to_vec()))
     }
 
+    /// Purpose: This function removes a key from the test header.
+    ///
+    /// Inputs:
+    /// - `key`: the key.
+    ///
+    /// Outputs: the header.
     pub(crate) fn without(mut self, key: &str) -> Header {
         self.0.retain(|(k, _)| k != key);
         self
     }
 
+    /// Purpose: This function sets a key in the test header, replacing any old value.
+    ///
+    /// Inputs:
+    /// - `key`: the key.
+    /// - `value`: the value.
+    ///
+    /// Outputs: the header.
     fn set(mut self, key: &str, value: Kv) -> Header {
         self.0.retain(|(k, _)| k != key);
         self.0.push((key.into(), value));
         self
     }
 
+    /// Purpose: This function writes the test header as GGUF bytes.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the bytes.
     pub(crate) fn bytes(&self) -> Vec<u8> {
+        /// Purpose: This function writes one string in GGUF form.
+        ///
+        /// Inputs:
+        /// - `out`: the bytes to write to.
+        /// - `s`: the string.
+        ///
+        /// Outputs: none.
         fn string(out: &mut Vec<u8>, s: &str) {
             out.extend_from_slice(&(s.len() as u64).to_le_bytes());
             out.extend_from_slice(s.as_bytes());
@@ -173,21 +240,34 @@ impl Header {
         out
     }
 
+    /// Purpose: This function parses the test header with dovata's GGUF reader.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the parsed header.
     pub(crate) fn parse(&self) -> Gguf {
         Gguf::parse(&self.bytes()).expect("fixture header parses")
     }
 }
 
-/// The fixture [`Chat`], built the way `from_gguf` builds one.
+/// Purpose: This function builds the test `Chat`.
+///
+/// Inputs: none.
+///
+/// Outputs: the `Chat`.
 pub(crate) fn chat() -> Chat {
     Chat::from_gguf(&Header::chatml().parse(), tokenizer()).expect("fixture chat builds")
 }
 
-/// A scratch directory, removed when dropped. std has no tempdir, and one function's
-/// worth is not worth a dependency.
+/// Purpose: This struct holds a scratch folder that is deleted when the test ends.
 pub(crate) struct Scratch(PathBuf);
 
 impl Scratch {
+    /// Purpose: This function creates an empty scratch folder for one test.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the scratch folder.
     pub(crate) fn new() -> Scratch {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -196,18 +276,35 @@ impl Scratch {
         Scratch(dir)
     }
 
+    /// Purpose: This function writes a file into the scratch folder.
+    ///
+    /// Inputs:
+    /// - `name`: the file name.
+    /// - `bytes`: the file's contents.
+    ///
+    /// Outputs: the file's path.
     pub(crate) fn write(&self, name: &str, bytes: impl AsRef<[u8]>) -> PathBuf {
         let path = self.0.join(name);
         std::fs::write(&path, bytes).expect("write fixture");
         path
     }
 
+    /// Purpose: This function returns the scratch folder's path.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the path.
     pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
 
 impl Drop for Scratch {
+    /// Purpose: This function deletes the scratch folder when a test ends.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: none.
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }

@@ -1,19 +1,17 @@
-//! The machine a plan is for, and the kinds of memory a plan can put tensors in.
-//!
-//! dovata does not probe the build machine. The Jade compiler may build on a laptop for
-//! a GPU box, so the caller says what the target has, and the plan is only as right as
-//! what it was told.
+//! Author: Joe Ricks
+//! File: src/plan/target.rs
+//! Description: Describes the machine a plan is for and its kinds of memory.
 
 use serde::Serialize;
 
-/// One machine with at most one GPU.
+/// Purpose: This enum describes the machine a plan is for, with at most one GPU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Target {
     /// Apple Silicon. CPU and GPU share one memory pool, so nothing is copied to a
     /// device: weights stay in the mapped GGUF and the GPU reads them there.
     Apple {
-        /// Memory the plan may use, in bytes. The caller decides how much of the
+        /// Memory the plan may use, in bytes. The Jade compiler decides how much of the
         /// machine's RAM that is; Metal's `recommendedMaxWorkingSetSize` is the usual
         /// answer.
         unified_bytes: u64,
@@ -43,22 +41,42 @@ pub enum Target {
 }
 
 impl Target {
-    /// An Apple target with the usual page size.
+    /// Purpose: This function builds an Apple Silicon target with 16 KiB pages.
+    ///
+    /// Inputs:
+    /// - `unified_bytes`: the memory the plan may use.
+    /// - `max_buffer_bytes`: the largest single GPU buffer.
+    ///
+    /// Outputs: a [`Target::Apple`].
     pub fn apple(unified_bytes: u64, max_buffer_bytes: u64) -> Target {
         Target::Apple { unified_bytes, max_buffer_bytes, page_bytes: 16 * 1024 }
     }
 
-    /// A CPU target with 4 KiB pages.
+    /// Purpose: This function builds a CPU-only target with 4 KiB pages.
+    ///
+    /// Inputs:
+    /// - `ram_bytes`: the host memory the plan may allocate.
+    ///
+    /// Outputs: a [`Target::Cpu`].
     pub fn cpu(ram_bytes: u64) -> Target {
         Target::Cpu { ram_bytes, page_bytes: 4096 }
     }
 
-    /// A CUDA target.
+    /// Purpose: This function builds a target with one NVIDIA GPU.
+    ///
+    /// Inputs:
+    /// - `vram_bytes`: the VRAM the plan may use.
+    ///
+    /// Outputs: a [`Target::Cuda`].
     pub fn cuda(vram_bytes: u64) -> Target {
         Target::Cuda { vram_bytes }
     }
 
-    /// Where the compiler runs the ops for this target.
+    /// Purpose: This function returns where the compiler runs the ops for this target.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: Metal, CPU or CUDA.
     pub fn site(&self) -> ExecSite {
         match self {
             Target::Apple { .. } => ExecSite::Metal,
@@ -68,7 +86,7 @@ impl Target {
     }
 }
 
-/// Where ops execute.
+/// Purpose: This enum lists where the compiled program runs the model's ops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecSite {
@@ -80,8 +98,7 @@ pub enum ExecSite {
     Metal,
 }
 
-/// What kind of memory a region is, which decides how the program gets its base address
-/// at run time.
+/// Purpose: This enum lists the kinds of memory a plan's regions can be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RegionKind {
@@ -99,13 +116,13 @@ pub enum RegionKind {
 }
 
 impl RegionKind {
-    /// The alignment every entry in an allocated region of this kind gets, and the
-    /// alignment the program must give the region's base.
+    /// Purpose: This function returns the byte alignment for an allocated region of this
+    /// kind.
     ///
-    /// 256 bytes for GPU memory: `cuMemAlloc` returns 256-byte-aligned memory, and it
-    /// covers every vector width a kernel uses. 64 bytes for host memory, one cache
-    /// line. Mapped windows have no allocation alignment of their own; their entries sit
-    /// at the GGUF's file offsets, which are aligned to the file's `general.alignment`.
+    /// Inputs: none.
+    ///
+    /// Outputs: 256 for VRAM and unified memory, 64 for host memory, and 1 for a mapped
+    /// window.
     pub fn alloc_align(self) -> u64 {
         match self {
             RegionKind::Vram | RegionKind::Unified => 256,

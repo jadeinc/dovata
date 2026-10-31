@@ -1,13 +1,11 @@
-//! What can go wrong, said in terms a Jade user can act on.
-//!
-//! Most of these are refusals at construction time rather than failures later. A wrong
-//! tokenizer or a missing template is cheap to report when the [`Chat`](crate::Chat) is
-//! built and expensive to discover from a model's odd replies.
+//! Author: Joe Ricks
+//! File: src/chat/src/error.rs
+//! Description: Defines the errors dovata-chat returns.
 
 use std::fmt;
 use std::path::PathBuf;
 
-/// Why a [`Chat`](crate::Chat) could not be built, or could not do what was asked.
+/// Purpose: This enum lists the errors dovata-chat can return.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ChatError {
@@ -62,7 +60,7 @@ pub enum ChatError {
     Hub(String),
 }
 
-/// One id where the two vocabularies disagree.
+/// Purpose: This struct holds one token id where `tokenizer.json` and the GGUF disagree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mismatch {
     /// The token id.
@@ -74,8 +72,13 @@ pub struct Mismatch {
 }
 
 impl ChatError {
-    /// Map a render failure, pulling a `raise_exception` message out into
-    /// [`ChatError::Raised`] so a caller can tell the template's own refusal from a bug.
+    /// Purpose: This function converts a template render error into a `ChatError`.
+    ///
+    /// Inputs:
+    /// - `err`: the error minijinja returned.
+    ///
+    /// Outputs: `ChatError::Raised` if the template called `raise_exception`, else
+    /// `ChatError::Template`.
     pub(crate) fn from_render(err: minijinja::Error) -> ChatError {
         let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&err);
         while let Some(e) = source {
@@ -89,6 +92,12 @@ impl ChatError {
 }
 
 impl fmt::Display for ChatError {
+    /// Purpose: This function formats dovata-chat errors.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ChatError::Io { path, source } => write!(f, "cannot read {}: {source}", path.display()),
@@ -131,6 +140,11 @@ impl fmt::Display for ChatError {
 }
 
 impl std::error::Error for ChatError {
+    /// Purpose: This function returns the lower-level error inside a dovata-chat error.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the I/O or minijinja error it wraps, or `None`.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ChatError::Io { source, .. } => Some(source),

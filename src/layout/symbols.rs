@@ -1,36 +1,7 @@
-//! The closed set of names a layout's expressions may use, and where each one comes from.
-//!
-//! ## Why the set is closed
-//!
-//! A layout may say `n_embd_head_k * n_head` or `eps = "f_norm_rms_eps"`, but it can
-//! never say which GGUF key that is, nor give a number in its place. Every hparam is
-//! read here, by reference, from the model's own header, so the same layout serves every
-//! model of its architecture, and a model with an unusual epsilon or rope base gets its
-//! own value without anyone editing the layout. An open set, where a layout names GGUF
-//! keys directly, would let one layout quietly hardcode one model's numbers.
-//!
-//! The names are llama.cpp's own: the `LLAMA_LOAD_LOCALS` macro in `src/llama-model.h`
-//! (`n_embd`, `n_embd_k_gqa`, `n_rot`, ...), the `llama_hparams` fields (`f_norm_rms_eps`,
-//! `n_ff_exp`), and the `llm_graph_context` members the graph code passes to
-//! `ggml_rope_ext` (`freq_base`, `ext_factor`, `n_ctx_orig`, ...). A layout line then
-//! reads the way the C++ call it came from reads.
-//!
-//! ## Where each value comes from
-//!
-//! Each symbol below is read the way llama.cpp reads it at the pinned commit: the same
-//! key, the same default when the key is absent, and per layer where llama.cpp keeps a
-//! per-layer array (`get_key_or_arr`). Outside a block, a per-layer symbol reads layer
-//! 0, which is what llama.cpp's `n_head()` with no argument does.
-//!
-//! A few symbols describe the bind options rather than the model: the context and batch
-//! sizes, and the KV cache types. The KV rotation symbols (`attn_rot_k` and friends)
-//! repeat the rule in `llama_kv_cache`'s constructor that turns on a Hadamard rotation
-//! of Q, K and V when the cache is quantized.
-//!
-//! Some hparams are read by only some architectures' `load_arch_hparams`. A symbol for
-//! one of those (`f_attention_scale`, for example) would give a value llama.cpp never
-//! reads for the others, so none is offered yet. Add one when a layout for an
-//! architecture that reads it is written, and say which in its row.
+//! Author: Joe Ricks
+//! File: src/layout/symbols.rs
+//! Description: Lists the symbols layout expressions may use, and reads their values from
+//! a model's GGUF header and the bind options.
 
 use crate::gguf::{Gguf, Value as GValue};
 use crate::load::Model;
@@ -82,12 +53,17 @@ pub const SYMBOLS: &[(&str, &str)] = &[
     ("n_attn_rot_v", "the V rotation's size: 64"),
 ];
 
-/// Whether `name` is in the closed set.
+/// Purpose: This function tells whether a name is a layout symbol.
+///
+/// Inputs:
+/// - `name`: the name.
+///
+/// Outputs: `true` when it is.
 pub(crate) fn is_symbol(name: &str) -> bool {
     SYMBOLS.iter().any(|(n, _)| *n == name)
 }
 
-/// Resolves symbols against one model and one set of bind options.
+/// Purpose: This struct reads layout symbol values for one model and its bind options.
 pub(crate) struct Hparams<'m> {
     meta: &'m Gguf,
     arch: &'m str,
@@ -96,6 +72,14 @@ pub(crate) struct Hparams<'m> {
 }
 
 impl<'m> Hparams<'m> {
+    /// Purpose: This function builds the symbol reader for one model and one set of bind
+    /// options.
+    ///
+    /// Inputs:
+    /// - `model`: the opened GGUF model.
+    /// - `opts`: the bind options.
+    ///
+    /// Outputs: the reader, or an error when the model has no block count.
     pub(crate) fn new(model: &'m Model, opts: &BindOptions) -> Result<Self, String> {
         let meta = model.meta();
         let arch = model.architecture();
@@ -106,15 +90,33 @@ impl<'m> Hparams<'m> {
         Ok(Hparams { meta, arch, opts: *opts, n_layer })
     }
 
+    /// Purpose: This function returns the model's layer count.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the layer count.
     pub(crate) fn n_layer(&self) -> u32 {
         self.n_layer
     }
 
+    /// Purpose: This function builds a full GGUF key from a key suffix.
+    ///
+    /// Inputs:
+    /// - `suffix`: the key after the architecture name, such as `block_count`.
+    ///
+    /// Outputs: the full key, such as `qwen3.block_count`.
     fn key(&self, suffix: &str) -> String {
         format!("{}.{suffix}", self.arch)
     }
 
-    /// An integer key, taking the layer's element when the key is an array.
+    /// Purpose: This function reads an integer GGUF key, taking one layer's entry when
+    /// the key is an array.
+    ///
+    /// Inputs:
+    /// - `suffix`: the key after the architecture name, such as `block_count`.
+    /// - `layer`: the layer index, or `None` for layer 0.
+    ///
+    /// Outputs: the value, or `None` when the key is missing.
     fn int_key(&self, suffix: &str, layer: Option<u32>) -> Option<i64> {
         let v = match self.meta.get(&self.key(suffix))? {
             GValue::Array(items) => items.get(layer.unwrap_or(0) as usize)?.as_u64()?,
@@ -123,10 +125,23 @@ impl<'m> Hparams<'m> {
         i64::try_from(v).ok()
     }
 
+    /// Purpose: This function reads an integer GGUF key that must be present.
+    ///
+    /// Inputs:
+    /// - `suffix`: the key after the architecture name, such as `block_count`.
+    /// - `layer`: the layer index, or `None` for layer 0.
+    ///
+    /// Outputs: the value, or an error naming the missing key.
     fn required_int(&self, suffix: &str, layer: Option<u32>) -> Result<i64, String> {
         self.int_key(suffix, layer).ok_or_else(|| format!("the model has no `{}`", self.key(suffix)))
     }
 
+    /// Purpose: This function reads a GGUF key as a float.
+    ///
+    /// Inputs:
+    /// - `suffix`: the key after the architecture name, such as `block_count`.
+    ///
+    /// Outputs: the value, or `None` when the key is missing.
     fn float_key(&self, suffix: &str) -> Option<f64> {
         match self.meta.get(&self.key(suffix))? {
             GValue::F32(v) => Some(f64::from(*v)),
@@ -136,10 +151,22 @@ impl<'m> Hparams<'m> {
         }
     }
 
+    /// Purpose: This function returns the number of attention heads at a layer.
+    ///
+    /// Inputs:
+    /// - `layer`: the layer index, or `None` for layer 0.
+    ///
+    /// Outputs: the head count, or 0 when the key is missing.
     fn n_head(&self, layer: Option<u32>) -> i64 {
         self.int_key("attention.head_count", layer).unwrap_or(0)
     }
 
+    /// Purpose: This function returns the width of one attention head.
+    ///
+    /// Inputs:
+    /// - `suffix`: the head width key to read.
+    ///
+    /// Outputs: the width, or an error.
     fn head_dim(&self, suffix: &str) -> Result<i64, String> {
         if let Some(v) = self.int_key(suffix, None) {
             return Ok(v);
@@ -152,16 +179,30 @@ impl<'m> Hparams<'m> {
         Ok(self.required_int("embedding_length", None)? / heads)
     }
 
+    /// Purpose: This function returns the number of KV heads at a layer.
+    ///
+    /// Inputs:
+    /// - `layer`: the layer index, or `None` for layer 0.
+    ///
+    /// Outputs: the KV head count.
     fn n_head_kv(&self, layer: Option<u32>) -> i64 {
         self.int_key("attention.head_count_kv", layer).unwrap_or_else(|| self.n_head(layer))
     }
 
-    /// The rope scaling type, as `llama_rope_scaling_type_from_string` reads it.
+    /// Purpose: This function returns the model's rope scaling type.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the type's name, `linear` when the key is missing.
     fn rope_scaling(&self) -> &str {
         self.meta.string(&self.key("rope.scaling.type")).unwrap_or("linear")
     }
 
-    /// `cparams.rope_freq_scale`, computed in f32 as llama.cpp computes it.
+    /// Purpose: This function returns rope's frequency scale.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the scale.
     fn freq_scale(&self) -> f32 {
         if self.rope_scaling() == "none" {
             return 1.0;
@@ -171,12 +212,20 @@ impl<'m> Hparams<'m> {
         if factor == 0.0 { 1.0 } else { 1.0 / factor }
     }
 
+    /// Purpose: This function returns rope's YaRN extrapolation factor.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: 1 for YaRN scaling, else 0.
     fn ext_factor(&self) -> f32 {
         if self.rope_scaling() == "yarn" { 1.0 } else { 0.0 }
     }
 
-    /// `cparams.yarn_attn_factor`, from the block in `llama_context`'s constructor.
-    /// `rope_yarn_log_mul` is read only by deepseek2, so its branch is not taken here.
+    /// Purpose: This function returns rope's attention magnitude factor.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the factor.
     fn attn_factor(&self) -> f32 {
         let mut f = 1.0f32;
         if self.ext_factor() != 0.0 {
@@ -190,11 +239,25 @@ impl<'m> Hparams<'m> {
         f * attn
     }
 
+    /// Purpose: This function tells whether llama.cpp rotates a KV cache's heads by a
+    /// Hadamard matrix.
+    ///
+    /// Inputs:
+    /// - `quantized`: whether the cache type is quantized.
+    /// - `head`: the head width.
+    ///
+    /// Outputs: `true` when the rotation applies.
     fn rot(&self, quantized: bool, head: i64) -> bool {
         quantized && head > 0 && head % 64 == 0
     }
 
-    /// Resolve one symbol, at a layer when inside a block.
+    /// Purpose: This function returns the value of one layout symbol.
+    ///
+    /// Inputs:
+    /// - `name`: the symbol.
+    /// - `layer`: the layer index, or `None` outside the block.
+    ///
+    /// Outputs: the value, or an error.
     pub(crate) fn value(&self, name: &str, layer: Option<u32>) -> Result<Value, String> {
         let int = |v: i64| Ok(Value::Int(v));
         let float = |v: f64| Ok(Value::Float(v));

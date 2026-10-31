@@ -1,37 +1,7 @@
-//! Layouts: a model architecture's compute graph as data, in ggml's op vocabulary.
-//!
-//! ## Why this exists
-//!
-//! The Jade compiler generates the GPU kernels for a model, and dovata decides where
-//! every tensor lives. Both need the same description of what one forward step
-//! computes: which ops run, in what order, on which tensors, with which parameters. A
-//! layout is that description, written once per architecture as a TOML file and
-//! translated from llama.cpp's own graph code, so it can be read side by side with the
-//! C++ it came from.
-//!
-//! A layout says nothing about a particular model. [`Layout::bind`] applies it to one
-//! model file and one set of [`BindOptions`], and produces a [`BoundGraph`]: every op of
-//! every layer in execution order, and every tensor with its concrete shape, type, byte
-//! size and kind. The planner places the tensors of a bound graph; the compiler
-//! generates a kernel per op.
-//!
-//! ## Why it is its own capability
-//!
-//! The layout is the contract with the compiler's kernels, and the planner only decides
-//! where a bound graph's tensors go. Keeping them apart means the format can be
-//! reviewed, versioned and extended without touching placement, and the planner never
-//! needs to know about architectures.
-//!
-//! ## The pieces
-//!
-//! - `format`: reading a layout file and checking everything that needs no model.
-//! - `expr`: the small expression language for dims, params and conditions.
-//! - `symbols`: the closed set of hparam and option names expressions may use.
-//! - [`ops`]: the ggml ops a layout may use, with their params and shape rules.
-//! - `bind`: applying a layout to a model, and the bound types the planner reads.
-//! - `builtin/*.layout.toml`: one layout per supported architecture.
-//!
-//! The format itself is documented in this directory's README.
+//! Author: Joe Ricks
+//! File: src/layout/mod.rs
+//! Description: Chooses the layout file that describes a model's architecture, and
+//! defines the layout errors.
 
 mod bind;
 mod expr;
@@ -56,7 +26,13 @@ pub use symbols::SYMBOLS;
 /// Only what exists: a name here always has a file in `builtin/`.
 pub const SUPPORTED: &[&str] = &["llama", "qwen3", "qwen3moe"];
 
-/// The text of a built-in layout, by architecture.
+/// Purpose: This function returns the text of a layout file built into dovata.
+///
+/// Inputs:
+/// - `arch`: the model's architecture name, such as `qwen3moe`.
+///
+/// Outputs: the layout's TOML text, or `None` when dovata has no built-in layout for
+/// `arch`.
 fn builtin_source(arch: &str) -> Option<&'static str> {
     Some(match arch {
         "llama" => include_str!("builtin/llama.layout.toml"),
@@ -66,21 +42,26 @@ fn builtin_source(arch: &str) -> Option<&'static str> {
     })
 }
 
-/// The built-in layout for an architecture, or `None` when dovata has none.
+/// Purpose: This function returns the parsed built-in layout for an architecture.
 ///
-/// # Panics
+/// Inputs:
+/// - `arch`: the model's architecture name, such as `qwen3moe`.
 ///
-/// When a built-in layout fails to parse, which `builtin_layouts_parse` rules out.
+/// Outputs: the layout, or `None` when dovata has none. It panics if a built-in layout
+/// fails to parse.
 pub fn builtin(arch: &str) -> Option<Layout> {
     builtin_source(arch).map(|src| Layout::from_toml(src).unwrap_or_else(|e| panic!("built-in layout {arch} is invalid: {e}")))
 }
 
-/// The layout to plan a model with: the caller's when given, else the built-in one.
+/// Purpose: This function chooses the layout to plan a model with.
 ///
-/// A caller's layout must be for the model's architecture; a layout for a different one
-/// would bind against tensor names and hparams it was not written for. With no caller
-/// layout and no built-in one, the error lists what is supported and says how to supply
-/// a layout.
+/// Inputs:
+/// - `model`: the opened GGUF model.
+/// - `caller`: a layout passed in for the model's architecture, or `None` to use the
+///   built-in one.
+///
+/// Outputs: the layout, or an error when the passed-in layout is for another architecture
+/// or no layout exists.
 pub fn for_model(model: &Model, caller: Option<Layout>) -> Result<Layout, LayoutError> {
     let arch = model.architecture();
     match caller {
@@ -90,7 +71,7 @@ pub fn for_model(model: &Model, caller: Option<Layout>) -> Result<Layout, Layout
     }
 }
 
-/// Why a layout could not be read, chosen, or bound to a model.
+/// Purpose: This enum lists the errors from reading, choosing and binding a layout.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayoutError {
     /// The text is not TOML, or lacks a field every layout has.
@@ -98,9 +79,9 @@ pub enum LayoutError {
     /// The layout is not valid: an unknown op, param or symbol, a bad expression, a
     /// misplaced placeholder. `at` names the place in the file.
     Invalid { at: String, detail: String },
-    /// No built-in layout exists for the model's architecture and the caller gave none.
+    /// No built-in layout exists for the model's architecture, and none was passed in.
     NoLayout { architecture: String, supported: &'static [&'static str] },
-    /// The caller's layout is for a different architecture than the model.
+    /// The layout passed in is for a different architecture than the model.
     WrongArch { layout: String, model: String },
     /// The bind options do not describe a possible step.
     Options(String),
@@ -126,6 +107,12 @@ pub enum LayoutError {
 }
 
 impl fmt::Display for LayoutError {
+    /// Purpose: This function formats layout errors.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LayoutError::Toml(e) => write!(f, "the layout is not valid TOML for a layout: {e}"),

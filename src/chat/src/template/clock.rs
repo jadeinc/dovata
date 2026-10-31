@@ -1,20 +1,14 @@
-//! `strftime_now`'s formatting: C's `strftime`, for the conversions chat templates use,
-//! in UTC.
-//!
-//! # Why UTC, and why written here
-//!
-//! `transformers` calls Python's `datetime.now().strftime(format)`, which is local time.
-//! Local time needs the machine's time zone database, and std does not read it; a crate
-//! that does would be a dependency for one line of one template. A prompt is also built
-//! at compile time here, on a build machine whose zone says nothing about where the
-//! program runs, so local time would not be more right, only different. UTC is the
-//! same everywhere, and [`Chat::with_time`](crate::Chat::with_time) pins it outright.
-//!
-//! The conversions are the C locale's. Llama 3.1 and later ask for `%d %b %Y`; the rest
-//! are here because they are cheap and a template could plausibly use them. An unknown
-//! conversion is printed as written, which is what glibc does.
+//! Author: Joe Ricks
+//! File: src/chat/src/template/clock.rs
+//! Description: Formats a time in UTC for the `strftime_now` template function.
 
-/// Format `secs`, seconds since the Unix epoch, as UTC.
+/// Purpose: This function formats a time in UTC with C `strftime` codes.
+///
+/// Inputs:
+/// - `format`: the format string.
+/// - `secs`: the time, in seconds since the Unix epoch.
+///
+/// Outputs: the formatted text.
 pub(crate) fn strftime(format: &str, secs: i64) -> String {
     let days = secs.div_euclid(86_400);
     let sod = secs.rem_euclid(86_400);
@@ -107,9 +101,12 @@ const MONTHS: [&str; 12] = [
     "December",
 ];
 
-/// Days since 1970-01-01 to a proleptic Gregorian `(year, month, day)`. Howard
-/// Hinnant's `civil_from_days`, which is exact over the whole `i64` day range that
-/// matters here, with no table and no loop.
+/// Purpose: This function turns a count of days since 1970-01-01 into a calendar date.
+///
+/// Inputs:
+/// - `days`: the days since 1970-01-01.
+///
+/// Outputs: the year, month and day.
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -123,6 +120,14 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (year, month, day)
 }
 
+/// Purpose: This function computes a date's day of the year.
+///
+/// Inputs:
+/// - `year`: the year.
+/// - `month`: the month, from 1.
+/// - `day`: the day of the month, from 1.
+///
+/// Outputs: the day of the year, from 1.
 fn day_of_year(year: i64, month: u32, day: u32) -> i64 {
     const BEFORE: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
     let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;

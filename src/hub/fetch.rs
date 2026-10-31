@@ -1,49 +1,7 @@
-//! Downloading one model from the Hugging Face Hub, through hf-hub's blocking client.
-//!
-//! # What a fetch does
-//!
-//! 1. List the repo at the requested revision, `main` by default. The listing also
-//!    returns the commit that revision points at.
-//! 2. Choose one model with the pure [`super::select`] or [`super::select_file`].
-//! 3. Get every part of it at that commit. A part already in the cache is used as it
-//!    is; any other is downloaded. Pinning the commit means a branch that moves halfway
-//!    through a ten-part download cannot mix parts of two uploads.
-//! 4. Open the parts as one [`Model`], and refuse a file whose `general.file_type`
-//!    disagrees with the type its name gave.
-//!
-//! The commit is returned as [`Fetched::revision`], so a caller can record exactly what
-//! it built from.
-//!
-//! # Why hf-hub 0.4 and its blocking client
-//!
-//! The 0.4 line has a client over `ureq`, so the Jade compiler's build does not pull in
-//! tokio; see the note in `Cargo.toml`. Files land in the same cache `huggingface-cli`
-//! and the Python library use, `models--org--repo/{blobs,snapshots,refs}`, so a model
-//! already downloaded by either is not downloaded again.
-//!
-//! hf-hub 0.4.3 finds a cached file only through `refs/<revision>`. A model cached by
-//! another tool under `refs/main` would look missing when asked for by commit, and
-//! hf-hub would download all of it again. So step 3 looks in
-//! `snapshots/<commit>/<file>` first, which is where every tool puts it.
-//!
-//! # Settings read from the environment
-//!
-//! These match the Python `huggingface_hub`, so one setup serves both:
-//!
-//! - The cache is [`FetchOptions::cache_dir`], else `HF_HUB_CACHE`, else
-//!   `$HF_HOME/hub`, else `$XDG_CACHE_HOME/huggingface/hub`, else
-//!   `~/.cache/huggingface/hub`.
-//! - The token is [`FetchOptions::token`], else `HF_TOKEN`, else the older
-//!   `HUGGING_FACE_HUB_TOKEN`, else the file `huggingface-cli login` writes: the path
-//!   in `HF_TOKEN_PATH`, else `token` in the `HF_HOME` directory found the same way as
-//!   the cache, normally `~/.cache/huggingface/token`. Reading these is a choice: public
-//!   repos need no token, but gated ones such as Meta's Llama need one, and a build tool
-//!   that ignored the login a user already did would fail for no reason they could see.
-//!   The token is only ever sent to the Hub endpoint, and [`FetchOptions`] never prints it.
-//! - The endpoint is `HF_ENDPOINT`, for a mirror, else `https://huggingface.co`.
-//!
-//! hf-hub draws a progress bar on stderr while downloading, and hides it when stderr is
-//! not a terminal, so a build log gets no bar.
+//! Author: Joe Ricks
+//! File: src/hub/fetch.rs
+//! Description: Downloads one model from the Hugging Face Hub into the shared Hugging
+//! Face cache.
 
 use std::path::{Path, PathBuf};
 
@@ -53,10 +11,19 @@ use hf_hub::{Cache, Repo, RepoType};
 use super::{fetched, is_repo_id, select, select_file, FetchError, FetchOptions, Fetched, Want};
 use crate::load::Model;
 
-const DEFAULT_ENDPOINT: &str = "https://huggingface.co";
-
-/// Fetch one model of `repo`. See the module header.
+/// Purpose: This function downloads one model of a Hub repo.
+///
+/// Inputs:
+/// - `endpoint`: the Hub server, taken from the link.
+/// - `repo`: the repo id.
+/// - `revision`: the branch, tag or commit, if any.
+/// - `file`: the named file or directory, if any.
+/// - `want`: which model to take when no file is named.
+/// - `opts`: the cache directory and the access token.
+///
+/// Outputs: the model's file paths and commit, or an error.
 pub(super) fn from_hub(
+    endpoint: &str,
     repo: &str,
     revision: Option<&str>,
     file: Option<&str>,
@@ -66,13 +33,16 @@ pub(super) fn from_hub(
     if !is_repo_id(repo) {
         return Err(FetchError::BadSource(format!("{repo:?} is not a Hub repo id; one looks like org/repo")));
     }
+    if !endpoint.starts_with("https://") {
+        return Err(FetchError::BadSource(format!("the Hub endpoint {endpoint:?} is not an https:// link")));
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let cache = cache_dir(opts, env, home.as_deref()).ok_or_else(|| {
         FetchError::BadSource("there is no cache directory: set HF_HUB_CACHE or HOME, or pass FetchOptions::cache_dir".into())
     })?;
     let api = ApiBuilder::from_cache(Cache::new(cache.clone()))
         .with_token(token(opts, env, read_token_file, home.as_deref()))
-        .with_endpoint(env("HF_ENDPOINT").unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned()))
+        .with_endpoint(endpoint.trim_end_matches('/').to_owned())
         .build()
         .map_err(|e| hub_error(repo, "cannot start a Hub client", &e))?;
 
@@ -110,17 +80,33 @@ pub(super) fn from_hub(
     Ok(fetched(&model, Some(repo.to_owned()), Some(info.sha)))
 }
 
-/// One environment variable, with an empty value treated as unset.
+/// Purpose: This function reads an environment variable, treating an empty one as unset.
+///
+/// Inputs:
+/// - `key`: the variable's name.
+///
+/// Outputs: the value, or `None`.
 fn env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
+/// Purpose: This function reads a token file.
+///
+/// Inputs:
+/// - `path`: the file.
+///
+/// Outputs: the file's text, or `None`.
 fn read_token_file(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-/// The `HF_HOME` directory: `HF_HOME`, else `$XDG_CACHE_HOME/huggingface`, else
-/// `~/.cache/huggingface`.
+/// Purpose: This function finds the Hugging Face home directory.
+///
+/// Inputs:
+/// - `env`: reads an environment variable.
+/// - `home`: the home directory, if known.
+///
+/// Outputs: the directory, or `None`.
 fn hf_home(env: impl Fn(&str) -> Option<String>, home: Option<&Path>) -> Option<PathBuf> {
     env("HF_HOME")
         .map(PathBuf::from)
@@ -128,7 +114,14 @@ fn hf_home(env: impl Fn(&str) -> Option<String>, home: Option<&Path>) -> Option<
         .or_else(|| home.map(|h| h.join(".cache").join("huggingface")))
 }
 
-/// The hf-hub cache directory, by the precedence in the module header.
+/// Purpose: This function finds the Hugging Face cache directory.
+///
+/// Inputs:
+/// - `opts`: the fetch options.
+/// - `env`: reads an environment variable.
+/// - `home`: the home directory, if known.
+///
+/// Outputs: the directory, or `None`.
 fn cache_dir(opts: &FetchOptions, env: impl Fn(&str) -> Option<String>, home: Option<&Path>) -> Option<PathBuf> {
     opts.cache_dir
         .clone()
@@ -136,7 +129,15 @@ fn cache_dir(opts: &FetchOptions, env: impl Fn(&str) -> Option<String>, home: Op
         .or_else(|| hf_home(&env, home).map(|h| h.join("hub")))
 }
 
-/// The access token, by the precedence in the module header.
+/// Purpose: This function finds the Hub access token.
+///
+/// Inputs:
+/// - `opts`: the fetch options.
+/// - `env`: reads an environment variable.
+/// - `read`: reads a file.
+/// - `home`: the home directory, if known.
+///
+/// Outputs: the token, or `None`.
 fn token(
     opts: &FetchOptions,
     env: impl Fn(&str) -> Option<String>,
@@ -155,7 +156,14 @@ fn token(
         })
 }
 
-/// A Hub failure, with a hint for the statuses a user can do something about.
+/// Purpose: This function turns an hf-hub error into a fetch error with a hint.
+///
+/// Inputs:
+/// - `repo`: the repo id.
+/// - `what`: what was being done.
+/// - `e`: the hf-hub error.
+///
+/// Outputs: the fetch error.
 fn hub_error(repo: &str, what: &str, e: &ApiError) -> FetchError {
     let msg = e.to_string();
     let hint = match status_code(&msg) {
@@ -170,9 +178,12 @@ fn hub_error(repo: &str, what: &str, e: &ApiError) -> FetchError {
     FetchError::Hub { repo: repo.to_owned(), detail: format!("{what}: {msg}.{hint}") }
 }
 
-/// The HTTP status in an hf-hub error message. ureq prints a status error as
-/// `<url>: status code 404`; reading it from the text avoids taking ureq on as a
-/// direct dependency just to match its error type, and a miss only loses the hint.
+/// Purpose: This function reads the HTTP status from an hf-hub error message.
+///
+/// Inputs:
+/// - `msg`: the message.
+///
+/// Outputs: the status, or `None`.
 fn status_code(msg: &str) -> Option<u16> {
     let (_, rest) = msg.rsplit_once("status code ")?;
     rest.get(..3)?.parse().ok()
@@ -184,6 +195,12 @@ mod tests {
     use crate::hub::{fetch, ModelSource};
     use crate::quantize::Ftype;
 
+    /// Purpose: This function builds a stand-in environment from fixed pairs.
+    ///
+    /// Inputs:
+    /// - `set`: the variables and their values.
+    ///
+    /// Outputs: a lookup function.
     fn vars<'a>(set: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |k| set.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_owned())
     }
@@ -225,11 +242,29 @@ mod tests {
         assert_eq!(status_code("I/O error connection refused"), None);
     }
 
+    /// Purpose: This function builds a Hub source for the tests.
+    ///
+    /// Inputs:
+    /// - `endpoint`: the Hub server.
+    /// - `repo`: the repo id.
+    ///
+    /// Outputs: the source.
+    fn source(endpoint: &str, repo: &str) -> ModelSource {
+        ModelSource::Hub { endpoint: endpoint.into(), repo: repo.into(), revision: None, file: None }
+    }
+
     #[test]
     fn a_malformed_repo_id_is_refused_before_the_network() {
-        let src = ModelSource::Hub { repo: "not a repo".into(), revision: None, file: None };
-        let err = fetch(&src, Want::Unquantized, &FetchOptions::default()).unwrap_err();
+        let err = fetch(&source("https://huggingface.co", "not a repo"), Want::Unquantized, &FetchOptions::default()).unwrap_err();
         assert!(matches!(err, FetchError::BadSource(_)), "{err:?}");
+    }
+
+    #[test]
+    fn an_endpoint_that_is_not_https_is_refused_before_the_network() {
+        for endpoint in ["", "http://huggingface.co", "huggingface.co"] {
+            let err = fetch(&source(endpoint, "org/repo"), Want::Unquantized, &FetchOptions::default()).unwrap_err();
+            assert!(matches!(&err, FetchError::BadSource(m) if m.contains("https://")), "{endpoint:?}: {err:?}");
+        }
     }
 
     /// Run with `cargo test -p dovata --lib -- --ignored fetches_a_small_public_gguf`.
@@ -254,12 +289,13 @@ mod tests {
         assert_eq!(std::fs::metadata(&again.parts[0]).unwrap().modified().unwrap(), modified);
 
         // By type: the Q8_0 file, checked against its header.
-        let q8 = fetch(&ModelSource::parse("ggml-org/tiny-llamas").unwrap(), Want::Ftype(Ftype::Q8_0), &opts).unwrap();
+        let repo = ModelSource::parse("https://huggingface.co/ggml-org/tiny-llamas").unwrap();
+        let q8 = fetch(&repo, Want::Ftype(Ftype::Q8_0), &opts).unwrap();
         assert_eq!(q8.ftype, Some(Ftype::Q8_0));
         assert!(q8.parts[0].ends_with("stories15M-q8_0.gguf"), "{:?}", q8.parts);
 
         // A type the repo lacks is refused with the list, and nothing is downloaded.
-        let err = fetch(&ModelSource::parse("ggml-org/tiny-llamas").unwrap(), Want::Ftype(Ftype::Q6_K), &opts).unwrap_err();
+        let err = fetch(&repo, Want::Ftype(Ftype::Q6_K), &opts).unwrap_err();
         assert!(err.to_string().contains("does not offer Q6_K"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }

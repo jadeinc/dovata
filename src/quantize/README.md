@@ -24,7 +24,9 @@ quantize.
 *The pure half builds everywhere.* The type table, the checks, and the output naming
 rule have no native code, so they are tested on any machine. Only the call into
 llama.cpp needs the `quantize` cargo feature, which compiles llama.cpp through the sys
-crate. With the feature off, `quantize()` still exists and returns `NotBuilt`.
+crate. With the feature off, `quantize()` still exists and returns `NotBuilt`, so a
+program compiled without the feature gets an error that names the feature instead of a
+link failure.
 
 ## Files
 
@@ -38,11 +40,13 @@ crate. With the feature off, `quantize()` still exists and returns `NotBuilt`.
   input, runs `prepare`, makes the output directory, calls `llama_backend_init` once and
   `llama_model_quantize` in dovata's only `unsafe` block, then opens the output again and
   checks that its `general.file_type` is the type asked for. Its tests quantize a real
-  file and compare dovata's ggml type table with ggml's own.
+  file and compare dovata's ggml type table with ggml's own; they add two more `unsafe`
+  blocks, to read ggml's type table and to load the fixture.
 - `fixture.rs` is test-only. It writes a tiny but complete `llama` model in F32 with
   `crate::gguf::write`: two layers, a 64-wide embedding, and a 32-token SentencePiece
   vocabulary, with every shape `load_arch_tensors` in llama.cpp expects. A test loads it
-  in llama.cpp to prove that. It can also write the model as two split parts.
+  in llama.cpp to prove that. It can also write the model as two split parts. See "The
+  fixture model" below.
 
 ## How a call goes
 
@@ -52,15 +56,32 @@ A call runs in four steps, and every refusal happens before llama.cpp starts.
    and its other parts are found by llama.cpp's `-00001-of-00003.gguf` rule.
 2. `prepare` checks the request against the model's header: the type, the input's
    current type, and where the output would go.
-3. llama.cpp gets only the first part's path. Its loader finds the other parts with
-   `llama_split_prefix` and `llama_split_path`, the same rule step 1 used, so it reads
-   the files dovata already checked.
+3. llama.cpp gets only the first part's path. `llama_model_quantize` builds a
+   `llama_model_loader` with an empty split list, and the loader, seeing
+   `split.count > 1`, names the other parts with `llama_split_prefix` and
+   `llama_split_path`: `<prefix>-%05d-of-%05d.gguf` next to the first. That is the same
+   rule step 1 used, so it reads the files dovata already checked. The loader also
+   refuses to start from any part but the first, which `Model::open` has already
+   enforced.
 4. The output is opened as a `Model` and its `general.file_type` is compared with the
    request. A run that returned success but wrote something else is still an error.
 
+An existing output file is overwritten, and a missing output directory is created.
+llama.cpp writes each file's header last, so an output cut short by a crash or a full
+disk has a zeroed header and never opens as a model. Before anything is written, the
+output paths are checked a second time on the resolved paths, because a symlinked
+directory can put an output inside the hub cache or make it another name for an input
+file. Paths reach llama.cpp as C strings; on Unix a path's raw bytes are passed as they
+are, so a file name that is not valid UTF-8 still works.
+
+`llama-quantize` calls `llama_backend_init` once before quantizing, so dovata does too,
+once per process. It initializes ggml's lookup tables and registers the compiled-in
+backends; quantizing runs on the CPU either way.
+
 llama.cpp logs to stderr while it works, one line per tensor, as `llama-quantize` does.
 That log is left on, because a big model takes minutes and the log is the only sign of
-progress, and because when llama.cpp fails, the reason is in it.
+progress, and because when llama.cpp fails, the reason is in it. Turning it off would
+take a log callback, a second `unsafe` entry point, for a quieter build.
 
 ## What a user will see when it refuses
 
@@ -81,12 +102,29 @@ with the file as it is can use it.
 *Requantizing is allowed but never silent.* Quantizing a Q8_0 file to Q4_K_M loses more
 than quantizing the BF16 original once. It needs `allow_requantize`, and the report's
 `requantized` field says it happened. The check looks at the tensors, not only at
-`general.file_type`, so a file without that key is judged correctly.
+`general.file_type`, so a file without that key is judged correctly. It uses the same
+split as ggml's `ggml_is_quantized`: F32, F16, BF16, F64 and the integer types are plain,
+and every other type, known or not, counts as quantized, so an unknown type is never
+silently requantized.
 
 *Two kinds of type are refused up front.* NVFP4 files load in the pinned llama.cpp, but
-its quantizer cannot write one. The types whose default tensor type needs an importance
-matrix are IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ2_M, IQ3_XXS and Q2_K_S. llama.cpp
-refuses those without a matrix, and `QuantSpec` has no way to pass one yet.
+its quantizer cannot write one: `llama_ftype_get_default_type` has no case for it, so
+asking for one fails. The types whose default tensor type needs an importance matrix are
+IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ2_M, IQ3_XXS and Q2_K_S. llama.cpp refuses those
+without a matrix, because the result would be unusable, and `QuantSpec` has no way to
+pass one yet. The list is the types whose default tensor type is one that
+`tensor_requires_imatrix` in `src/llama-quant.cpp` names, plus Q2_K_S, which that
+function names by ftype.
+
+## Type names
+
+`Ftype` spells each type the way `llama-quantize` does, and `Ftype::parse` reads names
+the same way, ignoring case. It takes the tool's three aliases too: Q3_K, Q4_K and Q5_K
+mean the `_M` mix of each. NVFP4 is the one type `llama-quantize` does not offer; its
+name is the one llama.cpp prints for it. An unknown name is an `UnknownFtype` error whose
+message lists every real name. `Ftype::from_file_type` returns `None` for a
+`general.file_type` value llama.cpp no longer writes, such as the removed Q4_0_4_4, and
+for one newer than the table.
 
 ## Where the output goes
 
@@ -107,7 +145,10 @@ repo from the cache deletes it too.
 
 `quantize()` enforces the rule for any output, not only the default one. An output
 inside a cache's `snapshots/` or `blobs/` is refused, and the check runs again on the
-resolved path, so a symlinked directory cannot get around it.
+resolved path, so a symlinked directory cannot get around it. `default_output` itself
+works on the path as given and never touches the disk. hf-hub names a repo's directory
+`models--org--repo`, `datasets--…` or `spaces--…`, and that is how a path inside the
+cache is recognized.
 
 ## Split models
 
@@ -117,6 +158,37 @@ named `<stem>.<FTYPE>-00001-of-00003.gguf` and so on. Each tensor stays in the p
 came from. `QuantReport::output` is the first part, which is the one to open. With
 `keep_split` off, llama.cpp writes one file holding everything. A one-file input always
 gives one file.
+
+For a split output, llama.cpp is given the output path less `.gguf`, or less a whole
+`-00001-of-00003.gguf`, the same name `llama-quantize --keep-split` passes, and it adds
+the part suffixes itself.
+
+## The fixture model
+
+llama.cpp's quantizer runs its real model loader, which reads the architecture's
+hyperparameters with exact GGUF types, so a fixture has to be a model llama.cpp would
+load, not only a well-formed GGUF. `fixture.rs` follows the pinned tree:
+
+- `load_hparams` in `src/llama-model.cpp` reads `context_length`, `embedding_length` and
+  `block_count` as `u32`, and for `llama` refuses a `rope.dimension_count` that is not
+  the head size.
+- `llama_model_llama::load_arch_hparams` in `src/models/llama.cpp` requires
+  `attention.layer_norm_rms_epsilon` as an `f32`.
+- `load_arch_tensors` there fixes every shape: `token_embd` is `{n_embd, n_vocab}`,
+  `attn_k` and `attn_v` are `{n_embd, head_dim * n_head_kv}`, and the FFN is `gate` and
+  `up` at `{n_embd, n_ff}` with `down` at `{n_ff, n_embd}`.
+- The vocabulary is a `llama` SentencePiece one, which needs `<0x0A>` for its newline
+  token and unique token strings.
+
+The widths are multiples of 32, so Q8_0 and Q4_0 quantize every weight without falling
+back to another type. Norm tensors are all ones, as a freshly initialized model's are.
+The other weights are small values from a fixed generator seeded by each tensor's name,
+so tensors differ from each other and every run writes the same bytes. The tensors are
+listed in the order llama.cpp's converter writes them. The split form is written the
+way `gguf-split` writes one: part 1 holds the metadata and the first half of the
+tensors, and part 2 holds only the split keys and the rest. Each test writes its files into
+its own directory under the system temp directory, named with the test and the process
+id, so tests running at the same time never share files.
 
 ## How the tables stay right
 

@@ -1,5 +1,6 @@
-//! Tests. Everything here runs offline against fixtures built in the test, except the
-//! real-template test, which needs `DOVATA_TEST_HEADER`, and the `#[ignore]`d Hub test.
+//! Author: Joe Ricks
+//! File: src/chat/src/tests/mod.rs
+//! Description: Tests `Chat` itself and lists the other test files.
 
 mod fixture;
 #[cfg(feature = "hub")]

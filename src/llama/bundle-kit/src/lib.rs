@@ -1,20 +1,6 @@
-//! Capability bundles: how a capability customizes llama.cpp without a fork.
-//!
-//! A *bundle* is a directory holding a `bundle.toml`, a patch series, and a pointer
-//! at the capability's native sources. The sys crate's `build.rs` stages a copy of
-//! the pinned upstream tree, applies the enabled bundles' patches to the copy, and
-//! points cmake at it. The submodule stays a clean checkout of stock llama.cpp.
-//!
-//! This crate is the part of that worth testing: reading a manifest, deciding
-//! whether a patch is allowed to apply, and turning a set of bundles into cmake
-//! arguments. `build.rs` does the filesystem and process work around it.
-//!
-//! ## Why a crate and not more functions in build.rs
-//!
-//! Build scripts cannot be unit-tested — cargo runs them, `cargo test` does not.
-//! The sys crate's `build.rs` is 1200 lines and none of it has ever been covered.
-//! The rules below are the ones where being wrong is expensive and silent, so they
-//! live where `cargo test` can reach them.
+//! Author: Joe Ricks
+//! File: src/llama/bundle-kit/src/lib.rs
+//! Description: Reads and checks the patch bundles that customize llama.cpp at build time.
 
 use std::path::{Path, PathBuf};
 
@@ -39,7 +25,7 @@ pub const FORBIDDEN_PATH_PREFIXES: &[&str] = &[
     "src/llama-quant.cpp",
 ];
 
-/// A capability's llama.cpp delta, as read from its `bundle.toml`.
+/// Purpose: This struct holds one bundle's patches and cmake defines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bundle {
     /// Capability name — matches the cargo feature that enables it.
@@ -54,6 +40,7 @@ pub struct Bundle {
     pub defines: Vec<(String, String)>,
 }
 
+/// Purpose: This struct holds the raw contents of a `bundle.toml`.
 #[derive(Deserialize)]
 struct Manifest {
     name: String,
@@ -65,20 +52,23 @@ struct Manifest {
     sources: Sources,
 }
 
+/// Purpose: This struct holds the `[sources]` table of a `bundle.toml`.
 #[derive(Deserialize, Default)]
 struct Sources {
     driver_dir: Option<String>,
 }
 
-/// Read and validate one bundle's manifest.
+/// Purpose: This function reads and checks the `bundle.toml` in a bundle directory.
 ///
-/// Every patch named must exist. A manifest that names a missing patch is an error
-/// rather than a skip: skipping would produce a build with part of the series
-/// applied, which for a seam designed to be inert when disabled is indistinguishable
-/// from a correct build until someone measures VRAM.
+/// Inputs:
+/// - `dir`: the bundle directory.
+///
+/// Outputs: the [`Bundle`], or an error message.
 ///
 /// # Errors
-/// If the manifest is unreadable, malformed, or names a patch that is not on disk.
+///
+/// Returns an error if `bundle.toml` cannot be read, is not valid, lists no patches, or
+/// names a patch file that does not exist.
 pub fn load_manifest(dir: &Path) -> Result<Bundle, String> {
     let path = dir.join("bundle.toml");
     let text = std::fs::read_to_string(&path)
@@ -86,11 +76,18 @@ pub fn load_manifest(dir: &Path) -> Result<Bundle, String> {
     parse_manifest(dir, &text)
 }
 
-/// The parsing half of [`load_manifest`], split out so it can be tested against
-/// manifest text without writing files.
+/// Purpose: This function parses the text of a `bundle.toml` into a [`Bundle`].
+///
+/// Inputs:
+/// - `dir`: the bundle directory, where the patch files must be.
+/// - `text`: the contents of `bundle.toml`.
+///
+/// Outputs: the [`Bundle`], or an error message.
 ///
 /// # Errors
-/// If the TOML is malformed or a named patch is missing from `dir`.
+///
+/// Returns an error if the text is not valid TOML for a bundle, lists no patches, or
+/// names a patch file that is not in `dir`.
 pub fn parse_manifest(dir: &Path, text: &str) -> Result<Bundle, String> {
     let m: Manifest = toml::from_str(text).map_err(|e| format!("{}/bundle.toml: {e}", dir.display()))?;
 
@@ -131,11 +128,12 @@ pub fn parse_manifest(dir: &Path, text: &str) -> Result<Bundle, String> {
     Ok(Bundle { name: m.name, dir: dir.to_path_buf(), upstream: m.upstream, patches, defines })
 }
 
-/// The first forbidden path a patch touches, if any.
+/// Purpose: This function finds the first forbidden file a patch edits.
 ///
-/// Reads the `+++ b/<path>` lines of a unified diff. Returns the offending path so the
-/// caller can name it — "this patch is not allowed" without saying which file is a
-/// message that costs someone an afternoon.
+/// Inputs:
+/// - `patch_text`: the patch, as a unified diff.
+///
+/// Outputs: the forbidden path and the rule it matches, or `None`.
 #[must_use]
 pub fn patch_touches_forbidden_path(patch_text: &str) -> Option<String> {
     for line in patch_text.lines() {
@@ -151,10 +149,17 @@ pub fn patch_touches_forbidden_path(patch_text: &str) -> Option<String> {
     None
 }
 
-/// Check every patch in `bundles` against [`FORBIDDEN_PATH_PREFIXES`].
+/// Purpose: This function checks that no patch in the bundles edits a forbidden file.
+///
+/// Inputs:
+/// - `bundles`: the bundles to check.
+///
+/// Outputs: `Ok(())`, or an error message.
 ///
 /// # Errors
-/// Naming the bundle, the patch, and the path, so the message is actionable.
+///
+/// Returns an error naming the bundle, the patch and the file if a patch edits a path in
+/// [`FORBIDDEN_PATH_PREFIXES`], or if a patch file cannot be read.
 pub fn check_forbidden_paths(bundles: &[Bundle]) -> Result<(), String> {
     for b in bundles {
         for p in &b.patches {
@@ -174,11 +179,16 @@ pub fn check_forbidden_paths(bundles: &[Bundle]) -> Result<(), String> {
     Ok(())
 }
 
-/// The `-D` arguments for a set of bundles, deduplicated and ordered.
+/// Purpose: This function merges the bundles' cmake defines into one list.
+///
+/// Inputs:
+/// - `bundles`: the enabled bundles.
+///
+/// Outputs: each define once, in first-seen order, or an error message.
 ///
 /// # Errors
-/// If two bundles set the same define to different values — a conflict that would
-/// otherwise resolve by argument order, which is not a decision anyone made.
+///
+/// Returns an error if two bundles set the same define to different values.
 pub fn cmake_defines(bundles: &[Bundle]) -> Result<Vec<(String, String)>, String> {
     let mut out: Vec<(String, String)> = Vec::new();
     for b in bundles {
@@ -202,6 +212,12 @@ pub fn cmake_defines(bundles: &[Bundle]) -> Result<Vec<(String, String)>, String
 mod tests {
     use super::*;
 
+    /// Purpose: This function creates an empty temporary folder for one test.
+    ///
+    /// Inputs:
+    /// - `tag`: a name that keeps each test's folder separate.
+    ///
+    /// Outputs: the folder's path.
     fn tmpdir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("bundle-kit-test-{tag}"));
         let _ = std::fs::remove_dir_all(&d);

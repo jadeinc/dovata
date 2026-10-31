@@ -1,30 +1,14 @@
-//! `tojson` as `transformers` defines it: Python's `json.dumps`, keyword arguments and
-//! all.
-//!
-//! # Why not minijinja's own
-//!
-//! Jinja's built-in `tojson` is for embedding JSON in HTML. It escapes `<`, `>`, `&` and
-//! `'`, and minijinja's prints compact JSON with no spaces. `transformers` replaces it
-//! with `json.dumps(x, ensure_ascii=False, indent=indent, separators=separators,
-//! sort_keys=sort_keys)`, and models are trained on that output: a tool schema with a
-//! space after every `,` and `:`, and `<` left as it is. This module prints the same
-//! bytes.
-//!
-//! Keyword arguments are the four `transformers` passes through: `indent` (spaces, or a
-//! string), `separators` (an item and a key separator), `sort_keys` and `ensure_ascii`.
-//! Positional arguments are refused; `transformers` would read the first one as
-//! `ensure_ascii`, which no template means.
-//!
-//! Map keys print in the order the map holds them. With minijinja's `preserve_order`
-//! feature that is the order they were serialized in, which is what Python's dict does.
-//! Floats print as Python's `repr` does, which agrees with Rust's shortest round-trip
-//! form except for how an exponent is written.
+//! Author: Joe Ricks
+//! File: src/chat/src/template/pyjson.rs
+//! Description: The `tojson` template filter, which prints JSON the way Python's
+//! `json.dumps` does.
 
 use std::fmt::Write;
 
 use minijinja::value::{Kwargs, ValueKind};
 use minijinja::{Error, ErrorKind, Value};
 
+/// Purpose: This struct holds the formatting options for one `tojson` call.
 struct Options {
     /// `None` is compact, on one line. `Some` puts each item on its own line, indented
     /// by this string once per level; an empty string still breaks lines.
@@ -35,7 +19,15 @@ struct Options {
     ensure_ascii: bool,
 }
 
-/// The `tojson` filter.
+/// Purpose: This function prints a template value as JSON, the way Python's `json.dumps`
+/// does.
+///
+/// Inputs:
+/// - `value`: the value to print.
+/// - `kwargs`: the optional `indent`, `separators`, `sort_keys` and `ensure_ascii`
+///   arguments.
+///
+/// Outputs: the JSON text, or an error for a bad argument or a value JSON cannot hold.
 pub(crate) fn tojson(value: &Value, kwargs: Kwargs) -> Result<Value, Error> {
     let indent = match kwargs.get::<Option<Value>>("indent")? {
         None => None,
@@ -75,7 +67,15 @@ pub(crate) fn tojson(value: &Value, kwargs: Kwargs) -> Result<Value, Error> {
     Ok(Value::from_safe_string(out))
 }
 
-/// Python's `json.dumps(value, ...)` with the given options.
+/// Purpose: This function prints a value as JSON for the tests.
+///
+/// Inputs:
+/// - `value`: the value to print.
+/// - `indent`: the indent string, or `None` for one line.
+/// - `sort_keys`: whether to sort map keys.
+/// - `ensure_ascii`: whether to escape characters outside ASCII.
+///
+/// Outputs: the JSON text.
 #[cfg(test)]
 pub(crate) fn dumps(value: &Value, indent: Option<&str>, sort_keys: bool, ensure_ascii: bool) -> String {
     let opts = Options {
@@ -90,10 +90,25 @@ pub(crate) fn dumps(value: &Value, indent: Option<&str>, sort_keys: bool, ensure
     out
 }
 
+/// Purpose: This function makes a minijinja error with a message.
+///
+/// Inputs:
+/// - `msg`: the message.
+///
+/// Outputs: the error.
 fn invalid(msg: String) -> Error {
     Error::new(ErrorKind::InvalidOperation, msg)
 }
 
+/// Purpose: This function writes one value as JSON, including any values inside it.
+///
+/// Inputs:
+/// - `out`: the text to write to.
+/// - `value`: the value to write.
+/// - `opts`: the JSON formatting options.
+/// - `depth`: how deeply the value is nested.
+///
+/// Outputs: `Ok(())`, or an error for a value JSON cannot hold.
 fn write_value(out: &mut String, value: &Value, opts: &Options, depth: usize) -> Result<(), Error> {
     match value.kind() {
         ValueKind::None => out.push_str("null"),
@@ -147,6 +162,14 @@ fn write_value(out: &mut String, value: &Value, opts: &Options, depth: usize) ->
     Ok(())
 }
 
+/// Purpose: This function starts a new indented line when the output is indented.
+///
+/// Inputs:
+/// - `out`: the text to write to.
+/// - `opts`: the JSON formatting options.
+/// - `depth`: how many indents to write.
+///
+/// Outputs: none.
 fn newline(out: &mut String, opts: &Options, depth: usize) {
     if let Some(indent) = &opts.indent {
         out.push('\n');
@@ -156,8 +179,13 @@ fn newline(out: &mut String, opts: &Options, depth: usize) {
     }
 }
 
-/// A map key as Python's encoder writes it: strings as they are, and numbers, booleans
-/// and None as their JSON spelling.
+/// Purpose: This function turns a map key into the string Python's JSON writer prints
+/// for it.
+///
+/// Inputs:
+/// - `key`: the map key.
+///
+/// Outputs: the key as a string, or an error for a key JSON cannot hold.
 fn key_string(key: &Value) -> Result<String, Error> {
     match key.kind() {
         ValueKind::String => Ok(key.as_str().unwrap_or_default().to_owned()),
@@ -172,6 +200,13 @@ fn key_string(key: &Value) -> Result<String, Error> {
     }
 }
 
+/// Purpose: This function writes a number as JSON.
+///
+/// Inputs:
+/// - `out`: the text to write to.
+/// - `value`: the number.
+///
+/// Outputs: `Ok(())`, or an error if the value is not a number.
 fn write_number(out: &mut String, value: &Value) -> Result<(), Error> {
     if value.is_integer() {
         let _ = write!(out, "{value}");
@@ -182,10 +217,12 @@ fn write_number(out: &mut String, value: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-/// Python's `float.__repr__`, which `json.dumps` uses. Both Python and Rust print the
-/// shortest string that reads back as the same float, and both switch to an exponent
-/// below 1e-4 and from 1e16 up; they differ only in spelling it. Rust writes `1e16`
-/// and `1e-7`, Python `1e+16` and `1e-07`.
+/// Purpose: This function prints a float the way Python does.
+///
+/// Inputs:
+/// - `f`: the float.
+///
+/// Outputs: the text, such as `1e+16`.
 fn python_float(f: f64) -> String {
     if f.is_nan() {
         return "NaN".into();
@@ -204,10 +241,14 @@ fn python_float(f: f64) -> String {
     format!("{mantissa}e{sign}{digits:0>2}")
 }
 
-/// A JSON string the way Python's encoder escapes it. With `ensure_ascii` off, only the
-/// quote, the backslash and control characters are escaped, so a CJK tool description
-/// stays readable. With it on, everything outside printable ASCII becomes `\uXXXX`, in
-/// UTF-16 surrogate pairs past the BMP, as Python does.
+/// Purpose: This function writes a string as JSON, escaped the way Python escapes it.
+///
+/// Inputs:
+/// - `out`: the text to write to.
+/// - `s`: the string.
+/// - `ensure_ascii`: whether to escape characters outside ASCII.
+///
+/// Outputs: none.
 fn write_string(out: &mut String, s: &str, ensure_ascii: bool) {
     out.push('"');
     for c in s.chars() {

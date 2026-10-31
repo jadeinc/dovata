@@ -1,28 +1,6 @@
-//! Quantizing a GGUF with llama.cpp's own `llama_model_quantize`.
-//!
-//! # Why llama.cpp does the work
-//!
-//! The quant formats are ggml's, and the Jade compiler's kernels read ggml's block
-//! layouts. A second quantizer would have to match llama.cpp bit for bit, including the
-//! per-tensor type choices that make a "Q4_K_M" file a mix of Q4_K, Q6_K and F32
-//! tensors. Calling the real one through the bindgen'd sys crate is the only way to get
-//! files that are the same as what `llama-quantize` writes.
-//!
-//! # Never implicit
-//!
-//! Nothing in dovata quantizes on its own. `hub::fetch` downloads a file as it is, and
-//! planning reads what it is given. A caller who wants a smaller model calls
-//! [`quantize`] and names the input, the output and the type. Quantizing a 30B model
-//! reads and writes tens of gigabytes, so it should never happen as a side effect.
-//!
-//! # Pure core, native edge
-//!
-//! This file is pure and always built: the [`Ftype`] table, the spec and report types,
-//! the checks that run before llama.cpp is called, and the [`default_output`] naming
-//! rule. `exec.rs`, behind the `quantize` cargo feature, holds the one call into
-//! llama.cpp. With the feature off, [`quantize`] still exists and returns
-//! [`QuantError::NotBuilt`], so a caller compiled without it fails with a message that
-//! names the feature rather than failing to link.
+//! Author: Joe Ricks
+//! File: src/quantize/mod.rs
+//! Description: Lists the GGUF file types and checks a quantization before llama.cpp runs.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -38,24 +16,22 @@ pub(crate) mod fixture;
 #[cfg(feature = "quantize")]
 pub use exec::quantize;
 
-/// Quantize `input` into `output` as `spec` says. Without the `quantize` feature this
-/// build has no quantizer, so every call returns [`QuantError::NotBuilt`].
+/// Purpose: This function returns `NotBuilt` in a build without the `quantize` feature.
+///
+/// Inputs:
+/// - `input`: the model file to quantize; unused.
+/// - `output`: the file to write; unused.
+/// - `spec`: what to make; unused.
+///
+/// Outputs: always [`QuantError::NotBuilt`].
 #[cfg(not(feature = "quantize"))]
 pub fn quantize(input: &Path, output: &Path, spec: &QuantSpec) -> Result<QuantReport, QuantError> {
     let _ = (input, output, spec);
     Err(QuantError::NotBuilt)
 }
 
-/// A file type: what `general.file_type` holds and what `llama-quantize` takes, such as
+/// Purpose: This enum lists the GGUF file types llama.cpp's quantizer knows, such as
 /// `Q4_K_M`.
-///
-/// Each variant is spelled the way `llama-quantize` spells it and its discriminant is
-/// its `llama_ftype` value in the vendored `include/llama.h`, so `Ftype::Q4_K_M as u32`
-/// is 15. The `ftype_table_matches_llama_h` test parses that header and checks every
-/// entry, so the table cannot drift from the pinned llama.cpp.
-///
-/// An ftype names a whole file. Its tensors keep their own `ggml_type`s, and a Q4_K_M
-/// file still holds F32 norms and some Q6_K weights; llama.cpp picks the mix.
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
@@ -144,8 +120,12 @@ impl Ftype {
         Ftype::F32,
     ];
 
-    /// The name `llama-quantize` takes, such as `Q4_K_M`. NVFP4 is the one type
-    /// `llama-quantize` does not offer; its name is the one llama.cpp prints for it.
+    /// Purpose: This function returns the file type's name, as `llama-quantize` spells
+    /// it.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: a name such as `Q4_K_M`.
     pub fn name(self) -> &'static str {
         match self {
             Ftype::F32 => "F32",
@@ -186,35 +166,51 @@ impl Ftype {
         }
     }
 
-    /// The `llama_ftype` value, as written to `general.file_type`.
+    /// Purpose: This function returns the file type's `llama_ftype` number.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the number, such as 15 for `Q4_K_M`.
     pub fn value(self) -> u32 {
         self as u32
     }
 
-    /// Where the type sits in [`Ftype::ALL`]: higher is more precise.
+    /// Purpose: This function returns the file type's position in [`Ftype::ALL`], from
+    /// least to most precise.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the position; higher is more precise.
     pub fn rank(self) -> usize {
         Ftype::ALL.iter().position(|f| *f == self).unwrap_or(0)
     }
 
-    /// False for the three full-precision types, F32, F16 and BF16.
+    /// Purpose: This function checks whether the file type is quantized.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `false` for F32, F16 and BF16, and `true` for the rest.
     pub fn is_quantized(self) -> bool {
         !matches!(self, Ftype::F32 | Ftype::F16 | Ftype::BF16)
     }
 
-    /// Whether `llama_model_quantize` can write this type. Every type but NVFP4: the
-    /// pinned llama.cpp loads NVFP4 files, but `llama_ftype_get_default_type` has no
-    /// case for it, so asking for one fails.
+    /// Purpose: This function checks whether llama.cpp's quantizer can write this file
+    /// type.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `true` for every type but NVFP4.
     pub fn is_target(self) -> bool {
         self != Ftype::NVFP4
     }
 
-    /// Whether quantizing to this type needs an importance matrix. llama.cpp refuses to
-    /// make these without one, because the result is unusable. [`QuantSpec`] has no
-    /// way to pass one yet, so [`quantize`] refuses them up front.
+    /// Purpose: This function checks whether quantizing to this file type needs an
+    /// importance matrix.
     ///
-    /// The list is the types whose default tensor type is one that
-    /// `tensor_requires_imatrix` in `src/llama-quant.cpp` names, plus Q2_K_S, which
-    /// that function names by ftype. A test derives the same list from that file.
+    /// Inputs: none.
+    ///
+    /// Outputs: `true` for IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ2_M, IQ3_XXS and
+    /// Q2_K_S.
     pub fn needs_imatrix(self) -> bool {
         matches!(
             self,
@@ -229,8 +225,12 @@ impl Ftype {
         )
     }
 
-    /// Read a type name the way `llama-quantize` does, ignoring case. Its three
-    /// aliases are taken too: Q3_K, Q4_K and Q5_K mean the `_M` mix of each.
+    /// Purpose: This function reads a file type from its name, ignoring case.
+    ///
+    /// Inputs:
+    /// - `s`: the name, such as `q4_k_m` or the alias `Q4_K`.
+    ///
+    /// Outputs: the type, or an [`UnknownFtype`] error.
     pub fn parse(s: &str) -> Result<Ftype, UnknownFtype> {
         let up = s.trim().to_ascii_uppercase();
         let alias = match up.as_str() {
@@ -244,14 +244,24 @@ impl Ftype {
             .ok_or_else(|| UnknownFtype(s.to_owned()))
     }
 
-    /// The type a `general.file_type` value names. `None` for a value llama.cpp no
-    /// longer writes, such as the removed Q4_0_4_4, and for one newer than this table.
+    /// Purpose: This function finds the file type a `general.file_type` number names.
+    ///
+    /// Inputs:
+    /// - `value`: the `llama_ftype` number from a GGUF file.
+    ///
+    /// Outputs: the type, or `None` for an unknown number.
     pub fn from_file_type(value: u32) -> Option<Ftype> {
         Ftype::ALL.iter().copied().find(|f| f.value() == value)
     }
 }
 
 impl fmt::Display for Ftype {
+    /// Purpose: This function formats a file type as its `llama-quantize` name.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
     }
@@ -259,16 +269,29 @@ impl fmt::Display for Ftype {
 
 impl std::str::FromStr for Ftype {
     type Err = UnknownFtype;
+    /// Purpose: This function reads a file type from its name, as [`Ftype::parse`] does.
+    ///
+    /// Inputs:
+    /// - `s`: the name.
+    ///
+    /// Outputs: the type, or an [`UnknownFtype`] error.
     fn from_str(s: &str) -> Result<Ftype, UnknownFtype> {
         Ftype::parse(s)
     }
 }
 
-/// A type name [`Ftype::parse`] does not know. Its message lists the ones it does.
+/// Purpose: This struct holds a file type name that [`Ftype::parse`] does not know.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownFtype(pub String);
 
 impl fmt::Display for UnknownFtype {
+    /// Purpose: This function formats the unknown file type error, listing the valid
+    /// names.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let names: Vec<&str> = Ftype::ALL.iter().rev().map(|t| t.name()).collect();
         write!(f, "unknown quantization type {:?}; the types are {}", self.0, names.join(", "))
@@ -277,7 +300,7 @@ impl fmt::Display for UnknownFtype {
 
 impl std::error::Error for UnknownFtype {}
 
-/// What to quantize to, and how.
+/// Purpose: This struct holds what file type to quantize to, and the options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuantSpec {
     /// The type to write.
@@ -295,17 +318,19 @@ pub struct QuantSpec {
 }
 
 impl QuantSpec {
-    /// Quantize to `ftype` from full precision, with llama.cpp's thread default.
+    /// Purpose: This function builds a quantization request for one file type with the
+    /// default options.
     ///
-    /// `keep_split` starts on: the output keeps the input's shape, so a split model
-    /// stays split. dovata never merges a split model, and a quantized copy is no
-    /// reason to start.
+    /// Inputs:
+    /// - `ftype`: the file type to make.
+    ///
+    /// Outputs: the [`QuantSpec`].
     pub fn new(ftype: Ftype) -> QuantSpec {
         QuantSpec { ftype, allow_requantize: false, nthread: 0, keep_split: true }
     }
 }
 
-/// What a quantization did.
+/// Purpose: This struct holds what a quantization wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuantReport {
     /// The input's first file.
@@ -325,7 +350,7 @@ pub struct QuantReport {
     pub bytes_out: u64,
 }
 
-/// Why a quantization did not happen.
+/// Purpose: This enum lists the errors quantizing can return.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuantError {
     /// This build of dovata has no quantizer: the `quantize` feature is off.
@@ -336,9 +361,9 @@ pub enum QuantError {
     ///
     /// This is an error, not a quiet success. A no-op would either copy the whole file
     /// to `output`, which is the 60 GB accident this check exists to stop, or leave
-    /// `output` unwritten while reporting success, and a caller that later deletes its
+    /// `output` unwritten while reporting success, and a program that later deletes its
     /// output would delete the input instead. The error carries the input's path, so a
-    /// caller that wants the file as it is can use it directly.
+    /// program that wants the file as it is can use it directly.
     AlreadyAt { input: PathBuf, ftype: Ftype },
     /// The arguments cannot work: the input does not open as a model, the output would
     /// overwrite it or land in the Hugging Face cache, or the type cannot be written.
@@ -348,6 +373,12 @@ pub enum QuantError {
 }
 
 impl fmt::Display for QuantError {
+    /// Purpose: This function formats quantization errors.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             QuantError::NotBuilt => write!(
@@ -376,28 +407,13 @@ impl fmt::Display for QuantError {
 
 impl std::error::Error for QuantError {}
 
-/// Where to write a quantized copy of `input_first_part` when the caller has no
-/// preference.
+/// Purpose: This function picks the path for a quantized copy of a model.
 ///
-/// The file is named `<stem>.<FTYPE>.gguf`, where the stem is the input's name less
-/// `.gguf` and less any `-00001-of-00003` part suffix. The source type stays in the
-/// stem, so `X-BF16.gguf` becomes `X-BF16.Q4_K_M.gguf` and two copies made from
-/// different sources never collide. A split output, from
-/// [`QuantSpec::keep_split`], adds its own part suffix to this name.
+/// Inputs:
+/// - `input_first_part`: the input model's file, or its first part.
+/// - `ftype`: the file type the copy will be.
 ///
-/// The directory is the input's own, with one exception: an input inside a Hugging
-/// Face hub cache. That cache keeps each file once in `blobs/` and lists each revision
-/// in `snapshots/<commit>/` as symlinks into it, and hf-hub owns both. A file written
-/// there would look like part of the upstream repo and could be overwritten or deleted
-/// by the next download. So for an input at
-/// `<cache>/models--org--repo/snapshots/<commit>/<dirs>/<file>`, the output goes to
-/// `<cache>/models--org--repo/dovata/<commit>/<dirs>/<stem>.<FTYPE>.gguf`: beside
-/// `snapshots/` rather than inside it. It stays with the repo it came from, and
-/// deleting the repo from the cache deletes it too. An input path into `blobs/` gets the
-/// same treatment.
-///
-/// This works on the path as given and never touches the disk. [`quantize`] checks the
-/// resolved path as well, so a symlinked directory cannot get around the rule.
+/// Outputs: the output path, `<stem>.<FTYPE>.gguf`.
 pub fn default_output(input_first_part: &Path, ftype: Ftype) -> PathBuf {
     let name = input_first_part.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let file = format!("{}.{}.gguf", model_stem(&name), ftype.name());
@@ -407,13 +423,25 @@ pub fn default_output(input_first_part: &Path, ftype: Ftype) -> PathBuf {
     }
 }
 
-/// A file name less `.gguf`, in any case, and less a `-00001-of-00003` part suffix.
+/// Purpose: This function strips `.gguf` and any split-part suffix from a model file
+/// name.
+///
+/// Inputs:
+/// - `name`: the file name.
+///
+/// Outputs: the base name.
 pub(crate) fn model_stem(name: &str) -> &str {
     let stem = strip_suffix_ignore_case(name, ".gguf").unwrap_or(name);
     split_suffix(stem).map_or(stem, |(prefix, _, _)| prefix)
 }
 
-/// `(prefix, part, count)` for a stem ending in llama.cpp's `-%05d-of-%05d`.
+/// Purpose: This function reads llama.cpp's `-%05d-of-%05d` part suffix off the end of a
+/// name.
+///
+/// Inputs:
+/// - `stem`: a file name without `.gguf`.
+///
+/// Outputs: the name before the suffix, the part number and the part count, or `None`.
 pub(crate) fn split_suffix(stem: &str) -> Option<(&str, u16, u16)> {
     // "-00001-of-00003" is 15 bytes.
     let cut = stem.len().checked_sub(15)?;
@@ -429,14 +457,25 @@ pub(crate) fn split_suffix(stem: &str) -> Option<(&str, u16, u16)> {
     Some((prefix, tail[1..6].parse().ok()?, tail[10..15].parse().ok()?))
 }
 
+/// Purpose: This function removes a suffix from a string, ignoring ASCII case.
+///
+/// Inputs:
+/// - `s`: the string.
+/// - `suffix`: the suffix.
+///
+/// Outputs: the string without the suffix, or `None` when it does not end with it.
 pub(crate) fn strip_suffix_ignore_case<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
     let cut = s.len().checked_sub(suffix.len())?;
     (s.is_char_boundary(cut) && s[cut..].eq_ignore_ascii_case(suffix)).then(|| &s[..cut])
 }
 
-/// For a path inside a Hugging Face hub cache repo, the repo's directory and the
-/// directories between its `snapshots/` (or `blobs/`) and the file. hf-hub names repo
-/// directories `models--org--repo`, `datasets--…` or `spaces--…`.
+/// Purpose: This function finds where a path sits inside a Hugging Face hub cache repo.
+///
+/// Inputs:
+/// - `path`: the file's path.
+///
+/// Outputs: the repo directory and the directories between its `snapshots/` or `blobs/`
+/// and the file, or `None`.
 fn hub_cache_place(path: &Path) -> Option<(PathBuf, PathBuf)> {
     let parts: Vec<_> = path.components().collect();
     let parent_len = parts.len().checked_sub(1)?;
@@ -453,21 +492,30 @@ fn hub_cache_place(path: &Path) -> Option<(PathBuf, PathBuf)> {
     None
 }
 
-/// Whether `path` lies inside a hub cache's `snapshots/` or `blobs/`, where dovata must
-/// never write.
+/// Purpose: This function checks whether a path is inside a Hugging Face hub cache's
+/// `snapshots/` or `blobs/`.
+///
+/// Inputs:
+/// - `path`: the file's path.
+///
+/// Outputs: `true` when it is.
 pub(crate) fn in_hub_cache(path: &Path) -> bool {
     hub_cache_place(path).is_some()
 }
 
-/// Whether a `ggml_type` is a quantized one, the same split as ggml's
-/// `ggml_is_quantized`. The plain types are F32, F16, BF16, F64 and the integers;
-/// every other type, known or not, counts as quantized, so an unknown one is never
-/// silently requantized.
+/// Purpose: This function checks whether a ggml tensor type is quantized.
+///
+/// Inputs:
+/// - `ggml_type`: the tensor's `ggml_type` number.
+///
+/// Outputs: `false` for F32, F16, BF16, F64 and the integer types, and `true` for every
+/// other number.
 pub(crate) fn is_quantized_type(ggml_type: u32) -> bool {
     !matches!(ggml_type, 0 | 1 | 24..=28 | 30)
 }
 
-/// A quantization that passed every check that can be made without llama.cpp.
+/// Purpose: This struct holds a quantization that passed every check made before
+/// llama.cpp runs.
 #[cfg_attr(not(feature = "quantize"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Job {
@@ -481,8 +529,15 @@ struct Job {
     outputs: Vec<PathBuf>,
 }
 
-/// Decide whether a quantization can run, before llama.cpp spends minutes loading the
-/// model. Pure, so the refusals are tested on any machine.
+/// Purpose: This function checks a quantization request before llama.cpp runs and names
+/// the output files.
+///
+/// Inputs:
+/// - `model`: the opened input model.
+/// - `output`: the output path.
+/// - `spec`: what to make.
+///
+/// Outputs: the [`Job`] to run, or a [`QuantError`] saying why it cannot run.
 #[cfg_attr(not(feature = "quantize"), allow(dead_code))]
 fn prepare(model: &Model, output: &Path, spec: &QuantSpec) -> Result<Job, QuantError> {
     let input = model.paths[0].clone();
@@ -535,7 +590,13 @@ fn prepare(model: &Model, output: &Path, spec: &QuantSpec) -> Result<Job, QuantE
     Ok(Job { from, requantized: quantized, keep_split, target, outputs })
 }
 
-/// The message for an output inside the hub cache.
+/// Purpose: This function writes the error message for an output path inside the Hugging
+/// Face hub cache.
+///
+/// Inputs:
+/// - `path`: the refused output path.
+///
+/// Outputs: the message.
 fn cache_refusal(path: &Path) -> String {
     format!(
         "the output {} is inside a Hugging Face cache's snapshots or blobs, which hf-hub owns and may \
@@ -544,8 +605,12 @@ fn cache_refusal(path: &Path) -> String {
     )
 }
 
-/// What llama.cpp takes as a split output's name: the output less `.gguf`, or less a
-/// whole `-00001-of-00003.gguf`, the same as `llama-quantize --keep-split` does.
+/// Purpose: This function works out the name llama.cpp takes for a split output.
+///
+/// Inputs:
+/// - `output`: the output path.
+///
+/// Outputs: the path without `.gguf` or its part suffix.
 #[cfg_attr(not(feature = "quantize"), allow(dead_code))]
 fn output_prefix(output: &Path) -> PathBuf {
     let name = output.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -558,9 +623,13 @@ mod tests {
     use crate::gguf::write::Writer;
     use crate::gguf::Value;
 
-    /// The vendored llama.cpp tree. The drift tests read its sources, so they need the
-    /// submodule checked out; without it they fail and say so, since a drift check that
-    /// passes when it cannot see its reference proves nothing.
+    /// Purpose: This function reads one source file from the vendored llama.cpp
+    /// submodule.
+    ///
+    /// Inputs:
+    /// - `rel`: the file's path inside the llama.cpp tree.
+    ///
+    /// Outputs: the file's text; panics when the submodule is not checked out.
     pub(crate) fn llama_cpp_file(rel: &str) -> String {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/llama/bindings-sys/llama.cpp").join(rel);
         std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -568,15 +637,26 @@ mod tests {
         })
     }
 
-    /// The body of a C block from the line holding `start` to the next line that
-    /// starts with `end`.
+    /// Purpose: This function cuts one block of lines out of a C or C++ source file.
+    ///
+    /// Inputs:
+    /// - `src`: the source text.
+    /// - `start`: text on the block's first line.
+    /// - `end`: text the line after the block starts with.
+    ///
+    /// Outputs: the block's lines; panics when `start` is not found.
     fn block<'a>(src: &'a str, start: &str, end: &str) -> Vec<&'a str> {
         let mut lines = src.lines().skip_while(|l| !l.contains(start));
         let first = lines.next().unwrap_or_else(|| panic!("{start} not found"));
         std::iter::once(first).chain(lines.take_while(|l| !l.trim_start().starts_with(end))).collect()
     }
 
-    /// `NAME = VALUE` entries of the `llama_ftype` enum, commented-out ones skipped.
+    /// Purpose: This function reads every entry of the `llama_ftype` enum from the
+    /// vendored `include/llama.h`.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: each entry's name and number.
     fn llama_h_ftypes() -> Vec<(String, u32)> {
         let src = llama_cpp_file("include/llama.h");
         block(&src, "enum llama_ftype {", "};")
@@ -590,6 +670,12 @@ mod tests {
             .collect()
     }
 
+    /// Purpose: This function returns the C enum name llama.cpp gives a file type.
+    ///
+    /// Inputs:
+    /// - `f`: the file type.
+    ///
+    /// Outputs: a name such as `LLAMA_FTYPE_MOSTLY_Q4_K_M`.
     fn c_name(f: Ftype) -> String {
         match f {
             Ftype::F32 => "LLAMA_FTYPE_ALL_F32".to_owned(),
@@ -762,8 +848,14 @@ mod tests {
 
     // ── prepare: the refusals, against headers only ─────────────────────────────
 
-    /// A llama header, no tensor data, declaring `file_type` and holding one tensor of
-    /// `ggml_type`. Enough for every check `prepare` makes.
+    /// Purpose: This function builds a small test llama model with one tensor of a chosen
+    /// type.
+    ///
+    /// Inputs:
+    /// - `file_type`: the `general.file_type` to declare, if any.
+    /// - `ggml_type`: the type of the model's one tensor.
+    ///
+    /// Outputs: the [`Model`].
     fn model_with(file_type: Option<Ftype>, ggml_type: u32) -> Model {
         let mut w = Writer::new();
         fixture::llama_metadata(&mut w);

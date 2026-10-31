@@ -22,10 +22,19 @@ relocations do. On Metal the program binds `(buffer, offset)` instead of adding.
 | CUDA | copied into `vram` | `vram` | `vram` |
 
 On Apple and CPU the weights are never copied. The program maps each part file once.
-On Apple, Metal reads the mapping through no-copy buffers, the way ggml's Metal backend
-does (`ggml-metal-device.m`). A Metal buffer has a size limit, `maxBufferLength`, so the
-mapping is bound as several windows, and every tensor lies wholly inside one. On CPU
-there is one window per file starting at byte 0, so every offset is the file offset.
+On Apple, Metal reads the mapping through no-copy buffers, `newBufferWithBytesNoCopy`,
+the way ggml's Metal backend does (`ggml-metal-device.m`). A Metal buffer has a size
+limit, `maxBufferLength`, which can be smaller than the model, so the mapping is bound
+as several windows. Every tensor lies wholly inside one, since a kernel addresses a
+tensor as one buffer plus an offset. On CPU there is no buffer limit, so there is one
+window per file starting at byte 0, and every offset is the file offset.
+
+ggml's Metal backend, in `ggml_backend_metal_buffer_from_ptr` in `ggml-metal-device.m`,
+makes its windows as fixed-stride views that overlap by the largest tensor. `window.rs`
+packs greedily instead: a window grows tensor by tensor until the next one would not
+fit, and the next window starts at the page holding that tensor. Every tensor gets
+exactly one window, and windows overlap by at most a page. Each window starts on a page
+boundary, so the program can hand `base + file_start` to Metal without copying.
 
 On CUDA everything is copied into VRAM once at startup. A model that does not fit is
 refused. Placing part of it in host memory, including paging MoE experts, is deferred
@@ -41,14 +50,42 @@ step and share one arena: a tensor can take bytes another tensor used earlier in
 step, as long as the two are never alive at the same time. Lifetimes come from op
 order in the bound layout. Views own no memory; they sit inside the tensor they view.
 
+The arena is what keeps scratch memory small. One forward step of a 48-layer model
+makes thousands of intermediate tensors, and almost all of them die a few ops after they
+are made. Giving each its own bytes would need gigabytes of scratch. Reusing memory
+between tensors whose lifetimes do not overlap brings that down to roughly the largest
+few that are alive at once.
+
+The arena uses greedy by size, the method TensorFlow Lite's arena planner uses: the
+largest tensor first, each at the lowest aligned offset that does not overlap a tensor
+alive at the same time. It is not optimal, since the problem is NP-hard, but it is close
+in practice. It is also deterministic. The compiler bakes the offsets into the program,
+so the same model and layout must always give the same offsets, or a rebuild would
+silently change the binary. Ties break by first use and then by name, so the result
+never depends on input order or hashing.
+
+Every entry in an allocated region starts at a multiple of the region's alignment, and
+the program must allocate the region's base at that alignment too. VRAM and Apple's
+unified memory use 256 bytes: `cuMemAlloc` returns 256-byte-aligned memory, and 256
+covers every vector width a kernel loads. Host memory uses 64 bytes, one cache
+line. A mapped window has no alignment of its own; its entries sit at the GGUF's file
+offsets, which are aligned to the file's `general.alignment`.
+
+`place` takes the layout's non-weight tensors as a list, each with the range of ops it
+is alive for. The weights come from the model itself, so every GGUF tensor gets a weight
+entry whether or not the layout names it.
+
 ## Trusting the table
 
 The offsets are compiled in, so a wrong one is a kernel reading the wrong bytes with no
 error. Three things guard against that.
 
-- The planner checks its own output before returning it: alignment, bounds, mapped
-  entries at their file offsets, no overlap except scratch that is never alive together,
-  and one weight entry per GGUF tensor. A violation is reported as a dovata bug.
+- The planner checks its own output with `Plan::check` before returning it: region ids
+  dense from 0, every offset a multiple of its entry's alignment, every entry inside its
+  region, mapped entries at their file offset minus their window's start, no shared
+  bytes except between scratch tensors that are never alive together or between a view
+  and the tensor it views, one weight entry per GGUF tensor, and a `table_hash` that
+  matches. A violation is reported as a dovata bug, and the plan is not returned.
 - The plan records each part file's name, the SHA-256 of its header, and its exact
   size. The program checks these at startup and refuses a different file.
 - `table_hash` is a SHA-256 over the whole plan. The same model, layout and target give
@@ -56,9 +93,9 @@ error. Three things guard against that.
 
 ## Files
 
-- `target.rs` — `Target`, the machine as the caller describes it; dovata does not probe
-  hardware, since the compiler may build on a laptop for a GPU box. Also `ExecSite` and
-  `RegionKind`.
+- `target.rs` — `Target`, the machine as the Jade compiler or `dovata-plan` describes
+  it; dovata does not probe hardware, since the compiler may build on a laptop for a GPU
+  box, so a plan is only as right as what it was told. Also `ExecSite` and `RegionKind`.
 - `window.rs` — splitting a mapped file into page-aligned windows no larger than one GPU
   buffer.
 - `arena.rs` — greedy-by-size placement of per-step tensors by lifetime, and a checker

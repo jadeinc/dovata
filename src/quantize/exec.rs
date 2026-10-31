@@ -1,33 +1,6 @@
-//! The call into llama.cpp's quantizer, and the only `unsafe` block in dovata's library
-//! code. The tests below add two more, to read ggml's type table and to load the fixture.
-//!
-//! [`quantize`] opens the input as a [`Model`], runs the pure checks in
-//! [`super::prepare`], then hands llama.cpp two paths and a params struct. llama.cpp
-//! reads the input itself, every part of a split one, writes the output, and returns
-//! a status code. Afterwards the output is opened again and its `general.file_type`
-//! compared with what was asked for, so a call that returned 0 but wrote something else
-//! is still caught.
-//!
-//! # How the input's parts reach llama.cpp
-//!
-//! Only the first part's path is passed. `llama_model_quantize` builds a
-//! `llama_model_loader` with an empty split list, and the loader, seeing
-//! `split.count > 1`, names the other parts with `llama_split_prefix` and
-//! `llama_split_path`: `<prefix>-%05d-of-%05d.gguf` next to the first. That is the
-//! rule `Model::open` uses too, so the parts dovata checked are the parts llama.cpp
-//! reads. The loader also refuses to start from any part but the first, which
-//! `Model::open` has already enforced.
-//!
-//! # Setup and logging
-//!
-//! `llama-quantize` calls `llama_backend_init` once before quantizing, so this does
-//! too, once per process. It initializes ggml's lookup tables and registers the
-//! compiled-in backends; quantizing runs on the CPU either way.
-//!
-//! llama.cpp logs to stderr as it works, one line per tensor, the same output
-//! `llama-quantize` prints. It is left on: a large model takes minutes, the lines are
-//! the only progress there is, and when llama.cpp fails its reason is in them. Turning
-//! it off would take a log callback, a second `unsafe` entry point, for a quieter build.
+//! Author: Joe Ricks
+//! File: src/quantize/exec.rs
+//! Description: Quantizes a GGUF model by calling llama.cpp's quantizer.
 
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -40,17 +13,15 @@ use crate::load::Model;
 
 static BACKEND_INIT: Once = Once::new();
 
-/// Quantize the model at `input` into `output`, as `spec` says.
+/// Purpose: This function writes a quantized copy of a GGUF model using llama.cpp's
+/// quantizer.
 ///
-/// `input` is the model's file, or the first part of a split model. `output` is the
-/// file to write; for a split output, from [`QuantSpec::keep_split`], it is the name the
-/// parts are made from, `x.gguf` becoming `x-00001-of-00003.gguf` and so on, the same
-/// as `llama-quantize --keep-split`. An existing output is overwritten. Its directory is
-/// created if missing. [`super::default_output`] picks an output when the caller has no
-/// preference.
+/// Inputs:
+/// - `input`: the model file, or the first part of a split model.
+/// - `output`: the file to write, or for a split output the name its parts are made from.
+/// - `spec`: the file type to make and the options.
 ///
-/// llama.cpp writes each file's header last, so an output cut short by a crash or a
-/// full disk has a zeroed header and never opens as a model.
+/// Outputs: a [`QuantReport`] of what was written, or a [`QuantError`].
 pub fn quantize(input: &Path, output: &Path, spec: &QuantSpec) -> Result<QuantReport, QuantError> {
     let model = Model::open(input).map_err(|e| QuantError::BadInput(format!("cannot open the input: {e}")))?;
     let job = prepare(&model, output, spec)?;
@@ -114,9 +85,14 @@ pub fn quantize(input: &Path, output: &Path, spec: &QuantSpec) -> Result<QuantRe
     })
 }
 
-/// The checks `prepare` cannot make from paths alone. A symlinked directory can put an
-/// output inside the hub cache, or make an output name another way to reach an input
-/// file, so both are checked on the resolved paths. Then the output directory is made.
+/// Purpose: This function checks the output paths against the resolved files on disk and
+/// creates the output directory.
+///
+/// Inputs:
+/// - `model`: the opened input model.
+/// - `outputs`: every file llama.cpp will write.
+///
+/// Outputs: `Ok(())`, or a [`QuantError::BadInput`].
 fn check_outputs_on_disk(model: &Model, outputs: &[PathBuf]) -> Result<(), QuantError> {
     let inputs: Vec<PathBuf> = model.paths.iter().filter_map(|p| std::fs::canonicalize(p).ok()).collect();
     for out in outputs {
@@ -141,6 +117,12 @@ fn check_outputs_on_disk(model: &Model, outputs: &[PathBuf]) -> Result<(), Quant
     Ok(())
 }
 
+/// Purpose: This function converts a file path into the C string llama.cpp takes.
+///
+/// Inputs:
+/// - `path`: the file path.
+///
+/// Outputs: the C string, or an error when the path holds a NUL byte.
 fn c_path(path: &Path) -> Result<CString, QuantError> {
     #[cfg(unix)]
     let bytes = {
@@ -156,6 +138,12 @@ fn c_path(path: &Path) -> Result<CString, QuantError> {
     CString::new(bytes).map_err(|_| QuantError::BadInput(format!("{} contains a NUL byte", path.display())))
 }
 
+/// Purpose: This function adds up the sizes of a model's files on disk.
+///
+/// Inputs:
+/// - `paths`: the model's files.
+///
+/// Outputs: the total bytes.
 fn size_on_disk(paths: &[PathBuf]) -> u64 {
     paths.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum()
 }
@@ -169,7 +157,12 @@ mod tests {
     use crate::quantize::default_output;
     use crate::quantize::fixture::{scratch_dir, write_tiny_llama, write_tiny_llama_split};
 
-    /// The ggml types of every tensor, by name.
+    /// Purpose: This function lists the ggml type of every tensor in a model.
+    ///
+    /// Inputs:
+    /// - `m`: the opened model.
+    ///
+    /// Outputs: each tensor's name and `ggml_type` number.
     fn types(m: &Model) -> Vec<(String, u32)> {
         m.tensors().map(|t| (t.info.name.clone(), t.info.kind)).collect()
     }

@@ -1,23 +1,10 @@
-//! MoE expert ranking: which experts each layer of a mixture-of-experts model uses most.
-//!
-//! Loads and validates the per-layer `expert_order` asset, a usage-ranked permutation of
-//! expert ids made offline from routing counts. In 3.0 the planner will read it to decide
-//! which experts stay in VRAM when a MoE model does not fit there whole. That case is
-//! deferred, so nothing calls this yet.
-//!
-//! Up to 2.x this module was the Rust side of a C++ and CUDA pager that moved cold experts
-//! into VRAM while the model ran, and it flattened the ranking for that driver over FFI.
-//! The pager went with the rest of the runtime; see `docs/moe-expert-offload.md` and
-//! `main:src/moe/driver/`. The validation stayed, because it is the part that is easy to
-//! get wrong without noticing.
-//!
-//! The capability is behind the `moe` cargo feature, so a build without it proves nothing
-//! else depends on the ranking.
+//! Author: Joe Ricks
+//! File: src/moe/mod.rs
+//! Description: Loads and checks the ranking of each MoE layer's experts by use.
 
 use serde_json::Value;
 
-/// The expert ranking for every layer: `order[layer]` is the expert ids of that
-/// layer, hottest-first. Pinned = the first `pin`, cache = the next `cache`.
+/// Purpose: This struct holds the expert ranking of every layer of a MoE model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpertOrder {
     pub n_layers: usize,
@@ -27,13 +14,13 @@ pub struct ExpertOrder {
 }
 
 impl ExpertOrder {
-    /// Parse and validate the asset JSON. Rejects wrong layer or expert counts, and any
-    /// layer that is not an exact permutation of `0..n_experts`: a non-permutation leaves
-    /// one expert unreachable and places another twice, and the model still answers,
-    /// worse, with nothing logged.
+    /// Purpose: This function parses an `expert_order` asset from JSON and checks it.
     ///
-    /// Parsed via `serde_json::Value` because the asset is tiny and the validation, not
-    /// the deserialization, is the part that matters.
+    /// Inputs:
+    /// - `bytes`: the asset's JSON text.
+    ///
+    /// Outputs: the [`ExpertOrder`], or an error when a count is wrong or a layer is not
+    /// an exact permutation.
     pub fn from_json(bytes: &[u8]) -> Result<Self, String> {
         let v: Value = serde_json::from_slice(bytes).map_err(|e| format!("expert_order parse: {e}"))?;
         let usize_field = |k: &str| -> Result<usize, String> {
@@ -78,18 +65,33 @@ impl ExpertOrder {
         Ok(ExpertOrder { n_layers, n_experts, flat })
     }
 
-    /// Load from a file path.
+    /// Purpose: This function reads an `expert_order` asset file and checks it.
+    ///
+    /// Inputs:
+    /// - `path`: the asset file.
+    ///
+    /// Outputs: the [`ExpertOrder`], or an error.
     pub fn load(path: &str) -> Result<Self, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("expert_order read {path}: {e}"))?;
         Self::from_json(&bytes)
     }
 
-    /// Row-major `[n_layers * n_experts]` slice: `flat[layer * n_experts + rank]`.
+    /// Purpose: This function returns every layer's expert ranking as one flat list,
+    /// layer after layer.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `n_layers * n_experts` expert ids.
     pub fn flat(&self) -> &[i32] {
         &self.flat
     }
 
-    /// The hottest-first expert ids for one layer.
+    /// Purpose: This function returns one layer's expert ids, most used first.
+    ///
+    /// Inputs:
+    /// - `layer`: the layer's index, from 0.
+    ///
+    /// Outputs: the layer's expert ids; panics when `layer` is out of range.
     pub fn layer(&self, layer: usize) -> &[i32] {
         let base = layer * self.n_experts;
         &self.flat[base..base + self.n_experts]

@@ -4,6 +4,9 @@ A small library the sys crate's `build.rs` uses to read *capability bundles*: th
 per-capability patch series that let this repo build stock upstream llama.cpp plus our
 deltas, instead of carrying a fork. A bundle is a directory holding a `bundle.toml`, the
 patch series it names, and optionally a pointer at the capability's native sources.
+The sys crate's `build.rs` stages a copy of the pinned upstream tree, applies the enabled
+bundles' patches to the copy, and points cmake at it, so the submodule stays a clean
+checkout of stock llama.cpp.
 
 No bundle exists today. The only one was the MoE driver's, and it went with the runtime
 MoE pager in the 3.0 removal. It lives on `main` at `src/moe/driver/bundle/`, and its
@@ -19,7 +22,9 @@ The logic in here is the part where being wrong is both expensive and silent:
 
 - A manifest naming a patch that is not on disk. Skipping it would produce a build with
   half a seam in it, which for a seam that is inert when disabled reports no problem at
-  all.
+  all, and looks like a correct build until someone measures VRAM.
+- A manifest that lists no patches. A bundle with no delta is not a bundle, and the build
+  would look like it customized llama.cpp when it did not.
 - A patch touching the GGUF converter or the quantizer. That breaks the invariant
   letting the patched build and `quantize-model.py` (stock upstream) share one pin, and
   the symptom arrives as a published model the patched build refuses.
@@ -38,10 +43,16 @@ the patch name when that fails.
   the capability's source directory to an *absolute* path, because the patched
   CMakeLists is read from a staged copy whose depth relative to the bundle is not
   knowable here. That counted-relative-path fragility is the thing bundles exist to
-  remove.
+  remove. `parse_manifest` is the parsing half of `load_manifest`, split out so the tests
+  can feed it manifest text without writing files.
 - `patch_touches_forbidden_path` / `check_forbidden_paths` — the denylist, and the
-  reason for it.
-- `cmake_defines` — merge the enabled bundles' defines, erroring on a conflict.
+  reason for it. The first reads the `+++ b/<path>` lines of a unified diff and skips
+  `+++ /dev/null`, which is a deletion and not a file being edited. It returns the path
+  it found, and `check_forbidden_paths` puts the bundle, the patch file and that path in
+  its error, because a refusal that does not say which file is at fault costs someone an
+  afternoon.
+- `cmake_defines` — merge the enabled bundles' defines, erroring on a conflict. A define
+  that two bundles set to the same value appears once, in the order it was first seen.
 
 Twelve tests, all on synthetic input except one: `every_shipped_bundle_loads_and_is_allowed`
 walks `src/` for every `bundle.toml` and loads each one from disk. That is the test that

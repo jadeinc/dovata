@@ -1,30 +1,6 @@
-//! Checking that a `tokenizer.json` and a GGUF describe the same vocabulary.
-//!
-//! # Why this is a refusal and not a warning
-//!
-//! The model's embedding table is indexed by token id. A tokenizer from a different
-//! model, or from a different revision of the same one, still produces ids, and they
-//! still index rows of the table. Nothing fails; the model just reads the wrong tokens.
-//! Qwen2.5 and Qwen3 share most of their vocabulary, for instance, so a mixed-up pair
-//! is nearly right, which is the worst kind of wrong. Constructors refuse it.
-//!
-//! # What "the same" means
-//!
-//! Every id the GGUF has is compared, not a sample. It costs a few milliseconds for a
-//! 150k vocabulary, and a sample can miss a pair that differs only in its added tokens,
-//! which is how two revisions of a model most often differ.
-//!
-//! The sizes are allowed to differ in one direction. `convert_hf_to_gguf.py` sizes the
-//! GGUF vocabulary to the model's embedding table, `vocab_size` in `config.json`, which
-//! is often larger than the tokenizer: Qwen3's table has 151,936 rows and its tokenizer
-//! 151,665 tokens. The converter fills the gap with `[PAD<id>]` entries of type UNUSED,
-//! and those are accepted. A tokenizer with ids the GGUF lacks is not, since the model
-//! has no row for them.
-//!
-//! The converter also rewrites some added tokens on the way in: one whose `normalized`
-//! flag is off goes through an encode and decode round trip, and a user-defined one has
-//! SentencePiece's `▁` replaced with a space. An added token that matches only after the
-//! same rewrite is accepted.
+//! Author: Joe Ricks
+//! File: src/chat/src/vocab.rs
+//! Description: Checks that a `tokenizer.json` and a GGUF file have the same vocabulary.
 
 use std::collections::HashSet;
 
@@ -40,12 +16,15 @@ const TYPE_UNUSED: u64 = 5;
 /// offset of one, without printing a vocabulary.
 const EXAMPLES: usize = 5;
 
-/// Refuse a tokenizer whose vocabulary disagrees with a GGUF's.
+/// Purpose: This function checks that a tokenizer and a GGUF file give every token id
+/// the same text.
 ///
-/// `gguf_tokens` is `tokenizer.ggml.tokens` and `gguf_types` is
-/// `tokenizer.ggml.token_type`, when the file has it. The constructors that read a GGUF
-/// call this; it is public for a caller who builds a [`Chat`](crate::Chat) with
-/// [`Chat::new`](crate::Chat::new) and still has a GGUF to check against.
+/// Inputs:
+/// - `gguf_tokens`: the GGUF's token list.
+/// - `gguf_types`: the GGUF's token types, if it has them.
+/// - `tokenizer`: the tokenizer from `tokenizer.json`.
+///
+/// Outputs: `Ok(())`, or a `ChatError::VocabMismatch` listing the ids that differ.
 pub fn check(gguf_tokens: &[&str], gguf_types: Option<&[u64]>, tokenizer: &Tokenizer) -> Result<(), ChatError> {
     let added: HashSet<u32> = tokenizer.get_added_tokens_decoder().into_keys().collect();
     // One past the highest id, rather than the token count: a tokenizer's ids can have
@@ -79,9 +58,18 @@ pub fn check(gguf_tokens: &[&str], gguf_types: Option<&[u64]>, tokenizer: &Token
     }
 }
 
-/// Whether the GGUF's string for `id` is the tokenizer's, allowing for what the
-/// converter does to added tokens. The rewrites are only tried on a mismatch, so the
-/// common case is one string compare.
+/// Purpose: This function tells whether the GGUF and the tokenizer agree on one token
+/// id.
+///
+/// Inputs:
+/// - `id`: the token id.
+/// - `gguf`: the GGUF's text for it.
+/// - `ours`: the tokenizer's text for it.
+/// - `types`: the GGUF's token types, if any.
+/// - `added`: the ids of the tokenizer's added tokens.
+/// - `tokenizer`: the tokenizer.
+///
+/// Outputs: `true` if they agree.
 fn agrees(id: u32, gguf: &str, ours: &str, types: Option<&[u64]>, added: &HashSet<u32>, tokenizer: &Tokenizer) -> bool {
     if gguf == ours {
         return true;
@@ -99,7 +87,14 @@ fn agrees(id: u32, gguf: &str, ours: &str, types: Option<&[u64]>, added: &HashSe
         .is_some_and(|round_trip| round_trip == gguf)
 }
 
-/// Whether a GGUF entry the tokenizer has no id for is converter padding.
+/// Purpose: This function tells whether a GGUF token is padding added by the converter.
+///
+/// Inputs:
+/// - `id`: the token id.
+/// - `gguf`: the GGUF's text for it.
+/// - `types`: the GGUF's token types, if any.
+///
+/// Outputs: `true` for padding.
 fn is_padding(id: u32, gguf: &str, types: Option<&[u64]>) -> bool {
     match type_of(types, id) {
         Some(t) => t == TYPE_UNUSED,
@@ -108,6 +103,13 @@ fn is_padding(id: u32, gguf: &str, types: Option<&[u64]>) -> bool {
     }
 }
 
+/// Purpose: This function looks up one token's type in the GGUF's token types.
+///
+/// Inputs:
+/// - `types`: the GGUF's token types, if any.
+/// - `id`: the token id.
+///
+/// Outputs: the type, or `None`.
 fn type_of(types: Option<&[u64]>, id: u32) -> Option<u64> {
     types?.get(id as usize).copied()
 }

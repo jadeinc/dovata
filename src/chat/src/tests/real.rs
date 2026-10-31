@@ -1,11 +1,7 @@
-//! Against real models' files, when they are on disk.
-//!
-//! `DOVATA_TEST_HEADER` names a GGUF, or just its first megabytes as a range request
-//! fetches them; the tests were written against Unsloth's
-//! `Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf`. `DOVATA_TEST_TOKENIZER` optionally names
-//! that model's `tokenizer.json`, from `Qwen/Qwen3-Coder-30B-A3B-Instruct`.
-//! `DOVATA_CHAT_CASES` names the output of `src/chat/jinja2_cases.py`. Unset, each test
-//! prints a note and passes, since none of these files belongs in the repository.
+//! Author: Joe Ricks
+//! File: src/chat/src/tests/real.rs
+//! Description: Tests against real model files and the jinja2 cases, when environment
+//! variables name them.
 
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
@@ -16,6 +12,12 @@ use serde_json::json;
 use super::fixture;
 use crate::{header, Chat, ChatError, Message};
 
+/// Purpose: This function reads a file path from an environment variable.
+///
+/// Inputs:
+/// - `var`: the variable's name.
+///
+/// Outputs: the path, or `None` if the variable is not set.
 fn env_path(var: &str) -> Option<PathBuf> {
     let path = std::env::var_os(var).map(PathBuf::from);
     if path.is_none() {
@@ -24,8 +26,12 @@ fn env_path(var: &str) -> Option<PathBuf> {
     path
 }
 
-/// A conversation that reaches every branch the Qwen3-Coder template has: a system
-/// prompt, tools, a tool call with arguments, a tool result, and a final user turn.
+/// Purpose: This function builds a test conversation that uses every part of the
+/// Qwen3-Coder template.
+///
+/// Inputs: none.
+///
+/// Outputs: the messages and the tool definitions.
 fn conversation() -> (Vec<Message>, serde_json::Value) {
     let messages = vec![
         Message::system("You are a coding assistant."),
@@ -102,8 +108,7 @@ fn qwen3_coder_tokenizer_matches_its_header() {
     assert_eq!(chat.decode(&ids, false).unwrap(), prompt);
 }
 
-/// One case from `jinja2_cases.py`: a template, a conversation, and what jinja2 made
-/// of it under transformers' settings.
+/// Purpose: This struct holds one case written by `jinja2_cases.py`.
 #[derive(Deserialize)]
 struct Case {
     name: String,
@@ -116,6 +121,7 @@ struct Case {
     expected: Expected,
 }
 
+/// Purpose: This struct holds what jinja2 produced for one case: a prompt or a refusal.
 #[derive(Deserialize)]
 struct Expected {
     ok: Option<String>,

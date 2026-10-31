@@ -1,5 +1,7 @@
-//! Tests that span the layout capability: the format, the built-ins, and binding.
-//! Each module's own tests cover its internals; these cover what a caller sees.
+//! Author: Joe Ricks
+//! File: src/layout/tests.rs
+//! Description: Tests the layout capability: reading layouts, the built-in layouts, and
+//! binding them to models.
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -11,20 +13,47 @@ const F32: u32 = 0;
 const F16: u32 = 1;
 const Q8_0: u32 = 8;
 
+/// Purpose: This function builds small bind options for the tests.
+///
+/// Inputs:
+/// - `kv`: the KV cache type.
+///
+/// Outputs: the options.
 fn opts(kv: KvType) -> BindOptions {
     BindOptions { n_ctx: 256, n_tokens: 8, n_outputs: 1, kv_k: kv, kv_v: kv }
 }
 
+/// Purpose: This function binds a built-in layout to a test header.
+///
+/// Inputs:
+/// - `arch`: the architecture name.
+/// - `h`: the test header.
+/// - `kv`: the KV cache type.
+///
+/// Outputs: the bound graph. It panics on an error.
 fn bind(arch: &str, h: &Header, kv: KvType) -> BoundGraph {
     let model = h.model();
     builtin(arch).unwrap().bind(&model, &opts(kv)).unwrap_or_else(|e| panic!("{arch} binds: {e}"))
 }
 
+/// Purpose: This function lists a bound graph's ops of one kind.
+///
+/// Inputs:
+/// - `g`: the bound graph.
+/// - `op`: the op name.
+///
+/// Outputs: the matching ops.
 fn ops_named<'a>(g: &'a BoundGraph, op: &'a str) -> impl Iterator<Item = &'a BoundOp> + 'a {
     g.ops.iter().filter(move |o| o.op == op)
 }
 
-/// Facts every bound graph must have, whatever the architecture.
+/// Purpose: This function checks the facts every bound graph must have, and panics when
+/// one fails.
+///
+/// Inputs:
+/// - `g`: the bound graph.
+///
+/// Outputs: none.
 fn check_invariants(g: &BoundGraph) {
     let names: HashSet<&str> = g.tensors.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names.len(), g.tensors.len(), "tensor names are unique");
@@ -288,7 +317,11 @@ fn caller_layout_for_wrong_arch_refused() {
     assert_eq!(for_model(&model, builtin("qwen3")).unwrap().arch(), "qwen3");
 }
 
-/// A tiny dense model and layout, for the rejection tests.
+/// Purpose: This function builds a tiny one-layer test model.
+///
+/// Inputs: none.
+///
+/// Outputs: the model.
 fn tiny() -> crate::load::Model {
     let mut h = Header::new("tiny", 16);
     h.u32("block_count", 1).u32("context_length", 16).u32("embedding_length", 32).u32("attention.head_count", 1);
@@ -380,7 +413,12 @@ fn a_missing_weight_and_a_wrong_shape_are_refused() {
     assert_eq!(err, LayoutError::WeightShape { name: "blk.0.w.weight".into(), layout: vec![32, 64], file: vec![32, 32] });
 }
 
-/// A qwen3 header that says two layers and holds tensors for one.
+/// Purpose: This function builds a qwen3 test model whose header says two layers but
+/// holds one.
+///
+/// Inputs: none.
+///
+/// Outputs: the model.
 fn lie_about_layers() -> crate::load::Model {
     let s = Shape { n_layer: 1, ..SMALL };
     let mut h = Header::new("qwen3", s.n_vocab);

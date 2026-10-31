@@ -19,6 +19,12 @@ that builds a ggml graph at run time. A layout is that answer as data: it can be
 reviewed, versioned, diffed against llama.cpp when the pin moves, and handed to a
 compiler that never links llama.cpp.
 
+Layouts are their own capability, separate from the planner in `src/plan/`. A layout is
+the contract with the compiler's kernels, and the planner only decides where a bound
+graph's tensors go. Keeping the two apart means the format can be reviewed, versioned
+and extended without touching placement, and the planner never needs to know about
+architectures.
+
 Each built-in layout is one architecture dovata supports. Supporting a new architecture
 means writing its layout; no Rust changes unless it needs an op or an hparam dovata does
 not know yet.
@@ -39,10 +45,18 @@ not know yet.
 ## Who uses it
 
 The planner (`src/plan/`, next) takes a `BoundGraph` and places its tensors. The Jade
-compiler takes the same graph, through the plan, and generates kernels from its ops.
-`gguf-inspect` will say whether a file's architecture has a built-in layout. A caller
+compiler takes the same graph, through the plan, and generates kernels from its ops,
+dispatching on `ops::ggml_enum`, which gives the ggml enum value each op name stands
+for. `gguf-inspect` says whether a file's architecture has a built-in layout. A caller
 with an architecture dovata does not support can write a layout and pass it to
 `for_model`.
+
+`for_model` takes a passed-in layout only when its `arch` matches the model's
+`general.architecture`, because a layout for a different architecture would bind
+against tensor names and hparams it was not written for. With no passed-in layout and
+no built-in one, the error lists the supported architectures and says how to write a
+layout. `builtin` panics if a built-in layout fails to parse, and the
+`builtin_layouts_parse` test makes sure none does.
 
 ```rust
 let model = dovata::load::Model::open(path)?;
@@ -189,6 +203,30 @@ language: `+ - * / %`, comparisons, `&& || !`, `c ? a : b`, parentheses, and thr
 functions. Integer division truncates as in C, so `n_ff / n_expert_used` means what it
 means in llama.cpp.
 
+Any float operand makes the result a float. Division by zero, overflow, and a float
+where an integer is needed are errors, never a guessed value. A dim must come out as an
+integer: a float is refused even when it is whole, because a dimension that came out of
+float arithmetic is a layout bug. A condition must be a comparison or a truth value; a
+number is not taken as true or false, so a layout writes `x != 0`.
+
+The grammar, loosest first:
+
+```text
+expr    = or ( "?" expr ":" expr )?
+or      = and ( "||" and )*
+and     = cmp ( "&&" cmp )*
+cmp     = sum ( ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) sum )?
+sum     = product ( ( "+" | "-" ) product )*
+product = unary ( ( "*" | "/" | "%" ) unary )*
+unary   = ( "!" | "-" ) unary | primary
+primary = number | name | name "(" expr ")" | "has(" tensor-name ")" | "(" expr ")"
+```
+
+Comparisons do not chain, so `a < b < c` is an error. The parser in `expr.rs` has one
+function per line of this grammar, and each calls the next tighter line for its
+operands. The text inside `has(...)` is kept as one token, since a tensor name holds
+dots and braces, and `src.ne0` is one name.
+
 - `sqrt(x)`, as in `scale = "1 / sqrt(n_embd_head_v)"`.
 - `row_size(n)`: `ggml_row_size` of the op's first input type over `n` elements. Views
   are written in bytes, as in ggml, so a view of a quantized cache is written exactly as
@@ -205,6 +243,21 @@ Arithmetic is allowed because llama.cpp's graph code is written in it: shapes su
 `il == n_layer - 1`. Without it, each would need a named symbol in Rust, and the model
 knowledge would move out of the layout into code a reviewer cannot read next to
 llama.cpp.
+
+The three uses come straight from llama.cpp's code. `create_tensor` writes shapes as
+products, such as `{n_embd_head_k * n_head, n_embd}` for the attention output weight.
+Every `ggml_view_*` call computes its strides and offset from the tensor it views, as in
+`ggml_row_size(k->type, n_embd_head_k)` and `cur->ne[0]*cur->ne[1]`. Conditions pick
+layers and features: `(il + 1) % step` interleaves llama4's layers, and
+`ggml_is_quantized(type_k) && n_embd_head_k % 64 == 0` turns on llama.cpp's KV
+rotation.
+
+An expression is parsed once, when the layout is read, and evaluated once per layer
+when the layout is bound. The evaluator in `expr.rs` knows nothing about models. It asks
+a scope for each name, for `has()` and for `row_size()`, and the binder supplies that
+scope: it reads symbols from the model's header and the bind options, and it fills the
+`{L}` and loop placeholders of a `has()` name, since only the binder knows the current
+layer and loop value.
 
 ### Symbols
 
@@ -249,7 +302,41 @@ llama.cpp's own.
 Outside a block, a per-layer symbol reads layer 0, as llama.cpp's `n_head()` does.
 Hparams only some architectures read, such as `attention.scale`, have no symbol yet,
 because a symbol would give a value llama.cpp never reads for the others. One is added
-with the first layout for an architecture that reads it.
+with the first layout for an architecture that reads it, and its row in `SYMBOLS` says
+which architecture that is.
+
+The set is closed so that every hparam is read by reference from the model's own
+header. The same layout then serves every model of its architecture, and a model with an
+unusual epsilon or rope base gets its own value without anyone editing the layout. An
+open set, where a layout names GGUF keys directly, would let one layout quietly hardcode
+one model's numbers.
+
+The names come from llama.cpp: the `LLAMA_LOAD_LOCALS` macro in `src/llama-model.h`,
+such as `n_embd`, `n_embd_k_gqa` and `n_rot`; the `llama_hparams` fields, such as
+`f_norm_rms_eps` and `n_ff_exp`; and the `llm_graph_context` members the graph code
+passes to `ggml_rope_ext`, such as `freq_base`, `ext_factor` and `n_ctx_orig`. A layout
+line then reads the way the C++ call it came from reads.
+
+`symbols.rs` reads each symbol the way llama.cpp reads it at the pinned commit: the same
+key, the same default when the key is absent, and per layer where llama.cpp keeps a
+per-layer array through `get_key_or_arr`. A few details follow llama.cpp closely.
+
+- `n_head` is 0 when its key is absent. The head widths default to `n_embd / n_head` at
+  layer 0, as `llama_model_base::load_hparams` does, and to 0 when the model has no
+  heads.
+- `n_vocab` falls back to `<arch>.vocab_size` when the file has no
+  `tokenizer.ggml.tokens`.
+- The rope scaling type is read as `llama_rope_scaling_type_from_string` reads it, and
+  is `linear` when the key is absent.
+- `freq_scale` is `cparams.rope_freq_scale`, computed in f32 as llama.cpp computes it,
+  from `rope.scaling.factor` or the older `rope.scale_linear`.
+- `attn_factor` is `cparams.yarn_attn_factor`, from the block in `llama_context`'s
+  constructor. That block has a `rope_yarn_log_mul` branch, which is not taken here,
+  since only deepseek2 reads that key.
+- The KV rotation symbols repeat the rule in `llama_kv_cache`'s constructor that turns
+  on a Hadamard rotation of Q, K and V when the cache is quantized. `n_attn_rot_k`
+  follows `llama_kv_cache::build_input_k_rot`, which doubles from 64 while the result
+  still divides the head width.
 
 ### The op vocabulary
 
@@ -259,7 +346,9 @@ sub-op (`GGML_UNARY_OP_SILU` is `silu`). That makes each name exactly one kind o
 the compiler must generate a kernel for, and `every_op_name_exists_in_ggml_h` checks
 each against the vendored `ggml.h`. API function names would not do: `ggml_rope`,
 `ggml_rope_ext` and `ggml_rope_ext_inplace` build the same node, `ggml_argsort_top_k`
-builds two (`argsort` and `view`), and `ggml_cast` builds a `cpy`.
+builds two (`argsort` and `view`), and `ggml_cast` builds a `cpy`. `ggml_view_1d` to
+`ggml_view_4d` likewise all build a `view`. A layout written in function names would
+hide nodes the kernels must still implement.
 
 | Op | Inputs | Params |
 |---|---|---|
@@ -288,11 +377,37 @@ builds two (`argsort` and `view`), and `ggml_cast` builds a `cpy`.
 | `swiglu`, `geglu`, `reglu` | gate and up (the `_split` form), or one input split in half | |
 
 Each op carries the shape rule from its constructor in `ggml/src/ggml.c`, asserts
-included, so a layout never states an activation's shape: it follows from the weights'
+included. A rule sees each input's shape, byte strides and type, the same three things
+ggml's constructors read from `ne`, `nb` and `type`. So a layout never states an activation's shape: it follows from the weights'
 real shapes and the bind options. A weight wired into the wrong matmul fails at bind
 time with the assert ggml would have tripped. An op that is not in the table is refused
 with a pointer to `ops.rs`; adding one means porting its shape rule, because dovata
-cannot plan memory for a node whose output size it does not know.
+cannot plan memory for a node whose output size it does not know. Running the rules at
+bind time is what lets activation shapes follow from the weights, as they do in
+llama.cpp, and what makes a mistake fail with ggml's assert instead of planning a buffer
+of the wrong size.
+
+The size helpers and some shape rules in `ops.rs` are ports of named functions in
+`ggml/src/ggml.c`:
+
+| `ops.rs` | ggml |
+|---|---|
+| `row_size` | `ggml_row_size`; a partial block is refused, since it cannot be addressed |
+| `packed_nb` | the strides `ggml_new_tensor_impl` sets for a contiguous tensor |
+| `nbytes` | `ggml_nbytes`, the span a tensor covers, contiguous or not |
+| `contiguous_n`, `is_contiguous` | `ggml_is_contiguous_n`: dims above `n` must be packed, dims up to `n` may stride |
+| `dims4` | the padding with ones that the `_1d` to `_4d` constructors do |
+| `broadcast` | `ggml_add_impl` and its siblings, which require `ggml_can_repeat` |
+| `cpy` | `ggml_cast(a, type)`, a one-input `cpy` into a new tensor, and `ggml_cpy(a, b)`, which writes into `b` and returns a view of it |
+| `view` | `ggml_view_1d` to `_4d`, with `nb` from nb1 up and `offset` both in bytes, as the C call takes them; a view with no `nb` is packed |
+| `permute` | `ggml_permute`: input dim `d` goes to position `axes[d]` |
+| `set_rows` | `ggml_set_rows(a, b, c)`, which writes the rows of `b` into `a` at the ids in `c` and returns a view of `a` |
+
+The inputs of `set_rows` are in that call order, while ggml stores them internally as
+`src = [b, c, a]`. `is_view_op` names the ops that only reinterpret their input's
+memory and compute nothing: `view`, `reshape`, `permute` and `transpose`. These are the
+nodes ggml's backends skip. `set_rows` and a two-input `cpy` also return a view, but they
+write into it, so they are compute nodes.
 
 ### An example: the qwen3moe block, abridged
 
@@ -370,13 +485,39 @@ condition can go wrong. A condition that skips an op reading a weight leaves tha
 unread, which is refused. A condition that skips the op producing a name a later op
 reads is a use-before-produce error.
 
+## When a layout is checked
+
+A layout is checked in two stages, so each mistake is reported as early as it can be
+found.
+
+`Layout::from_toml` in `format.rs` checks everything that needs no model. A typo then
+fails when the layout is read, with its place in the file, and not on the first model
+someone binds it to. This stage checks op names, parameter names and kinds, input
+counts, the syntax of every expression, the names expressions read, the placeholders in
+tensor names, and whether every tensor an op reads is declared or produced somewhere in
+the layout. Every `has()` must name a declared weight, since a misspelled one would be
+false for every model and quietly drop an op.
+
+`Layout::bind` in `bind.rs` checks what needs a model: presence, shapes and order. The
+list of what it refuses ends the next section. Reading a name before the op that
+produces it has run is its own error, `UseBeforeProduce`, so a misordered layout is told
+apart from a misspelled one. `bind` also refuses a layout for another architecture, for
+code that skips `for_model`.
+
 ## What binding produces
 
 `Layout::bind(&Model, &BindOptions) -> Result<BoundGraph, LayoutError>`.
 
+A bound graph is one forward step over `n_tokens` tokens, written out in full, and
+nothing in it refers back to the layout or the model's metadata. Because a block
+activation is named the way llama.cpp's `cb()` names graph tensors, a bound graph can be
+compared with a llama.cpp graph dump name for name. The bound graphs of a Q4_K_M file
+and a BF16 file of one model differ only in each weight's `ggml_type` and `bytes`.
+
 - `ops` is every op of the step in execution order, each a `BoundOp` with its inputs and
   outputs as `TensorId`s, its layer, and its parameters as concrete values. Enum
-  parameters are ggml's integer constants; a view's `nb` and `offset` are bytes.
+  parameters are ggml's integer constants; a view's `nb` and `offset` are bytes. Float
+  parameters are kept as f64, and ggml stores them as f32.
 - `tensors` is every tensor, each a `BoundTensor` with a name, `dims` (ggml's `ne`,
   trailing 1s dropped), `ggml_type`, `bytes`, layer, `output` flag and kind. The file's
   tensors come first, in file order, so a weight's id is its index in
@@ -385,7 +526,8 @@ reads is a use-before-produce error.
   or `View { of, byte_offset, nb }`. A view's `of` always owns memory, so a view needs
   none of its own and is addressed as `of` plus `byte_offset`. `reshape`, `view`,
   `permute` and `transpose` give views, and so do `set_rows` and a two-input `cpy`,
-  which write into their destination and return it.
+  which write into their destination and return it. A tensor's kind decides where the
+  planner puts it.
 
 The planner derives lifetimes from op order; a use of a view counts as a use of its
 `of`. Activation types are what each op's ggml rule gives, which is f32 except where
@@ -514,6 +656,29 @@ updates recurrent state with an in-graph copy whose source rows depend on which
 sequences are in the batch (`s_copy`); a compiled program that serves one sequence may
 want a simpler form, which is the compiler's call to make with the layout's ops in
 front of it.
+
+## Tests
+
+`tests.rs` holds the tests that span the capability: reading layouts, the built-in
+layouts, and binding, as code outside the module sees them. Each other file's own tests
+cover its internals.
+
+The tests bind against synthetic headers from `testutil.rs`. A layout binds against a
+`Model`, and a model is a GGUF header: metadata plus a tensor index. `testutil.rs` writes
+one in memory, with the keys preflight requires and a complete tensor index whose
+offsets are aligned to 32 bytes, the way gguf.cpp writes the data section. Every
+built-in layout can then be bound on any machine, with no model file. The shapes are
+small but follow each architecture's `load_arch_tensors` exactly. They are large
+enough that every block-quantized type the tests use divides them: rows of 64 and 128,
+and a head width of 64, so the KV rotation applies. The builders follow
+`llama_model_qwen3moe`, `llama_model_qwen3` and `llama_model_llama`, with the attention
+weights `create_tensor_qkv` makes. The llama builder can also write the Mixtral form,
+llama with experts `n_ff` wide. The tensor types are chosen per test, which is how one
+layout is bound to an f16 file and a quantized one.
+
+`a_real_header_binds_its_builtin_layout` binds a real model when `DOVATA_TEST_HEADER`
+names a GGUF file, or the first tens of megabytes of one; step 6 below shows the
+command.
 
 ## Adding a layout
 

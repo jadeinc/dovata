@@ -1,23 +1,6 @@
-//! Preflight: refuse a model file that cannot be planned, before anything else reads it.
-//!
-//! ## Why this runs first
-//!
-//! A GGUF stores its metadata and its tensor index ahead of the tensor data, so whether a
-//! file is usable is decidable from its first few megabytes. This module reads that much,
-//! checks the keys llama.cpp requires, and checks that the tensor index is complete. A
-//! file that fails either check fails here with a message naming the problem, instead of
-//! failing later inside the planner with a message about a tensor.
-//!
-//! Which architectures dovata can plan is not decided here. That is the layout's job:
-//! a built-in layout exists for the architecture, or the caller supplies one. Up to 2.x
-//! this module also chose a model profile and refused a model with none; 3.0 dropped
-//! profiles, so it no longer does.
-//!
-//! ## Where the boundary is
-//!
-//! Everything here is pure except [`Preflight::read`], which reads bytes off disk. The
-//! decision logic takes a byte slice, so it is unit-tested on any machine against
-//! synthetic headers.
+//! Author: Joe Ricks
+//! File: src/load/preflight.rs
+//! Description: Refuses a GGUF model file whose header shows it cannot be planned.
 
 use std::fmt;
 use std::path::Path;
@@ -29,7 +12,7 @@ use crate::gguf::{Gguf, Split};
 /// file that may be hundreds of gigabytes, not a target.
 pub const HEADER_BUDGET: u64 = 64 * 1024 * 1024;
 
-/// A model file that passed preflight, with the facts about it a caller asks first.
+/// Purpose: This struct holds a model file that passed preflight, with its main facts.
 #[derive(Debug, Clone)]
 pub struct Preflight {
     /// The parsed header. Complete: the tensor index is whole and `data_offset` is set.
@@ -49,8 +32,13 @@ pub struct Preflight {
 }
 
 impl Preflight {
-    /// Read the header off disk and evaluate it. The only function here that touches
-    /// the filesystem.
+    /// Purpose: This function reads a model file's header from disk and runs the
+    /// preflight checks on it.
+    ///
+    /// Inputs:
+    /// - `path`: the model file, or the first part of a split model.
+    ///
+    /// Outputs: the [`Preflight`], or an [`Error`].
     pub fn read(path: &Path) -> Result<Preflight, Error> {
         use std::io::Read;
 
@@ -62,7 +50,13 @@ impl Preflight {
         Self::evaluate(&bytes)
     }
 
-    /// Evaluate an already-read header. Pure, so this is what the tests drive.
+    /// Purpose: This function runs the preflight checks on a GGUF header already in
+    /// memory.
+    ///
+    /// Inputs:
+    /// - `bytes`: the start of the model file.
+    ///
+    /// Outputs: the [`Preflight`], or an [`Error`] naming why the file cannot be planned.
     pub fn evaluate(bytes: &[u8]) -> Result<Preflight, Error> {
         let gguf = Gguf::parse(bytes).map_err(|e| Error::NotLoadable(e.to_string()))?;
 
@@ -103,15 +97,19 @@ impl Preflight {
         })
     }
 
-    /// Whether a requested context is larger than the one the weights were trained for.
-    /// A longer context does not fail; it degrades quietly once prompts get long, which
-    /// is worth telling the caller before they compile it in.
+    /// Purpose: This function checks whether a context length is longer than the model
+    /// was trained for.
+    ///
+    /// Inputs:
+    /// - `requested`: the context length, in tokens.
+    ///
+    /// Outputs: `true` when it is longer than `<arch>.context_length`.
     pub fn ctx_exceeds_native(&self, requested: u32) -> bool {
         self.context_length.is_some_and(|native| u64::from(requested) > native)
     }
 }
 
-/// Why preflight refused the model file.
+/// Purpose: This enum lists the reasons preflight refuses a model file.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     /// The file could not be opened or read.
@@ -128,6 +126,12 @@ pub enum Error {
 }
 
 impl fmt::Display for Error {
+    /// Purpose: This function formats preflight errors.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Unreadable { path, detail } => write!(f, "cannot read the model at {path}: {detail}"),
@@ -164,16 +168,27 @@ impl std::error::Error for Error {}
 pub(crate) mod tests {
     use super::*;
 
-    /// A GGUF header carrying exactly the keys the required-key check demands, so the
-    /// tests can vary the identifiers without tripping the earlier gate.
+    /// Purpose: This function builds a test GGUF header with only the keys preflight
+    /// requires.
     ///
-    /// Shared with `crate::load::dims`'s tests: a second hand-rolled GGUF byte builder is
-    /// exactly the kind of duplicate that drifts from the real format silently.
+    /// Inputs:
+    /// - `arch`: the architecture to declare.
+    /// - `name`: the `general.name` to declare, if any.
+    ///
+    /// Outputs: the header bytes, with no tensors.
     pub(crate) fn header(arch: &str, name: Option<&str>) -> Vec<u8> {
         header_with(arch, name, &[])
     }
 
-    /// [`header`] plus extra `(key, type tag, payload)` entries, with no tensors.
+    /// Purpose: This function builds the same test header as [`header`], plus extra
+    /// metadata.
+    ///
+    /// Inputs:
+    /// - `arch`: the architecture to declare.
+    /// - `name`: the `general.name` to declare, if any.
+    /// - `extra`: more entries, as `(key, type tag, encoded value)`.
+    ///
+    /// Outputs: the header bytes, with no tensors.
     pub(crate) fn header_with(arch: &str, name: Option<&str>, extra: &[(&str, u32, Vec<u8>)]) -> Vec<u8> {
         let mut kvs: Vec<(String, u32, Vec<u8>)> = Vec::new();
 

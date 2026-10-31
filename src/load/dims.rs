@@ -1,18 +1,8 @@
-//! A model's shape, read from its GGUF header, and what one token of KV cache costs.
-//!
-//! The planner sizes the KV cache from these numbers: one key and one value entry per KV
-//! head per layer for every token of context. The formula is
-//!
-//! ```text
-//!   bytes/token = layers * kv_heads * (key_dim * k_elem_bytes + value_dim * v_elem_bytes)
-//! ```
-//!
-//! It is arithmetic over numbers read from the header, so it is pure and unit-tested on
-//! any machine. Up to 2.x this file also guessed a generation cap from the VRAM left
-//! after the weights; 3.0 plans the KV cache exactly instead, so that estimate is gone.
+//! Author: Joe Ricks
+//! File: src/load/dims.rs
+//! Description: Reads a model's shape from its GGUF header and prices its KV cache.
 
-/// The element type of the KV cache. The subset of `ggml_type` that llama.cpp accepts
-/// for a K or V cache, with K and V chosen separately.
+/// Purpose: This enum lists the element types llama.cpp accepts for the KV cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KvType {
     F32,
@@ -38,13 +28,21 @@ impl KvType {
         KvType::Q4_0,
     ];
 
-    /// Parse a name such as `q4_0`, in any case. `None` for anything else: 2.x fell back
-    /// to `q8_0` on a typo, which hid the typo.
+    /// Purpose: This function reads a KV cache type from its name, ignoring case.
+    ///
+    /// Inputs:
+    /// - `s`: the name, such as `q4_0`.
+    ///
+    /// Outputs: the type, or `None` for an unknown name.
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.name().eq_ignore_ascii_case(s))
     }
 
-    /// The lowercase name llama.cpp's `--cache-type-k` flag uses.
+    /// Purpose: This function returns the KV cache type's lowercase name.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: a name such as `q8_0`.
     pub fn name(self) -> &'static str {
         match self {
             KvType::F32 => "f32",
@@ -58,7 +56,11 @@ impl KvType {
         }
     }
 
-    /// The `ggml_type` tag, the same numbering [`crate::gguf::TensorInfo::kind`] uses.
+    /// Purpose: This function returns the ggml tensor type number of this KV cache type.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the `ggml_type` number, such as 8 for `Q8_0`.
     pub fn ggml_type(self) -> u32 {
         match self {
             KvType::F32 => 0,
@@ -72,22 +74,24 @@ impl KvType {
         }
     }
 
-    /// Whether the type is block-quantized. llama.cpp needs flash attention for a
-    /// quantized V cache, so a layout without `flash_attn_ext` cannot use one.
+    /// Purpose: This function checks whether the KV cache type is block-quantized.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `false` for F32, F16 and BF16, and `true` for the rest.
     pub fn is_quantized(self) -> bool {
         !matches!(self, KvType::F16 | KvType::BF16 | KvType::F32)
     }
 }
 
 impl ModelDims {
-    /// Read a model's shape out of its GGUF header.
+    /// Purpose: This function reads a model's layer, head and width counts from its GGUF
+    /// header.
     ///
-    /// Keys are namespaced by architecture (`qwen3moe.block_count`), so the
-    /// architecture is read first and the rest built from it. `head_count_kv` is
-    /// absent on models without grouped-query attention and falls back to
-    /// `head_count`, which is what that absence means.
+    /// Inputs:
+    /// - `model`: the parsed GGUF header.
     ///
-    /// `None` when a required key is missing, the same condition preflight refuses.
+    /// Outputs: the [`ModelDims`], or `None` when a required key is missing.
     #[must_use]
     pub fn from_gguf(model: &crate::gguf::Gguf) -> Option<Self> {
         let arch = model.architecture()?;
@@ -106,12 +110,12 @@ impl ModelDims {
     }
 }
 
-/// Bytes per element in the KV cache.
+/// Purpose: This function returns how many bytes 32 KV cache elements of a type take.
 ///
-/// The quantized types store blocks of 32 weights plus their scales, so the cost per
-/// element is fractional: `Q4_0` is 16 bytes of nibbles plus one f16 scale over 32
-/// elements, or 18/32. Returned scaled by 32 to stay in integer arithmetic — a
-/// rounding error here is multiplied by every layer and every token.
+/// Inputs:
+/// - `kv`: the KV cache type.
+///
+/// Outputs: the bytes per 32 elements, such as 18 for `Q4_0`.
 #[must_use]
 pub fn kv_elem_bytes_x32(kv: KvType) -> u64 {
     match kv {
@@ -125,7 +129,7 @@ pub fn kv_elem_bytes_x32(kv: KvType) -> u64 {
     }
 }
 
-/// The shape of a model, as read from its GGUF header.
+/// Purpose: This struct holds a model's shape, as read from its GGUF header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelDims {
     /// `<arch>.block_count` — the number of transformer layers.
@@ -155,8 +159,12 @@ pub struct ModelDims {
 }
 
 impl ModelDims {
-    /// Width of one head, when the header does not say. Only a fallback: see
-    /// [`ModelDims::key_length`] for why the division cannot be trusted on its own.
+    /// Purpose: This function estimates one attention head's width as `embedding_length /
+    /// heads`.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the estimated width, or 0 when there are no heads.
     #[must_use]
     pub fn derived_head_dim(&self) -> u32 {
         if self.heads == 0 {
@@ -165,25 +173,34 @@ impl ModelDims {
         self.embedding_length / self.heads
     }
 
-    /// Width of one key head — declared if the header declares it, derived otherwise.
+    /// Purpose: This function returns the width of one key head.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the width the header states, or the estimate when it states none.
     #[must_use]
     pub fn key_dim(&self) -> u32 {
         self.key_length.unwrap_or_else(|| self.derived_head_dim())
     }
 
-    /// Width of one value head — declared if the header declares it, derived otherwise.
+    /// Purpose: This function returns the width of one value head.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the width the header states, or the estimate when it states none.
     #[must_use]
     pub fn value_dim(&self) -> u32 {
         self.value_length.unwrap_or_else(|| self.derived_head_dim())
     }
 
-    /// Bytes of KV cache one token occupies, across every layer.
+    /// Purpose: This function computes how many bytes of KV cache one token takes across
+    /// every layer.
     ///
-    /// The keys and values are two separate caches, one entry per KV head per layer,
-    /// each `head_dim` elements wide. They are typed *independently*, so this takes
-    /// both types and sums them rather than doubling one. A common deployment
-    /// quantizes the values harder than the keys, and treating them as one type
-    /// misestimates every figure downstream.
+    /// Inputs:
+    /// - `kv_k`: the key cache's type.
+    /// - `kv_v`: the value cache's type.
+    ///
+    /// Outputs: the bytes per token.
     #[must_use]
     pub fn kv_bytes_per_token(&self, kv_k: KvType, kv_v: KvType) -> u64 {
         let heads = u64::from(self.layers) * u64::from(self.kv_heads);
@@ -198,8 +215,12 @@ impl ModelDims {
 mod tests {
     use super::*;
 
-    /// Qwen3-Coder-30B's shape, from its GGUF header: 48 layers, 32 query heads,
-    /// 4 KV heads (grouped-query), 2048 embedding.
+    /// Purpose: This function returns Qwen3-Coder-30B's shape, as its GGUF header states
+    /// it.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the [`ModelDims`].
     fn qwen() -> ModelDims {
         ModelDims {
             layers: 48,

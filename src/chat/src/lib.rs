@@ -1,82 +1,6 @@
-//! dovata-chat: turning a conversation into the prompt string and the token ids a model
-//! expects, for a model planned with dovata.
-//!
-//! # Why it is a separate, optional package
-//!
-//! dovata plans where a model's tensors live. It never runs the model, so it has no use
-//! for a tokenizer and does not depend on one. A Jade program that runs the model still
-//! has to build its prompts, and that is where a mistake is quiet: a prompt with the
-//! wrong turn markers, or token ids from the wrong vocabulary, still runs. It only
-//! answers worse. Up to 2.x the engine did all of this itself. 3.0 moves it here, so it
-//! is help a Jade user can take when they want it, and a user who would rather read the
-//! model card and write the prompt string by hand loses nothing.
-//!
-//! It is Rust rather than a Jade package because the Jade language is about to change,
-//! and the two hard parts, the tokenizer and the template engine, are Rust crates
-//! already.
-//!
-//! # Where each piece comes from
-//!
-//! * The chat template and the BOS and EOS strings come from the GGUF header:
-//!   `tokenizer.chat_template`, and `tokenizer.ggml.bos_token_id` and
-//!   `tokenizer.ggml.eos_token_id` looked up in `tokenizer.ggml.tokens`. The GGUF is the
-//!   file the program runs, so its template is the one that goes with the weights.
-//! * The tokenizer is the model's `tokenizer.json`, run by Hugging Face's `tokenizers`
-//!   crate. llama.cpp tokenizes from the GGUF's own vocabulary with its own code. This
-//!   package does not reimplement that; it uses the reference tokenizer the model was
-//!   published with.
-//!
-//! Two files means two chances to pair the wrong ones. A `tokenizer.json` from a sibling
-//! model gives plausible token ids that are wrong, with no error anywhere, so every
-//! constructor that has both files checks one against the other. See [`vocab`].
-//!
-//! # Templates
-//!
-//! Chat templates are Jinja written for Python's `jinja2`, the way Hugging Face's
-//! `transformers` renders them, and models are trained on that output. This package
-//! renders them with `minijinja`, set up the way `transformers` sets up `jinja2`:
-//!
-//! * `trim_blocks` and `lstrip_blocks` on, and `{% break %}` and `{% continue %}`.
-//! * `raise_exception(message)`, which surfaces as [`ChatError::Raised`].
-//! * `strftime_now(format)`, in UTC rather than local time. See [`Chat::with_time`].
-//! * `tojson`, printing what Python's `json.dumps` prints and taking its `indent`,
-//!   `separators`, `sort_keys` and `ensure_ascii` keyword arguments. Jinja's own
-//!   `tojson` escapes HTML characters and prints compact JSON, which is not what the
-//!   model saw in training.
-//! * Python's string and dict methods, such as `strip`, `split`, `startswith` and
-//!   `items`, from minijinja-contrib's `pycompat`.
-//! * `tools` and `documents` always defined, as none when the caller passes none, and
-//!   `bos_token` and `eos_token` from the GGUF.
-//!
-//! The one construct not supported is `{% generation %}`, which marks assistant tokens
-//! for training. No inference template needs it.
-//!
-//! # Example
-//!
-//! ```no_run
-//! use std::path::Path;
-//!
-//! use dovata_chat::{Chat, Message};
-//! use serde_json::json;
-//!
-//! # fn main() -> Result<(), dovata_chat::ChatError> {
-//! let chat = Chat::from_files(Path::new("model.gguf"), Path::new("tokenizer.json"))?;
-//!
-//! let messages = [Message::system("Be brief."), Message::user("What is a KV cache?")];
-//! let prompt = chat.render(&messages, true)?;
-//! // `false`: the template already wrote any BOS token into the prompt.
-//! let ids = chat.encode(&prompt, false)?;
-//!
-//! // Values a template reads go in `extra`, such as Qwen3's thinking switch.
-//! let prompt = chat.render_with(&messages, true, &json!({ "enable_thinking": false }))?;
-//!
-//! // The program runs the model on `ids` until it produces `chat.eos()`, then:
-//! # let generated: Vec<u32> = Vec::new();
-//! let reply = chat.decode(&generated, true)?;
-//! # let _ = (ids, prompt, reply);
-//! # Ok(())
-//! # }
-//! ```
+//! Author: Joe Ricks
+//! File: src/chat/src/lib.rs
+//! Description: Turns a conversation into a model's prompt and token ids, and back.
 
 #![warn(missing_docs)]
 
@@ -98,17 +22,17 @@ pub mod vocab;
 pub use error::{ChatError, Mismatch};
 pub use message::Message;
 
-/// The GGUF header type [`Chat::from_gguf`] takes, re-exported so a caller does not need
-/// to depend on dovata just to name it.
+/// The GGUF header type [`Chat::from_gguf`] takes, re-exported so a program using
+/// dovata-chat does not need to depend on dovata just to name it.
 pub use dovata::gguf::Gguf;
 
-/// The `tokenizers` crate, re-exported so a caller building a [`Chat`] with [`Chat::new`]
+/// The `tokenizers` crate, re-exported so a program building a [`Chat`] with [`Chat::new`]
 /// uses the same version this package was built against.
 pub use tokenizers;
 /// The tokenizer [`Chat::new`] takes. See [`tokenizers`].
 pub use tokenizers::Tokenizer;
 
-/// Shorthand for this package's results.
+/// Purpose: This type is the result type dovata-chat's functions return.
 pub type Result<T> = std::result::Result<T, ChatError>;
 
 /// The name the chat template is registered under. It has no extension on purpose:
@@ -116,13 +40,7 @@ pub type Result<T> = std::result::Result<T, ChatError>;
 /// never be escaped.
 const TEMPLATE_NAME: &str = "chat";
 
-/// A model's chat template and tokenizer, ready to turn messages into a prompt and a
-/// prompt into token ids.
-///
-/// Build one with [`Chat::from_files`] when both files are on disk, `Chat::from_hub` to
-/// fetch them, which needs the `hub` feature, [`Chat::from_gguf`] when the GGUF header
-/// is already parsed, or [`Chat::new`] when the caller has the pieces from somewhere
-/// else.
+/// Purpose: This struct holds a model's chat template and tokenizer.
 #[derive(Clone)]
 pub struct Chat {
     template: String,
@@ -133,6 +51,12 @@ pub struct Chat {
 }
 
 impl std::fmt::Debug for Chat {
+    /// Purpose: This function prints a short debug summary of a `Chat`.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The template is kilobytes of Jinja and the tokenizer is the whole vocabulary,
         // so print their sizes rather than their contents.
@@ -146,15 +70,42 @@ impl std::fmt::Debug for Chat {
 }
 
 impl Chat {
-    /// Build from a GGUF file and the model's `tokenizer.json`.
+    /// Purpose: This function builds a `Chat` from a GGUF file and a `tokenizer.json` on
+    /// disk.
     ///
-    /// Only the GGUF's header is read, never the tensor data, and only as much of it as
-    /// the metadata needs, up to dovata's
-    /// [`HEADER_BUDGET`](dovata::load::preflight::HEADER_BUDGET). A header fetched with an
-    /// HTTP range request works as well as the whole file.
+    /// Inputs:
+    /// - `gguf`: the GGUF file, whole or just its header.
+    /// - `tokenizer_json`: the model's `tokenizer.json`.
     ///
-    /// Refuses a `tokenizer.json` whose vocabulary disagrees with the GGUF's. See
-    /// [`vocab::check`].
+    /// Outputs: the `Chat`, or an error if a file cannot be read or the two vocabularies
+    /// differ, as [`vocab::check`] decides.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    ///
+    /// use dovata_chat::{Chat, Message};
+    /// use serde_json::json;
+    ///
+    /// # fn main() -> Result<(), dovata_chat::ChatError> {
+    /// let chat = Chat::from_files(Path::new("model.gguf"), Path::new("tokenizer.json"))?;
+    ///
+    /// let messages = [Message::system("Be brief."), Message::user("What is a KV cache?")];
+    /// let prompt = chat.render(&messages, true)?;
+    /// // `false`: the template already wrote any BOS token into the prompt.
+    /// let ids = chat.encode(&prompt, false)?;
+    ///
+    /// // Values a template reads go in `extra`, such as Qwen3's thinking switch.
+    /// let prompt = chat.render_with(&messages, true, &json!({ "enable_thinking": false }))?;
+    ///
+    /// // The program runs the model on `ids` until it produces `chat.eos()`, then:
+    /// # let generated: Vec<u32> = Vec::new();
+    /// let reply = chat.decode(&generated, true)?;
+    /// # let _ = (ids, prompt, reply);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn from_files(gguf: &Path, tokenizer_json: &Path) -> Result<Chat> {
         let header = header::read(gguf)?;
         let tokenizer = Tokenizer::from_file(tokenizer_json)
@@ -162,73 +113,68 @@ impl Chat {
         Chat::from_gguf(&header, tokenizer)
     }
 
-    /// Build from a GGUF repo on the Hugging Face Hub, the same repo id dovata fetches
-    /// the model from.
+    /// Purpose: This function builds a `Chat` from a GGUF repo on the Hugging Face Hub.
     ///
-    /// The template and the special tokens come from a GGUF header in the repo: one
-    /// already in the local hf-hub cache if there is one, and otherwise the first GGUF by
-    /// name, read with HTTP range requests so only its header is downloaded.
-    /// `tokenizer.json` comes from the same repo, or, since GGUF repos rarely have one,
-    /// from the base model, at its `main` revision. The base model is the one the
-    /// header names in `general.base_model.0.repo_url`, or else the `base_model` of the
-    /// repo's model card. The two files are then checked against each other as
-    /// [`Chat::from_files`] checks them, which is what makes the base-model fallback
-    /// safe.
+    /// Inputs:
+    /// - `repo`: the GGUF repo id, such as `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`.
+    /// - `revision`: a branch, tag or commit of `repo`, or `None` for `main`.
     ///
-    /// `revision` is a branch, tag or commit of `repo`, and `None` means `main`. A Hub
-    /// token comes from `HF_TOKEN` or from `huggingface-cli login`; a gated base model
-    /// needs one.
+    /// Outputs: the `Chat`, or an error if a download fails or the files do not match.
     #[cfg(feature = "hub")]
     pub fn from_hub(repo: &str, revision: Option<&str>) -> Result<Chat> {
         hub::from_hub(repo, revision)
     }
 
-    /// Build from a GGUF header that is already parsed, and a tokenizer.
+    /// Purpose: This function builds a `Chat` from a GGUF header that is already parsed,
+    /// and a tokenizer.
     ///
-    /// For a caller that read the header with dovata already, such as the Jade compiler
-    /// after preflight, so the file is not read twice. Checks the vocabularies agree the
-    /// same way [`Chat::from_files`] does.
+    /// Inputs:
+    /// - `header`: the parsed GGUF header.
+    /// - `tokenizer`: the model's tokenizer.
+    ///
+    /// Outputs: the `Chat`, or an error if the header lacks a piece or the vocabularies
+    /// differ.
     pub fn from_gguf(header: &Gguf, tokenizer: Tokenizer) -> Result<Chat> {
         let pieces = header::Pieces::of(header)?;
         vocab::check(&pieces.tokens, pieces.token_types.as_deref(), &tokenizer)?;
         Chat::new(pieces.template, tokenizer, pieces.bos, pieces.eos)
     }
 
-    /// Build from pieces the caller already has: a chat template, a tokenizer, and the
-    /// BOS and EOS strings the template may print.
+    /// Purpose: This function builds a `Chat` from a chat template, a tokenizer and the
+    /// BOS and EOS strings.
     ///
-    /// The escape hatch for a model whose GGUF has no template, or for a caller who wants
-    /// a different template than the one the model shipped. It checks nothing against a
-    /// vocabulary, because there is none to check against. Fails only when the template
-    /// does not compile.
+    /// Inputs:
+    /// - `template`: the chat template, in Jinja.
+    /// - `tokenizer`: the model's tokenizer.
+    /// - `bos`: the BOS string, if any.
+    /// - `eos`: the EOS string, if any.
+    ///
+    /// Outputs: the `Chat`, or an error if the template does not compile.
     pub fn new(template: String, tokenizer: Tokenizer, bos: Option<String>, eos: Option<String>) -> Result<Chat> {
         let env = template::environment(template.clone(), None).map_err(ChatError::Template)?;
         Ok(Chat { template, env, tokenizer, bos, eos })
     }
 
-    /// Fix the time `strftime_now` reports, for a build that must be reproducible.
+    /// Purpose: This function fixes the time that `strftime_now` reports to the
+    /// template.
     ///
-    /// Some templates print today's date into the system prompt. Llama 3.1 and later do,
-    /// through `strftime_now("%d %b %Y")`. Rendered at build time, that bakes the build
-    /// date into the program, so two builds of the same source differ. Pinning the time
-    /// makes them match. Without it, `strftime_now` reads the system clock.
+    /// Inputs:
+    /// - `now`: the time to report.
     ///
-    /// Either way the time is formatted in UTC. `transformers` uses local time, but a
-    /// build machine's time zone says nothing about where the program runs, and UTC
-    /// needs no time zone database.
+    /// Outputs: the same `Chat`, with its clock fixed.
     #[must_use]
     pub fn with_time(mut self, now: SystemTime) -> Chat {
         template::set_clock(&mut self.env, Some(now));
         self
     }
 
-    /// Turn text into token ids.
+    /// Purpose: This function turns text into token ids.
     ///
-    /// `add_special` runs the tokenizer's post-processor, which for many models adds a
-    /// BOS token. Pass `false` for a prompt that came from [`Chat::render`]: a template
-    /// that prints `bos_token` already put it in the text, and adding it again gives the
-    /// model two. Special tokens written in the text, such as `<|im_start|>`, become
-    /// their single ids either way.
+    /// Inputs:
+    /// - `text`: the text, usually a rendered prompt.
+    /// - `add_special`: whether the tokenizer adds its own special tokens, such as BOS.
+    ///
+    /// Outputs: the token ids, or an error if encoding fails.
     pub fn encode(&self, text: &str, add_special: bool) -> Result<Vec<u32>> {
         let encoding = self
             .tokenizer
@@ -237,32 +183,37 @@ impl Chat {
         Ok(encoding.get_ids().to_vec())
     }
 
-    /// Turn token ids back into text. `skip_special` drops special tokens such as turn
-    /// markers and EOS, which is what a caller showing a reply to a person wants.
+    /// Purpose: This function turns token ids back into text.
+    ///
+    /// Inputs:
+    /// - `ids`: the token ids.
+    /// - `skip_special`: whether to drop special tokens such as turn markers.
+    ///
+    /// Outputs: the text, or an error if decoding fails.
     pub fn decode(&self, ids: &[u32], skip_special: bool) -> Result<String> {
         self.tokenizer.decode(ids, skip_special).map_err(|e| ChatError::Tokenizer(format!("decode: {e}")))
     }
 
-    /// Render a conversation into the model's prompt string.
+    /// Purpose: This function renders a conversation into the model's prompt string.
     ///
-    /// `add_generation_prompt` appends the opening of an assistant turn, so the model's
-    /// next tokens are the reply. Leave it off to render a finished conversation.
+    /// Inputs:
+    /// - `messages`: the conversation, in order.
+    /// - `add_generation_prompt`: whether to end with the start of an assistant turn.
+    ///
+    /// Outputs: the prompt, or an error if rendering fails.
     pub fn render(&self, messages: &[Message], add_generation_prompt: bool) -> Result<String> {
         self.render_with(messages, add_generation_prompt, &())
     }
 
-    /// Render a conversation, with extra values the template reads.
+    /// Purpose: This function renders a conversation into the model's prompt string,
+    /// with extra template values.
     ///
-    /// `extra` must serialize to a map, or to nothing. Its keys become template
-    /// variables: `tools` for function definitions, `enable_thinking` for Qwen3,
-    /// `date_string` for Llama 3, and whatever else a model card names. It takes any
-    /// `Serialize` value rather than only a `serde_json::Value` because key order
-    /// reaches the prompt: `tojson` prints a tool's keys in the order they arrive, the
-    /// way Python does, and a struct keeps its field order where a default
-    /// `serde_json::Value` sorts its keys.
+    /// Inputs:
+    /// - `messages`: the conversation, in order.
+    /// - `add_generation_prompt`: whether to end with the start of an assistant turn.
+    /// - `extra`: a map of extra template values, such as `tools` or `enable_thinking`.
     ///
-    /// `messages` and `add_generation_prompt` cannot be overridden through `extra`; a
-    /// map that tries is refused, since one of the two values would be silently lost.
+    /// Outputs: the prompt, or an error if the input is bad or rendering fails.
     pub fn render_with<E: Serialize + ?Sized>(
         &self,
         messages: &[Message],
@@ -315,24 +266,38 @@ impl Chat {
         template.render(ctx).map_err(ChatError::from_render)
     }
 
-    /// The BOS string, when the GGUF names a BOS token. Qwen models do not.
+    /// Purpose: This function returns the BOS token's text.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the BOS text, or `None` if the model has no BOS token.
     pub fn bos(&self) -> Option<&str> {
         self.bos.as_deref()
     }
 
-    /// The EOS string: the token that ends the model's turn, which a caller stops
-    /// generating at.
+    /// Purpose: This function returns the EOS token's text.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the EOS text, or `None` if the model names no EOS token.
     pub fn eos(&self) -> Option<&str> {
         self.eos.as_deref()
     }
 
-    /// The chat template source, as the GGUF carries it.
+    /// Purpose: This function returns the chat template source.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the template text.
     pub fn template(&self) -> &str {
         &self.template
     }
 
-    /// The tokenizer, for what [`Chat::encode`] and [`Chat::decode`] do not cover, such
-    /// as offsets or the vocabulary itself.
+    /// Purpose: This function returns the tokenizer.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: a reference to the tokenizer.
     pub fn tokenizer(&self) -> &Tokenizer {
         &self.tokenizer
     }

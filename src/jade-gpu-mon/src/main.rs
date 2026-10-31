@@ -1,3 +1,7 @@
+//! Author: Joe Ricks
+//! File: src/jade-gpu-mon/src/main.rs
+//! Description: Shows a live terminal dashboard of one NVIDIA GPU's memory and usage.
+
 use std::io::{stdout, Write};
 use std::time::Duration;
 
@@ -16,11 +20,24 @@ use nvml_wrapper::Nvml;
 
 const POLL_MS: u64 = 500;
 
+/// Purpose: This function draws a text bar showing a percentage.
+///
+/// Inputs:
+/// - `pct`: the percentage, 0 to 100.
+/// - `width`: the bar's width in columns.
+///
+/// Outputs: the bar as text.
 fn bar(pct: u32, width: usize) -> String {
     let n = ((pct as usize) * width / 100).min(width);
     format!("{}{}", "█".repeat(n), "░".repeat(width - n))
 }
 
+/// Purpose: This function picks a bar's color from its percentage.
+///
+/// Inputs:
+/// - `pct`: the percentage.
+///
+/// Outputs: green below 70, yellow from 70 to 89, and red from 90.
 fn pct_color(pct: u32) -> Color {
     match pct {
         90..=u32::MAX => Color::Red,
@@ -29,14 +46,26 @@ fn pct_color(pct: u32) -> Color {
     }
 }
 
+/// Purpose: This struct restores the terminal when the dashboard exits.
 struct TermGuard;
 impl Drop for TermGuard {
+    /// Purpose: This function restores the terminal when the dashboard exits.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: none.
     fn drop(&mut self) {
         let _ = disable_raw_mode();
         let _ = execute!(stdout(), LeaveAlternateScreen, Show);
     }
 }
 
+/// Purpose: This function runs the dashboard and prints any error before exiting with
+/// status 1.
+///
+/// Inputs: none.
+///
+/// Outputs: none.
 fn main() {
     if let Err(e) = run() {
         let _ = disable_raw_mode();
@@ -46,6 +75,12 @@ fn main() {
     }
 }
 
+/// Purpose: This function polls the first NVIDIA GPU and redraws the dashboard every 500
+/// ms until `q` or Ctrl-C.
+///
+/// Inputs: none.
+///
+/// Outputs: `Ok(())` on quit, or an NVML or terminal error.
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let nvml = Nvml::init()
         .map_err(|e| format!("NVML init failed: {e}\nIs an NVIDIA driver installed?"))?;

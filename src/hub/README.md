@@ -1,13 +1,16 @@
 # hub: getting a model's GGUF files, from disk or from the Hugging Face Hub
 
 This capability turns a model source into the paths of one model's files on disk. The
-source is a local path, a Hub repo id such as `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`,
-or a Hub link. `hub::fetch(&source, want, &opts)` returns a `Fetched` holding every part
+source is a local path or a Hub link, such as
+`https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`.
+`hub::fetch(&source, want, &opts)` returns a `Fetched` holding every part
 of the model, part 1 first, along with its type and, for the Hub, the exact commit.
 
 It fetches exactly one model each time. A split model is one model, so `fetch` gets
 every part of it. It never quantizes: a repo that lacks the type asked for is an error
-that lists what the repo has.
+that lists what the repo has. Whether the source is a path or a link, the files are
+opened as one `load::Model` before `fetch` returns, so the Jade compiler never gets parts
+that do not belong together.
 
 ## Why it is built this way
 
@@ -17,7 +20,13 @@ an hour. So the choice follows fixed rules, and when the rules cannot decide, `f
 stops and names the candidates instead of picking one.
 
 *Never quantize as a side effect.* Making a missing type is the caller's decision,
-through `quantize::quantize`. The `NotOffered` error says how.
+through `quantize::quantize`. The `NotOffered` error says how. Quantizing takes minutes
+and writes tens of gigabytes, so it never happens inside a fetch.
+
+*The user always gives the link.* A Hub source carries the server it comes from, taken
+from the link the user typed. There is no default server, a bare `org/repo` is refused,
+and `HF_ENDPOINT` is not read, so nothing sends a download somewhere the user did not
+name.
 
 *Share the cache the Hugging Face tools use.* Files go into the standard hf-hub cache, so
 a model already downloaded by `huggingface-cli` or the Python library is used as it is.
@@ -35,8 +44,11 @@ names the feature.
   handles a local path and hands a Hub source to `fetch.rs`.
 - `fetch.rs` is the network edge, built only with the `hub` feature. It lists the repo
   with hf-hub 0.4.3's blocking client over `ureq`, downloads every part of the chosen
-  model at one commit, and checks the result. It also works out the cache directory, the
-  token and the endpoint from the environment.
+  model at one commit, and checks the result. It also works out the cache directory and
+  the token from the environment. The endpoint comes only from the source. The 0.4 line
+  of hf-hub is used because its blocking client needs no tokio, so the Jade compiler's
+  build does not pull tokio in; the note beside the dependency in `Cargo.toml` says the
+  same.
 - `testdata/` holds real file lists copied from the Hub API on 2026-10-31, one name per
   line, with the repo and commit at the top. The selection tests run against them: two
   unsloth repos with split BF16 models, one with `mmproj` files, TheBloke's Llama-2
@@ -50,23 +62,35 @@ names the feature.
 | Form | Example |
 |---|---|
 | a local path | `/models/x.gguf`, `./x.gguf`, `~/x.gguf` |
-| a repo id | `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF` |
 | a repo link | `https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF` |
 | a file link | `.../blob/main/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf` |
 | a download link | `.../resolve/main/BF16/Qwen3-Coder-30B-A3B-Instruct-BF16-00001-of-00002.gguf` |
 | a revision link | `.../tree/b17cb02dd882d5b6ab62fc777ad2995f19668350` |
 | a directory link | `.../tree/main/BF16` |
 
-A path and a repo id can look alike, so the rule is applied in this order. A URL is
-always the Hub. A string that starts with `/`, `.` or `~` is always a path. A string
-that names something on disk is a path. A string of the form `org/repo`, exactly one
-slash between two names of letters, digits, `-`, `_` and `.`, and not ending in `.gguf`,
-is a repo id. Anything else is a path, and `fetch` then reports it as missing. So
-`models/x` is a repo id unless `./models/x` exists, and `./models/x` is always a path.
+The rule is applied in this order. A URL is always the Hub. A string that starts with
+`/`, `.` or `~` is always a path. A string that names something on disk is a path. A
+bare `org/repo` that is not on disk is refused, and the error shows the full link it
+most likely meant. Anything else is a path, and `fetch` then reports it as missing.
+
+The endpoint is the link's host. `hf.co` and `www.huggingface.co` links use
+`https://huggingface.co`, the host they redirect to, because hf-hub drops the token on a
+redirect to another host. The endpoint is always `https`, even for an `http` link, so
+the token never goes out in plain text.
 
 A link that names a file takes exactly that model, with every part when it is split,
 even when the link points at part 4 of 6. A directory link takes the one model inside
 the directory.
+
+A repo id is two names joined by `/`, each made of letters, digits, `-`, `_` and `.`,
+with no `..`. A link may escape part of its path, as Hub links do for a revision such as
+`refs%2Fpr%2F1`, and `parse` decodes it.
+
+A local path gives that file and, for a split model, every other part; any part may be
+given. `Model::open` opens a one-file model or a first part. For a later part, `fetch`
+reads `split.count` from the part's header to name the rest. A file whose header does
+not read is passed to `Model::open`, which reports the error. `Want` does not apply to a
+local path.
 
 ## How one model is chosen
 
@@ -75,7 +99,8 @@ the directory.
 1. Only `.gguf` files count. A name that starts with `mmproj` is a vision projector and
    a name that contains `imatrix` is an importance matrix; both are skipped.
 2. Split parts, named `<name>-00001-of-00003.gguf` and so on in one directory, form one
-   model. unsloth puts them in a directory named for the type, such as `BF16/`.
+   model. unsloth puts them in a directory named for the type, such as `BF16/`. Files
+   are grouped by directory, by name without the part suffix, and by part count.
 3. The type comes from the file name. Every llama.cpp type name is tried, longest first,
    ignoring case. So are `llama-quantize`'s aliases Q3_K, Q4_K and Q5_K, and three
    spellings repos use: FP16, FP32 and MXFP4. A match must start the name or follow `-`,
@@ -136,7 +161,14 @@ The settings follow the Python `huggingface_hub`, so one setup serves both.
   `HUGGING_FACE_HUB_TOKEN`, else the file `huggingface-cli login` writes: the path in
   `HF_TOKEN_PATH`, else `token` in the `HF_HOME` directory, normally
   `~/.cache/huggingface/token`.
-- The endpoint is `HF_ENDPOINT`, for a mirror, else `https://huggingface.co`.
+- The `HF_HOME` directory is `HF_HOME`, else `$XDG_CACHE_HOME/huggingface`, else
+  `~/.cache/huggingface`, the same search the cache uses.
+- An environment variable set to an empty string counts as unset. A token is trimmed,
+  and a blank token counts as no token.
+
+The cache holds each repo as `models--org--repo/{blobs,snapshots,refs}`, the layout
+`huggingface-cli` and the Python library write, so a model either of them downloaded is
+not downloaded again.
 
 Reading the token is deliberate. Public repos need none, but gated ones such as Meta's
 Llama do, and a build tool that ignored a login the user had already done would fail for
@@ -144,14 +176,14 @@ no reason they could see. The token goes only to the Hub endpoint, and printing 
 `FetchOptions` with `{:?}` shows `<redacted>` in its place.
 
 hf-hub draws a progress bar on stderr while it downloads, and hides it when stderr is
-not a terminal.
+not a terminal, so a build log gets no bar.
 
 ## What a user will see when it fails
 
 | Error | When | Message, in short |
 |---|---|---|
 | `NotBuilt` | a Hub source, with the `hub` feature off | no Hugging Face client in this build; enable the `hub` feature, or pass a local path |
-| `BadSource` | a malformed repo id, or no cache directory | says which |
+| `BadSource` | a malformed repo id, an endpoint that is not `https`, or no cache directory | says which |
 | `Select` with `NoGguf` | the repo has no GGUF model files | safetensors-only repos are not supported yet; convert with `convert_hf_to_gguf.py` or use a GGUF repo |
 | `Select` with `NotOffered` | the repo lacks the type | lists what it offers, then: fetch with `Want::Unquantized` and pass it to `quantize::quantize` |
 | `Select` with `Ambiguous` or `Unclear` | the rules fit several models, or none has a type | lists the candidates; name the file |
@@ -161,7 +193,12 @@ not a terminal.
 | `Mismatch` | the header's type disagrees with the file name | names both; name the file to fetch it anyway |
 
 `ModelSource::parse` has its own `SourceError` for a string it cannot read, such as a
-link to another site, a dataset, or a file that is not a GGUF.
+bare `org/repo`, a link to another site, a dataset, or a file that is not a GGUF.
+
+The hints for 401, 403, 404 and 429 come from the HTTP status in hf-hub's error text.
+The ureq crate prints a status error as `<url>: status code 404`. Reading the status from
+that text avoids taking ureq on as a direct dependency just to match its error type, and
+when the text does not match, only the hint is lost.
 
 ## Testing
 

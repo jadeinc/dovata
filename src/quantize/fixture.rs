@@ -1,23 +1,6 @@
-//! A tiny but complete `llama` model in F32, written with [`crate::gguf::write`].
-//!
-//! Test-only. llama.cpp's quantizer runs its real model loader, which reads the
-//! architecture's hyperparameters with exact GGUF types, so a fixture has to be a model
-//! llama.cpp would load, not just a well-formed GGUF. This one follows the pinned tree:
-//!
-//! - `load_hparams` in `src/llama-model.cpp` reads `context_length`,
-//!   `embedding_length` and `block_count` as `u32`, and for `llama` refuses a
-//!   `rope.dimension_count` that is not the head size.
-//! - `llama_model_llama::load_arch_hparams` in `src/models/llama.cpp` requires
-//!   `attention.layer_norm_rms_epsilon` as an `f32`.
-//! - `load_arch_tensors` there fixes every shape below: `token_embd` is
-//!   `{n_embd, n_vocab}`, `attn_k` and `attn_v` are `{n_embd, head_dim * n_head_kv}`,
-//!   and the FFN is `gate` and `up` at `{n_embd, n_ff}` with `down` at `{n_ff, n_embd}`.
-//! - The vocabulary is a `llama` (SentencePiece) one, which needs `<0x0A>` for its
-//!   newline token and unique token strings.
-//!
-//! The widths are multiples of 32, so Q8_0 and Q4_0 quantize every weight without
-//! falling back to another type. The weights come from a fixed generator, so every run
-//! writes the same bytes.
+//! Author: Joe Ricks
+//! File: src/quantize/fixture.rs
+//! Description: Builds a tiny F32 `llama` model for the quantize tests.
 
 use std::path::{Path, PathBuf};
 
@@ -32,7 +15,13 @@ pub(crate) const HEAD_DIM: u32 = N_EMBD / N_HEAD;
 pub(crate) const N_FF: u32 = 128;
 pub(crate) const N_LAYER: u32 = 2;
 
-/// Every metadata key of the model except `general.file_type`, which callers set.
+/// Purpose: This function sets every metadata key of the tiny test model except
+/// `general.file_type`.
+///
+/// Inputs:
+/// - `w`: the GGUF writer to add the keys to.
+///
+/// Outputs: none.
 pub(crate) fn llama_metadata(w: &mut Writer) {
     let s = |v: &str| Value::String(v.to_owned());
     let mut tokens = vec!["<unk>".to_owned(), "<s>".to_owned(), "</s>".to_owned(), "<0x0A>".to_owned()];
@@ -68,7 +57,11 @@ pub(crate) fn llama_metadata(w: &mut Writer) {
         .kv("tokenizer.ggml.unknown_token_id", Value::U32(0));
 }
 
-/// Every tensor's name and shape, in the order llama.cpp's converter writes them.
+/// Purpose: This function lists every tensor of the tiny test model with its shape.
+///
+/// Inputs: none.
+///
+/// Outputs: each tensor's name and shape, in the order llama.cpp's converter writes them.
 pub(crate) fn tensor_shapes() -> Vec<(String, Vec<u64>)> {
     let (e, v, q, kv, ff) =
         (u64::from(N_EMBD), u64::from(N_VOCAB), u64::from(HEAD_DIM * N_HEAD), u64::from(HEAD_DIM * N_HEAD_KV), u64::from(N_FF));
@@ -93,9 +86,13 @@ pub(crate) fn tensor_shapes() -> Vec<(String, Vec<u64>)> {
     t
 }
 
-/// A tensor's values: norms are all ones, as a freshly initialized model's are; weights
-/// are small values from a generator seeded by the name, so they differ per tensor and
-/// are the same every run.
+/// Purpose: This function generates the F32 values of one test tensor.
+///
+/// Inputs:
+/// - `name`: the tensor's name, which seeds the values.
+/// - `n`: how many values.
+///
+/// Outputs: the values; all ones for a norm tensor.
 fn values(name: &str, n: u64) -> Vec<f32> {
     if name.contains("norm") {
         return vec![1.0; n as usize];
@@ -109,13 +106,24 @@ fn values(name: &str, n: u64) -> Vec<f32> {
         .collect()
 }
 
+/// Purpose: This function adds a list of tensors to a GGUF writer as F32.
+///
+/// Inputs:
+/// - `w`: the GGUF writer.
+/// - `shapes`: each tensor's name and shape.
+///
+/// Outputs: none.
 fn add_tensors<'a>(w: &mut Writer, shapes: impl IntoIterator<Item = &'a (String, Vec<u64>)>) {
     for (name, dims) in shapes {
         w.f32_tensor(name.as_str(), dims, &values(name, dims.iter().product()));
     }
 }
 
-/// The whole model as one file.
+/// Purpose: This function builds the tiny test model as one GGUF file in memory.
+///
+/// Inputs: none.
+///
+/// Outputs: a [`Writer`] holding the model.
 pub(crate) fn tiny_llama() -> Writer {
     let mut w = Writer::new();
     llama_metadata(&mut w);
@@ -124,19 +132,36 @@ pub(crate) fn tiny_llama() -> Writer {
     w
 }
 
-/// Write the one-file model to `path`.
+/// Purpose: This function writes the one-file tiny test model to disk.
+///
+/// Inputs:
+/// - `path`: the file to write.
+///
+/// Outputs: none; panics when the file cannot be written.
 pub(crate) fn write_tiny_llama(path: &Path) {
     tiny_llama().write(path).unwrap();
 }
 
+/// Purpose: This function sets the `split.*` metadata keys on one part of the test model.
+///
+/// Inputs:
+/// - `w`: the part's GGUF writer.
+/// - `no`: the part's number, from 0.
+/// - `count`: how many parts there are.
+/// - `tensors`: the tensor count across all parts.
+///
+/// Outputs: none.
 fn split_keys(w: &mut Writer, no: u16, count: u16, tensors: usize) {
     w.kv("split.no", Value::U16(no))
         .kv("split.count", Value::U16(count))
         .kv("split.tensors.count", Value::I32(i32::try_from(tensors).unwrap()));
 }
 
-/// The model as two parts, the way `gguf-split` writes one: part 1 holds the metadata
-/// and the first half of the tensors, part 2 only the split keys and the rest.
+/// Purpose: This function builds the tiny test model as two split parts in memory.
+///
+/// Inputs: none.
+///
+/// Outputs: the two parts' file bytes, part 1 first.
 pub(crate) fn split_headers() -> (Vec<u8>, Vec<u8>) {
     let shapes = tensor_shapes();
     let (first, second) = shapes.split_at(shapes.len() / 2);
@@ -151,8 +176,13 @@ pub(crate) fn split_headers() -> (Vec<u8>, Vec<u8>) {
     (p0.to_bytes().unwrap(), p1.to_bytes().unwrap())
 }
 
-/// Write the two-part model into `dir` as `<stem>-00001-of-00002.gguf` and the next,
-/// returning both paths, part 1 first.
+/// Purpose: This function writes the two-part tiny test model into a directory.
+///
+/// Inputs:
+/// - `dir`: the directory.
+/// - `stem`: the model name the part file names start with.
+///
+/// Outputs: both paths, part 1 first; panics when a file cannot be written.
 pub(crate) fn write_tiny_llama_split(dir: &Path, stem: &str) -> Vec<PathBuf> {
     let (p0, p1) = split_headers();
     let paths = vec![dir.join(format!("{stem}-00001-of-00002.gguf")), dir.join(format!("{stem}-00002-of-00002.gguf"))];
@@ -161,7 +191,13 @@ pub(crate) fn write_tiny_llama_split(dir: &Path, stem: &str) -> Vec<PathBuf> {
     paths
 }
 
-/// A fresh, empty directory for one test, under the system temp directory.
+/// Purpose: This function creates a fresh, empty directory for one test under the system
+/// temp directory.
+///
+/// Inputs:
+/// - `test`: a short name for the test.
+///
+/// Outputs: the directory's path.
 pub(crate) fn scratch_dir(test: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("dovata-{test}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

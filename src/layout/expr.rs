@@ -1,51 +1,11 @@
-//! The small expression language a layout writes its dims, params and conditions in.
-//!
-//! ## Why a layout needs arithmetic at all
-//!
-//! The brief for the format allowed arithmetic only where it pays for itself. It does
-//! here, in three places that all come straight from llama.cpp's own code:
-//!
-//! - Tensor shapes. `create_tensor` writes them as products, such as
-//!   `{n_embd_head_k * n_head, n_embd}` for the attention output weight.
-//! - Views. Every `ggml_view_*` call in llama.cpp computes its strides and offset from
-//!   the tensor it views: `ggml_row_size(k->type, n_embd_head_k)`, `i*experts->nb[1]`,
-//!   `cur->ne[0]*cur->ne[1]`.
-//! - Conditions. `il == n_layer - 1` picks the last layer, `(il + 1) % step` interleaves
-//!   llama4's layers, and `ggml_is_quantized(type_k) && n_embd_head_k % 64 == 0` turns
-//!   on llama.cpp's KV rotation.
-//!
-//! Without expressions, each of those would need its own named symbol in Rust, and the
-//! model knowledge would move out of the layout file into code a reviewer cannot read
-//! next to llama.cpp. One small grammar covers all three instead.
-//!
-//! ## The grammar
-//!
-//! ```text
-//! expr    = or ( "?" expr ":" expr )?
-//! or      = and ( "||" and )*
-//! and     = cmp ( "&&" cmp )*
-//! cmp     = sum ( ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) sum )?
-//! sum     = product ( ( "+" | "-" ) product )*
-//! product = unary ( ( "*" | "/" | "%" ) unary )*
-//! unary   = ( "!" | "-" ) unary | primary
-//! primary = number | name | name "(" expr ")" | "has(" tensor-name ")" | "(" expr ")"
-//! ```
-//!
-//! Names are symbols from the closed set in [`super::symbols`], the layer index `L`,
-//! a loop variable, or, inside an op's params, `src.ne0` to `src.ne3` and `src.nb0` to
-//! `src.nb3`: the shape and byte strides of the op's first input, which is how llama.cpp
-//! writes its views. The functions are `sqrt(x)` and `row_size(n)`, the latter being
-//! `ggml_row_size` of the first input's type. `has(name)` is true when the model file
-//! holds that tensor.
-//!
-//! Integers stay integers: `/` truncates the way C does, so `n_ff / n_expert_used`
-//! means what it means in llama.cpp. Any float operand makes the result a float.
-//! Division by zero, overflow and a float where an integer is needed are errors, never
-//! a guessed value.
+//! Author: Joe Ricks
+//! File: src/layout/expr.rs
+//! Description: Parses and evaluates the expressions layout files use for shapes, op
+//! parameters and conditions.
 
 use std::fmt;
 
-/// A parsed expression. Built once when the layout is read and evaluated per layer.
+/// Purpose: This enum holds a parsed layout expression.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Expr {
     Int(i64),
@@ -61,12 +21,14 @@ pub(crate) enum Expr {
     Cond(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 
+/// Purpose: This enum lists the functions an expression may call: `sqrt` and `row_size`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Func {
     Sqrt,
     RowSize,
 }
 
+/// Purpose: This enum lists the operators that take two values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BinOp {
     Add,
@@ -84,7 +46,7 @@ pub(crate) enum BinOp {
     Or,
 }
 
-/// The value of an expression.
+/// Purpose: This enum holds an expression's value: an integer, a float or a truth value.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Value {
     Int(i64),
@@ -93,6 +55,12 @@ pub(crate) enum Value {
 }
 
 impl fmt::Display for Value {
+    /// Purpose: This function formats an expression's value as text.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(v) => write!(f, "{v}"),
@@ -102,18 +70,39 @@ impl fmt::Display for Value {
     }
 }
 
-/// What an expression can look up while it is evaluated.
+/// Purpose: This trait gives an expression the values of the names it reads.
 pub(crate) trait Scope {
-    /// A name: a symbol, `L`, a loop variable, or `src.*`.
+    /// Purpose: This function returns the value of a name an expression reads.
+    ///
+    /// Inputs:
+    /// - `name`: a symbol, `L`, a loop variable, or `src.*`.
+    ///
+    /// Outputs: the value, or an error when the name has none here.
     fn name(&self, name: &str) -> Result<Value, String>;
-    /// Whether the model file holds a tensor. The template is expanded by the scope.
+    /// Purpose: This function tells whether the model file holds a tensor.
+    ///
+    /// Inputs:
+    /// - `template`: the tensor name, with its placeholders still in it.
+    ///
+    /// Outputs: `true` when the file holds the tensor, or an error.
     fn has(&self, template: &str) -> Result<bool, String>;
-    /// `ggml_row_size` of the first input's type over `n` elements.
+    /// Purpose: This function returns the bytes `n` elements of the op's first input type
+    /// take.
+    ///
+    /// Inputs:
+    /// - `n`: the element count.
+    ///
+    /// Outputs: the size in bytes, or an error.
     fn row_size(&self, n: i64) -> Result<i64, String>;
 }
 
 impl Expr {
-    /// Parse one expression. The error says where in the text it went wrong.
+    /// Purpose: This function parses one expression's text into a tree.
+    ///
+    /// Inputs:
+    /// - `src`: the expression's text.
+    ///
+    /// Outputs: the parsed expression, or an error saying where the text went wrong.
     pub(crate) fn parse(src: &str) -> Result<Expr, String> {
         let tokens = lex(src)?;
         let mut p = Parser { tokens, pos: 0 };
@@ -124,8 +113,12 @@ impl Expr {
         Ok(e)
     }
 
-    /// Every name the expression reads, for checking against the closed symbol set
-    /// when the layout is parsed rather than when it is bound.
+    /// Purpose: This function adds every name the expression reads to `out`.
+    ///
+    /// Inputs:
+    /// - `out`: the list to add to.
+    ///
+    /// Outputs: none.
     pub(crate) fn names<'a>(&'a self, out: &mut Vec<&'a str>) {
         match self {
             Expr::Int(_) | Expr::Float(_) | Expr::Has(_) => {}
@@ -143,7 +136,13 @@ impl Expr {
         }
     }
 
-    /// Every `has(...)` template the expression reads.
+    /// Purpose: This function adds the tensor name of every `has()` in the expression to
+    /// `out`.
+    ///
+    /// Inputs:
+    /// - `out`: the list to add to.
+    ///
+    /// Outputs: none.
     pub(crate) fn has_names<'a>(&'a self, out: &mut Vec<&'a str>) {
         match self {
             Expr::Int(_) | Expr::Float(_) | Expr::Name(_) => {}
@@ -161,7 +160,11 @@ impl Expr {
         }
     }
 
-    /// Whether the expression calls `row_size`, which needs an input to size against.
+    /// Purpose: This function tells whether the expression calls `row_size()`.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `true` when it does.
     pub(crate) fn uses_row_size(&self) -> bool {
         match self {
             Expr::Int(_) | Expr::Float(_) | Expr::Name(_) | Expr::Has(_) => false,
@@ -172,6 +175,12 @@ impl Expr {
         }
     }
 
+    /// Purpose: This function computes the expression's value.
+    ///
+    /// Inputs:
+    /// - `s`: the scope that gives names their values.
+    ///
+    /// Outputs: an integer, a float or a truth value, or an error.
     pub(crate) fn eval(&self, s: &dyn Scope) -> Result<Value, String> {
         Ok(match self {
             Expr::Int(v) => Value::Int(*v),
@@ -202,8 +211,12 @@ impl Expr {
         })
     }
 
-    /// Evaluate to an integer. A float is refused even when it is whole, because a
-    /// dimension that came out of float arithmetic is a layout bug.
+    /// Purpose: This function computes the expression and requires an integer.
+    ///
+    /// Inputs:
+    /// - `s`: the scope that gives names their values.
+    ///
+    /// Outputs: the integer, or an error for any other kind of value.
     pub(crate) fn eval_int(&self, s: &dyn Scope) -> Result<i64, String> {
         match self.eval(s)? {
             Value::Int(v) => Ok(v),
@@ -211,21 +224,46 @@ impl Expr {
         }
     }
 
-    /// Evaluate to a size or count: an integer that is not negative.
+    /// Purpose: This function computes the expression and requires an integer that is not
+    /// negative.
+    ///
+    /// Inputs:
+    /// - `s`: the scope that gives names their values.
+    ///
+    /// Outputs: the value as a `u64`, or an error.
     pub(crate) fn eval_u64(&self, s: &dyn Scope) -> Result<u64, String> {
         let v = self.eval_int(s)?;
         u64::try_from(v).map_err(|_| format!("expected a size, got {v}"))
     }
 
+    /// Purpose: This function computes the expression and requires a number.
+    ///
+    /// Inputs:
+    /// - `s`: the scope that gives names their values.
+    ///
+    /// Outputs: the value as an `f64`, or an error for a truth value.
     pub(crate) fn eval_f64(&self, s: &dyn Scope) -> Result<f64, String> {
         num(self.eval(s)?, "a float parameter")
     }
 
+    /// Purpose: This function computes the expression and requires a truth value.
+    ///
+    /// Inputs:
+    /// - `s`: the scope that gives names their values.
+    ///
+    /// Outputs: the truth value, or an error for a number.
     pub(crate) fn eval_bool(&self, s: &dyn Scope) -> Result<bool, String> {
         truth(self.eval(s)?, "a condition")
     }
 }
 
+/// Purpose: This function reads a value as a float.
+///
+/// Inputs:
+/// - `v`: the value.
+/// - `what`: what needs the number, for the error.
+///
+/// Outputs: the float, or an error for a truth value.
 fn num(v: Value, what: &str) -> Result<f64, String> {
     match v {
         #[allow(clippy::cast_precision_loss)]
@@ -235,6 +273,13 @@ fn num(v: Value, what: &str) -> Result<f64, String> {
     }
 }
 
+/// Purpose: This function reads a value as a truth value.
+///
+/// Inputs:
+/// - `v`: the value.
+/// - `what`: what needs the truth value, for the error.
+///
+/// Outputs: the truth value, or an error for a number.
 fn truth(v: Value, what: &str) -> Result<bool, String> {
     match v {
         Value::Bool(b) => Ok(b),
@@ -242,6 +287,15 @@ fn truth(v: Value, what: &str) -> Result<bool, String> {
     }
 }
 
+/// Purpose: This function applies an arithmetic or comparison operator to two values.
+///
+/// Inputs:
+/// - `op`: the operator.
+/// - `a`: the left value.
+/// - `b`: the right value.
+///
+/// Outputs: the result, or an error for overflow, division by zero, or a value of the
+/// wrong kind.
 fn binary(op: BinOp, a: Value, b: Value) -> Result<Value, String> {
     use BinOp::*;
     if let (Value::Bool(x), Value::Bool(y)) = (a, b) {
@@ -287,6 +341,7 @@ fn binary(op: BinOp, a: Value, b: Value) -> Result<Value, String> {
     })
 }
 
+/// Purpose: This enum holds one token of an expression's text.
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
     Int(i64),
@@ -298,6 +353,12 @@ enum Tok {
 }
 
 impl fmt::Display for Tok {
+    /// Purpose: This function formats an expression token as it appeared in the text.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Tok::Int(v) => write!(f, "{v}"),
@@ -309,6 +370,12 @@ impl fmt::Display for Tok {
     }
 }
 
+/// Purpose: This function splits an expression's text into tokens.
+///
+/// Inputs:
+/// - `src`: the expression's text.
+///
+/// Outputs: the tokens, or an error for text the language does not allow.
 fn lex(src: &str) -> Result<Vec<Tok>, String> {
     const SYMS: [&str; 20] = [
         "==", "!=", "<=", ">=", "&&", "||", "<", ">", "+", "-", "*", "/", "%", "(", ")", "?", ":", "!", ",", ".",
@@ -365,16 +432,29 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
     Ok(out)
 }
 
+/// Purpose: This struct holds an expression's tokens and the parser's place in them.
 struct Parser {
     tokens: Vec<Tok>,
     pos: usize,
 }
 
 impl Parser {
+    /// Purpose: This function tells whether the next token is a given symbol.
+    ///
+    /// Inputs:
+    /// - `s`: the symbol.
+    ///
+    /// Outputs: `true` when it is.
     fn peek_sym(&self, s: &str) -> bool {
         matches!(self.tokens.get(self.pos), Some(Tok::Sym(t)) if *t == s)
     }
 
+    /// Purpose: This function consumes the next token when it is a given symbol.
+    ///
+    /// Inputs:
+    /// - `s`: the symbol.
+    ///
+    /// Outputs: `true` when the symbol was consumed.
     fn eat(&mut self, s: &str) -> bool {
         if self.peek_sym(s) {
             self.pos += 1;
@@ -384,6 +464,12 @@ impl Parser {
         }
     }
 
+    /// Purpose: This function consumes the next token, which must be a given symbol.
+    ///
+    /// Inputs:
+    /// - `s`: the symbol that must come next.
+    ///
+    /// Outputs: `Ok(())`, or an error naming what was found instead.
     fn expect(&mut self, s: &str) -> Result<(), String> {
         if self.eat(s) {
             Ok(())
@@ -395,6 +481,11 @@ impl Parser {
         }
     }
 
+    /// Purpose: This function parses a whole expression, including `c ? a : b`.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the parsed expression, or an error.
     fn expr(&mut self) -> Result<Expr, String> {
         let c = self.or()?;
         if self.eat("?") {
@@ -406,6 +497,11 @@ impl Parser {
         Ok(c)
     }
 
+    /// Purpose: This function parses conditions joined by `||`.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the parsed expression, or an error.
     fn or(&mut self) -> Result<Expr, String> {
         let mut e = self.and()?;
         while self.eat("||") {
@@ -414,6 +510,11 @@ impl Parser {
         Ok(e)
     }
 
+    /// Purpose: This function parses conditions joined by `&&`.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the parsed expression, or an error.
     fn and(&mut self) -> Result<Expr, String> {
         let mut e = self.cmp()?;
         while self.eat("&&") {
@@ -422,6 +523,11 @@ impl Parser {
         Ok(e)
     }
 
+    /// Purpose: This function parses at most one comparison, such as `L == n_layer - 1`.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the parsed expression, or an error.
     fn cmp(&mut self) -> Result<Expr, String> {
         let e = self.sum()?;
         for (s, op) in [("==", BinOp::Eq), ("!=", BinOp::Ne), ("<=", BinOp::Le), (">=", BinOp::Ge), ("<", BinOp::Lt), (">", BinOp::Gt)] {
@@ -432,6 +538,11 @@ impl Parser {
         Ok(e)
     }
 
+    /// Purpose: This function parses additions and subtractions.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the parsed expression, or an error.
     fn sum(&mut self) -> Result<Expr, String> {
         let mut e = self.product()?;
         loop {
@@ -446,6 +557,11 @@ impl Parser {
         }
     }
 
+    /// Purpose: This function parses multiplications, divisions and remainders.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the parsed expression, or an error.
     fn product(&mut self) -> Result<Expr, String> {
         let mut e = self.unary()?;
         loop {
@@ -462,6 +578,11 @@ impl Parser {
         }
     }
 
+    /// Purpose: This function parses a leading `!` or `-` and what follows it.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the parsed expression, or an error.
     fn unary(&mut self) -> Result<Expr, String> {
         if self.eat("!") {
             return Ok(Expr::Not(Box::new(self.unary()?)));
@@ -472,6 +593,12 @@ impl Parser {
         self.primary()
     }
 
+    /// Purpose: This function parses a number, a name, a function call, `has()`, or an
+    /// expression in parentheses.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the parsed expression, or an error.
     fn primary(&mut self) -> Result<Expr, String> {
         let t = self.tokens.get(self.pos).cloned().ok_or("expression ends too soon")?;
         self.pos += 1;
@@ -507,20 +634,46 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// Purpose: This struct holds the fixed names and values the expression tests use.
     struct Vars(HashMap<&'static str, Value>);
 
     impl Scope for Vars {
+        /// Purpose: This function returns a test variable's value.
+        ///
+        /// Inputs:
+        /// - `n`: the name.
+        ///
+        /// Outputs: the value, or an error for a name the tests did not set.
         fn name(&self, n: &str) -> Result<Value, String> {
             self.0.get(n).copied().ok_or_else(|| format!("unknown {n}"))
         }
+        /// Purpose: This function answers `has()` in the tests, where only
+        /// `blk.{L}.attn_q.bias` exists.
+        ///
+        /// Inputs:
+        /// - `t`: the tensor name.
+        ///
+        /// Outputs: `true` for that one name.
         fn has(&self, t: &str) -> Result<bool, String> {
             Ok(t == "blk.{L}.attn_q.bias")
         }
+        /// Purpose: This function answers `row_size()` in the tests with 18 bytes per 32
+        /// elements.
+        ///
+        /// Inputs:
+        /// - `n`: the element count.
+        ///
+        /// Outputs: `n / 32 * 18`.
         fn row_size(&self, n: i64) -> Result<i64, String> {
             Ok(n / 32 * 18)
         }
     }
 
+    /// Purpose: This function builds the fixed scope the expression tests use.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the scope.
     fn vars() -> Vars {
         Vars(HashMap::from([
             ("n_embd", Value::Int(2048)),
@@ -532,6 +685,12 @@ mod tests {
         ]))
     }
 
+    /// Purpose: This function parses and evaluates an expression in the test scope.
+    ///
+    /// Inputs:
+    /// - `src`: the expression's text.
+    ///
+    /// Outputs: the value. It panics on an error.
     fn eval(src: &str) -> Value {
         Expr::parse(src).unwrap().eval(&vars()).unwrap()
     }

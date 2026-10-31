@@ -1,15 +1,6 @@
-//! Reading a layout file: TOML in, a checked [`Layout`] out.
-//!
-//! Everything that can be checked without a model is checked here, so a typo in a
-//! layout fails when the layout is read, with the place it is in, instead of on the
-//! first model someone binds it to. That covers op names, parameter names and kinds,
-//! input counts, the syntax of every expression, the names expressions read, the
-//! placeholders in tensor names, and whether every tensor an op reads is declared or
-//! produced somewhere in the layout. What needs a model (presence, shapes, order) is
-//! [`Layout::bind`](super::Layout::bind)'s job.
-//!
-//! The README in this directory is the reference for the format; this file is its
-//! implementation.
+//! Author: Joe Ricks
+//! File: src/layout/format.rs
+//! Description: Reads a layout file's TOML text into a checked `Layout`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
@@ -24,13 +15,7 @@ use super::LayoutError;
 /// The format version this dovata reads.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// An architecture's compute graph, read from a layout file and checked.
-///
-/// Parse one with [`Layout::from_toml`], or get a built-in one with
-/// [`super::builtin`]. A `Layout` does not know any model; [`Layout::bind`] applies it to
-/// one and produces the [`super::BoundGraph`] the planner reads.
-///
-/// [`Layout::bind`]: super::Layout::bind
+/// Purpose: This struct holds a checked layout, read from a layout file.
 #[derive(Debug, Clone)]
 pub struct Layout {
     pub(crate) arch: String,
@@ -46,7 +31,7 @@ pub struct Layout {
     pub(crate) out_names: HashSet<String>,
 }
 
-/// A weight the layout expects in the model file.
+/// Purpose: This struct holds one weight a layout expects in the model file.
 #[derive(Debug, Clone)]
 pub(crate) struct WeightDecl {
     pub name: String,
@@ -56,13 +41,13 @@ pub(crate) struct WeightDecl {
     pub when: Option<Expr>,
 }
 
-/// A model tensor llama.cpp loads but one step's graph never reads.
+/// Purpose: This struct holds one model tensor a layout lists as unused.
 #[derive(Debug, Clone)]
 pub(crate) struct UnusedDecl {
     pub name: String,
 }
 
-/// What a declared non-weight tensor is.
+/// Purpose: This enum lists the kinds of declared tensor: input, KV cache and state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeclKind {
     Input,
@@ -70,7 +55,7 @@ pub(crate) enum DeclKind {
     State,
 }
 
-/// A declared tensor's type: fixed, or the K or V cache type from the bind options.
+/// Purpose: This enum holds a declared tensor's ggml type or its KV cache type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DType {
     Fixed(u32),
@@ -78,6 +63,7 @@ pub(crate) enum DType {
     KvV,
 }
 
+/// Purpose: This struct holds one declared input, KV cache or state tensor.
 #[derive(Debug, Clone)]
 pub(crate) struct TensorDecl {
     pub name: String,
@@ -87,6 +73,7 @@ pub(crate) struct TensorDecl {
     pub when: Option<Expr>,
 }
 
+/// Purpose: This enum lists the three sections of a layout: prologue, block and epilogue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Section {
     Prologue,
@@ -95,6 +82,13 @@ pub(crate) enum Section {
 }
 
 impl fmt::Display for Section {
+    /// Purpose: This function formats a layout section's name: prologue, block or
+    /// epilogue.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Section::Prologue => "prologue",
@@ -104,15 +98,14 @@ impl fmt::Display for Section {
     }
 }
 
-/// One input of an op. `optional` inputs end in `?` and are dropped when the model
-/// lacks the weight.
+/// Purpose: This struct holds one input name of an op, and whether the input is optional.
 #[derive(Debug, Clone)]
 pub(crate) struct InputRef {
     pub name: String,
     pub optional: bool,
 }
 
-/// `for = "e in 1..n_expert_used"`: run the op once per value, end exclusive.
+/// Purpose: This struct holds an op's `for` loop: its variable and its range.
 #[derive(Debug, Clone)]
 pub(crate) struct Loop {
     pub var: String,
@@ -120,7 +113,7 @@ pub(crate) struct Loop {
     pub end: Expr,
 }
 
-/// A parameter as written, before a model gives it a value.
+/// Purpose: This enum holds an op parameter as the layout file writes it.
 #[derive(Debug, Clone)]
 pub(crate) enum RawParam {
     Expr(Expr),
@@ -129,6 +122,7 @@ pub(crate) enum RawParam {
     Const(i64),
 }
 
+/// Purpose: This struct holds one checked op of a layout.
 #[derive(Debug, Clone)]
 pub(crate) struct OpSpec {
     pub section: Section,
@@ -145,12 +139,18 @@ pub(crate) struct OpSpec {
 }
 
 impl OpSpec {
-    /// Where this op is, for error messages: `block op 12 (rope)`.
+    /// Purpose: This function names where an op sits in its layout file, such as
+    /// `block op 12 (rope)`.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the section, the op's index in it, and the op's name.
     pub(crate) fn site(&self) -> String {
         format!("{} op {} ({})", self.section, self.index, self.def.name)
     }
 }
 
+/// Purpose: This struct holds a layout file's TOML as parsed, before it is checked.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawLayout {
@@ -176,6 +176,7 @@ struct RawLayout {
     outputs: Vec<String>,
 }
 
+/// Purpose: This struct holds one entry of a layout file's `weights` list, as parsed.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawWeight {
@@ -187,6 +188,7 @@ struct RawWeight {
     when: Option<String>,
 }
 
+/// Purpose: This struct holds one entry of a layout file's `unused` list, as parsed.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawUnused {
@@ -197,6 +199,7 @@ struct RawUnused {
     why: String,
 }
 
+/// Purpose: This struct holds one entry of a layout file's `tensors` list, as parsed.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawTensor {
@@ -211,7 +214,13 @@ struct RawTensor {
 const OP_KEYS: [&str; 7] = ["op", "in", "out", "when", "for", "dims", "dtype"];
 
 impl Layout {
-    /// Read and check a layout.
+    /// Purpose: This function reads a layout file's TOML text and checks it.
+    ///
+    /// Inputs:
+    /// - `src`: the text of a `.layout.toml` file.
+    ///
+    /// Outputs: the checked layout, or an error naming the first mistake and its place in
+    /// the file.
     pub fn from_toml(src: &str) -> Result<Layout, LayoutError> {
         let raw: RawLayout = toml::from_str(src).map_err(|e| LayoutError::Toml(e.to_string()))?;
         let bad = |at: &str, detail: String| LayoutError::Invalid { at: at.to_owned(), detail };
@@ -378,18 +387,26 @@ impl Layout {
         })
     }
 
-    /// The `general.architecture` this layout is for.
+    /// Purpose: This function returns the model architecture the layout is for.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the architecture name, such as `qwen3moe`.
     pub fn arch(&self) -> &str {
         &self.arch
     }
 
-    /// The layout's one-line description of the architecture, if it has one.
+    /// Purpose: This function returns the layout's one-line description.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the description, or `None` when the layout has none.
     pub fn description(&self) -> Option<&str> {
         self.description.as_deref()
     }
 }
 
-/// Which names an expression may read where it is written.
+/// Purpose: This struct holds which names an expression may read where it is written.
 struct Ctx<'a> {
     /// `L` is in scope: a block op, or a declaration whose name has `{L}`.
     layer: bool,
@@ -401,6 +418,15 @@ struct Ctx<'a> {
 
 const SRC_NAMES: [&str; 8] = ["src.ne0", "src.ne1", "src.ne2", "src.ne3", "src.nb0", "src.nb1", "src.nb2", "src.nb3"];
 
+/// Purpose: This function checks that an expression reads only names allowed where it is
+/// written.
+///
+/// Inputs:
+/// - `e`: the parsed expression.
+/// - `ctx`: which names are allowed at this place.
+/// - `at`: the place in the layout file, for the error.
+///
+/// Outputs: `Ok(())`, or an error naming the first name that is not allowed.
 fn check_names(e: &Expr, ctx: &Ctx<'_>, at: &str) -> Result<(), LayoutError> {
     let mut names = Vec::new();
     e.names(&mut names);
@@ -423,6 +449,14 @@ fn check_names(e: &Expr, ctx: &Ctx<'_>, at: &str) -> Result<(), LayoutError> {
     Ok(())
 }
 
+/// Purpose: This function parses a dim or op parameter expression and checks its names.
+///
+/// Inputs:
+/// - `src`: the expression's text.
+/// - `ctx`: which names are allowed at this place.
+/// - `at`: the place in the layout file, for the error.
+///
+/// Outputs: the parsed expression, or an error.
 fn parse_expr(src: &str, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutError> {
     let e = Expr::parse(src).map_err(|detail| LayoutError::Invalid { at: at.to_owned(), detail })?;
     check_names(&e, ctx, at)?;
@@ -434,12 +468,28 @@ fn parse_expr(src: &str, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutError> {
     Ok(e)
 }
 
+/// Purpose: This function parses a `when` condition and checks its names.
+///
+/// Inputs:
+/// - `src`: the condition's text.
+/// - `ctx`: which names are allowed at this place.
+/// - `at`: the place in the layout file, for the error.
+///
+/// Outputs: the parsed expression, or an error.
 fn cond_expr(src: &str, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutError> {
     let e = Expr::parse(src).map_err(|detail| LayoutError::Invalid { at: at.to_owned(), detail })?;
     check_names(&e, ctx, at)?;
     Ok(e)
 }
 
+/// Purpose: This function reads a TOML number or expression string as an expression.
+///
+/// Inputs:
+/// - `v`: the TOML value.
+/// - `ctx`: which names are allowed at this place.
+/// - `at`: the place in the layout file, for the error.
+///
+/// Outputs: the expression, or an error for any other kind of value.
 fn value_expr(v: &toml::Value, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutError> {
     match v {
         toml::Value::Integer(i) => Ok(Expr::Int(*i)),
@@ -449,10 +499,30 @@ fn value_expr(v: &toml::Value, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutEr
     }
 }
 
+/// Purpose: This function reads one entry of a `dims` list as an expression.
+///
+/// Inputs:
+/// - `v`: the TOML value.
+/// - `ctx`: which names are allowed at this place.
+/// - `at`: the place in the layout file, for the error.
+///
+/// Outputs: the expression, or an error.
 fn dim_expr(v: &toml::Value, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutError> {
     value_expr(v, ctx, at)
 }
 
+/// Purpose: This function reads one op parameter by the kind the op's definition gives
+/// it.
+///
+/// Inputs:
+/// - `def`: the op's definition.
+/// - `name`: the parameter's name.
+/// - `v`: the parameter's TOML value.
+/// - `ctx`: which names are allowed at this place.
+/// - `at`: the place in the layout file, for the error.
+///
+/// Outputs: the parameter, or an error when the op does not take it or the value is the
+/// wrong kind.
 fn param(def: &OpDef, name: &str, v: &toml::Value, ctx: &Ctx<'_>, at: &str) -> Result<RawParam, LayoutError> {
     let bad = |detail: String| LayoutError::Invalid { at: at.to_owned(), detail };
     let pd = def.params.iter().find(|p| p.name == name).ok_or_else(|| {
@@ -482,6 +552,17 @@ fn param(def: &OpDef, name: &str, v: &toml::Value, ctx: &Ctx<'_>, at: &str) -> R
     }
 }
 
+/// Purpose: This function reads one op's TOML table and checks it against the op's
+/// definition.
+///
+/// Inputs:
+/// - `section`: the layout section the op is in.
+/// - `index`: the op's position in that section.
+/// - `table`: the op's TOML table.
+/// - `defaults`: the layout's parameter defaults for each op.
+/// - `has_names`: the weight names the layout declares.
+///
+/// Outputs: the checked op, or an error naming the first mistake.
 fn op_spec(
     section: Section,
     index: usize,
@@ -590,6 +671,14 @@ fn op_spec(
     Ok(OpSpec { section, index, def, inputs, out, when, repeat, dims, dtype, params })
 }
 
+/// Purpose: This function reads an op's `for` value, such as `e in 1..n_expert_used`.
+///
+/// Inputs:
+/// - `s`: the text of the `for` value.
+/// - `layer`: whether the layer index `L` is allowed.
+/// - `at`: the place in the layout file, for the error.
+///
+/// Outputs: the loop, or an error when the text is not a valid loop.
 fn parse_loop(s: &str, layer: bool, at: &str) -> Result<Loop, LayoutError> {
     let bad = |detail: String| LayoutError::Invalid { at: at.to_owned(), detail };
     let (var, range) = s.split_once(" in ").ok_or_else(|| bad(format!("`for = \"{s}\"` should read like \"e in 1..n_expert_used\"")))?;
@@ -602,8 +691,14 @@ fn parse_loop(s: &str, layer: bool, at: &str) -> Result<Loop, LayoutError> {
     Ok(Loop { var: var.to_owned(), start: parse_expr(start, &ctx, at)?, end: parse_expr(end, &ctx, at)? })
 }
 
-/// Check a tensor name's `{...}` placeholders: `{L}` or one of `vars`. Returns whether
-/// it uses `{L}`.
+/// Purpose: This function checks the `{...}` placeholders in a tensor name.
+///
+/// Inputs:
+/// - `name`: the tensor name.
+/// - `vars`: the loop variables allowed in the name.
+/// - `at`: the place in the layout file, for the error.
+///
+/// Outputs: `true` when the name uses `{L}`, or an error for a bad placeholder.
 fn check_template(name: &str, vars: &[&str], at: &str) -> Result<bool, LayoutError> {
     let bad = |detail: String| LayoutError::Invalid { at: at.to_owned(), detail };
     if name.is_empty() {
@@ -627,6 +722,12 @@ fn check_template(name: &str, vars: &[&str], at: &str) -> Result<bool, LayoutErr
     Ok(layered)
 }
 
+/// Purpose: This function writes the error text for an unknown op name.
+///
+/// Inputs:
+/// - `name`: the op name the layout used.
+///
+/// Outputs: the error text, which lists the known ops.
 fn unknown_op(name: &str) -> String {
     format!(
         "`{name}` is not an op dovata knows. Ops are ggml graph node types in lower case (GGML_OP_MUL_MAT is mul_mat; \
@@ -636,7 +737,12 @@ fn unknown_op(name: &str) -> String {
     )
 }
 
-/// A `ggml_type` by name, in any case: `f32`, `F16`, `q8_0`, `i32`.
+/// Purpose: This function looks up a ggml tensor type by name, in any case.
+///
+/// Inputs:
+/// - `name`: the type's name, such as `f16`.
+///
+/// Outputs: the type's number, or `None` when dovata cannot size a type of that name.
 pub(crate) fn type_by_name(name: &str) -> Option<u32> {
     (0..64u32).find(|t| crate::gguf::ggml_type_layout(*t).is_some() && crate::gguf::ggml_type_name(*t).eq_ignore_ascii_case(name))
 }

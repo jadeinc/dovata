@@ -1,10 +1,7 @@
-//! Reading the chat template, the vocabulary and the special tokens out of a GGUF header.
-//!
-//! Everything this package needs from the GGUF is metadata, which sits at the front of
-//! the file ahead of the tensor index. So the reader starts small and doubles until the
-//! metadata parses, capped at dovata's `HEADER_BUDGET`. For Qwen3-Coder-30B the metadata,
-//! with its 151,936-token vocabulary and as many merges, ends near 6 MB of an 18 GB file.
-//! The same loop serves a local file and a range-fetched one from the Hub.
+//! Author: Joe Ricks
+//! File: src/chat/src/header.rs
+//! Description: Reads the chat template, token list and special tokens from a GGUF
+//! file's header.
 
 use std::fs::File;
 use std::io::Read;
@@ -24,7 +21,12 @@ const KEY_TOKEN_TYPE: &str = "tokenizer.ggml.token_type";
 const KEY_BOS: &str = "tokenizer.ggml.bos_token_id";
 const KEY_EOS: &str = "tokenizer.ggml.eos_token_id";
 
-/// Read a local GGUF's header.
+/// Purpose: This function reads the header of a GGUF file on disk.
+///
+/// Inputs:
+/// - `path`: the GGUF file, whole or just its first megabytes.
+///
+/// Outputs: the parsed header, or an error if the file cannot be read or parsed.
 pub(crate) fn read(path: &Path) -> Result<Gguf, ChatError> {
     let io = |source| ChatError::Io { path: path.to_owned(), source };
     let mut file = File::open(path).map_err(io)?;
@@ -36,13 +38,14 @@ pub(crate) fn read(path: &Path) -> Result<Gguf, ChatError> {
     })
 }
 
-/// Parse a GGUF header from a source read in growing prefixes.
+/// Purpose: This function parses a GGUF header, reading more of the file until the
+/// header is complete.
 ///
-/// `more(buf, want)` extends `buf` toward `want` bytes in all and returns whether the
-/// source ended first. Any parse error before the end of the source and before the
-/// budget means "read more": a truncated buffer can fail as `Truncated`, or as
-/// `Implausible` when a long array claims more elements than the bytes so far hold.
-/// Only the error from the last, largest read is reported.
+/// Inputs:
+/// - `more`: a reader that adds bytes to a buffer and says if the file ended.
+///
+/// Outputs: the parsed header, or an error if it does not parse within dovata's
+/// `HEADER_BUDGET`.
 pub(crate) fn grow(mut more: impl FnMut(&mut Vec<u8>, u64) -> Result<bool, ChatError>) -> Result<Gguf, ChatError> {
     let mut buf = Vec::new();
     let mut want = FIRST_READ.min(HEADER_BUDGET);
@@ -61,7 +64,7 @@ pub(crate) fn grow(mut more: impl FnMut(&mut Vec<u8>, u64) -> Result<bool, ChatE
     }
 }
 
-/// What a [`Chat`](crate::Chat) takes from a header, borrowed where it is large.
+/// Purpose: This struct holds what a `Chat` needs from a GGUF header.
 pub(crate) struct Pieces<'a> {
     pub template: String,
     pub tokens: Vec<&'a str>,
@@ -71,6 +74,14 @@ pub(crate) struct Pieces<'a> {
 }
 
 impl<'a> Pieces<'a> {
+    /// Purpose: This function takes the chat template, token list, token types and BOS
+    /// and EOS strings out of a GGUF header.
+    ///
+    /// Inputs:
+    /// - `gguf`: the parsed GGUF header.
+    ///
+    /// Outputs: those pieces, or an error if the template or the token list is missing
+    /// or a token id is out of range.
     pub(crate) fn of(gguf: &'a Gguf) -> Result<Pieces<'a>, ChatError> {
         let template = match gguf.string(KEY_TEMPLATE) {
             Some(t) => t.to_owned(),
@@ -112,9 +123,15 @@ impl<'a> Pieces<'a> {
     }
 }
 
-/// A special token's string: the id under `key`, looked up in the vocabulary. Absent is
-/// fine, since Qwen ships no BOS. An id past the end is not: the header is lying about
-/// something, and the template would print the wrong marker.
+/// Purpose: This function looks up the text of the BOS or EOS token.
+///
+/// Inputs:
+/// - `gguf`: the parsed GGUF header.
+/// - `key`: the header key that holds the token's id.
+/// - `tokens`: the header's token list.
+///
+/// Outputs: the token's text, `None` if the key is absent, or an error if the id is out
+/// of range.
 fn special(gguf: &Gguf, key: &'static str, tokens: &[&str]) -> Result<Option<String>, ChatError> {
     let Some(id) = gguf.u64(key) else {
         return Ok(None);

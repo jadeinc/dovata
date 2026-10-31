@@ -1,19 +1,11 @@
-//! One turn of a conversation, in the shape chat templates read.
-//!
-//! Templates are written against the OpenAI-style message dicts `transformers` passes
-//! them: `role` and `content`, plus whatever else a turn carries, such as `tool_calls` on
-//! an assistant turn or `reasoning_content` for a thinking model. [`Message`] keeps the
-//! two fields every template reads as fields and everything else in a map, so a new
-//! model's extra key needs no change here.
+//! Author: Joe Ricks
+//! File: src/chat/src/message.rs
+//! Description: Defines `Message`, one turn of a conversation.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// One turn of a conversation.
-///
-/// Serializes to the dict a template sees as `message`: `role`, `content`, and every
-/// entry of `extra` at the same level. It deserializes from the same shape, so an
-/// OpenAI-style JSON message list can be read straight into a `Vec<Message>`.
+/// Purpose: This struct holds one turn of a conversation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     /// `system`, `user`, `assistant`, `tool`, or any role the model's template knows.
@@ -32,54 +24,89 @@ pub struct Message {
 }
 
 impl Message {
-    /// A turn with the given role and text.
+    /// Purpose: This function makes a turn with any role.
+    ///
+    /// Inputs:
+    /// - `role`: the role, such as `user`.
+    /// - `content`: the turn's text.
+    ///
+    /// Outputs: the new `Message`.
     pub fn new(role: impl Into<String>, content: impl Into<String>) -> Message {
         Message { role: role.into(), content: Some(content.into()), extra: Map::new() }
     }
 
-    /// A system turn.
+    /// Purpose: This function makes a system turn.
+    ///
+    /// Inputs:
+    /// - `content`: the system prompt.
+    ///
+    /// Outputs: the new `Message`.
     pub fn system(content: impl Into<String>) -> Message {
         Message::new("system", content)
     }
 
-    /// A user turn.
+    /// Purpose: This function makes a user turn.
+    ///
+    /// Inputs:
+    /// - `content`: what the person said.
+    ///
+    /// Outputs: the new `Message`.
     pub fn user(content: impl Into<String>) -> Message {
         Message::new("user", content)
     }
 
-    /// An assistant turn with text.
+    /// Purpose: This function makes an assistant turn with text.
+    ///
+    /// Inputs:
+    /// - `content`: the model's reply.
+    ///
+    /// Outputs: the new `Message`.
     pub fn assistant(content: impl Into<String>) -> Message {
         Message::new("assistant", content)
     }
 
-    /// An assistant turn that calls tools and says nothing, with `content` null.
+    /// Purpose: This function makes an assistant turn that calls tools, with null
+    /// content.
     ///
-    /// `calls` is the OpenAI-style list, each entry
-    /// `{"type": "function", "function": {"name": ..., "arguments": ...}}`. Templates
-    /// differ on whether `arguments` should be a JSON string or an object: DeepSeek V3
-    /// concatenates it as a string, Qwen3-Coder iterates it as a map, and Qwen3 takes
-    /// either. Pass what the model's template expects.
+    /// Inputs:
+    /// - `calls`: the OpenAI-style list of tool calls.
+    ///
+    /// Outputs: the new `Message`.
     pub fn tool_calls(calls: Value) -> Message {
         let mut m = Message { role: "assistant".into(), content: None, extra: Map::new() };
         m.extra.insert("tool_calls".into(), calls);
         m
     }
 
-    /// A tool's result, answering a call.
+    /// Purpose: This function makes a tool turn that holds a tool's result.
+    ///
+    /// Inputs:
+    /// - `content`: the tool's result.
+    ///
+    /// Outputs: the new `Message`.
     pub fn tool(content: impl Into<String>) -> Message {
         Message::new("tool", content)
     }
 
-    /// Add an extra key, such as `tool_call_id` or `reasoning_content`.
+    /// Purpose: This function adds an extra key to a turn, such as `tool_call_id`.
+    ///
+    /// Inputs:
+    /// - `key`: the key's name.
+    /// - `value`: its value.
+    ///
+    /// Outputs: the same `Message` with the key set.
     #[must_use]
     pub fn with(mut self, key: impl Into<String>, value: Value) -> Message {
         self.extra.insert(key.into(), value);
         self
     }
 
-    /// Refuse an `extra` map that shadows a field. With `serde(flatten)` it would
-    /// serialize a second `role` or `content` key, and which one a template saw would
-    /// depend on map internals.
+    /// Purpose: This function checks that a turn's extra keys do not repeat `role` or
+    /// `content`.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `Ok(())`, or an error naming the repeated key.
     pub(crate) fn check(&self) -> Result<(), String> {
         for field in ["role", "content"] {
             if self.extra.contains_key(field) {

@@ -1,4 +1,7 @@
-//! The Hub rule's pure parts, offline, and one network run, `#[ignore]`d.
+//! Author: Joe Ricks
+//! File: src/chat/src/tests/hub.rs
+//! Description: Tests how `from_hub` picks its files, plus two network tests that are
+//! off by default.
 
 use serde_json::json;
 

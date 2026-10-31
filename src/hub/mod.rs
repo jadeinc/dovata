@@ -1,58 +1,6 @@
-//! Getting a model's GGUF files: from a local path, or from the Hugging Face Hub.
-//!
-//! # What it does
-//!
-//! [`fetch`] turns a [`ModelSource`] into the paths of one model's files on disk. A
-//! local path gives that file and, for a split model, its sibling parts. A Hub repo is
-//! listed, one model in it is chosen, and every part of that model is downloaded into
-//! the shared hf-hub cache. Either way the result is opened as a
-//! [`crate::load::Model`] before it is returned, so a caller never gets parts that do
-//! not belong together.
-//!
-//! # Why it never quantizes
-//!
-//! A repo may not offer the type a caller wants. `fetch` then refuses and lists what the
-//! repo does offer; it does not download something else and convert it. Quantizing is
-//! minutes of work and tens of gigabytes written, so it happens only when the caller
-//! calls [`crate::quantize::quantize`], and the [`SelectError::NotOffered`] message says
-//! how.
-//!
-//! # Choosing one model in a repo
-//!
-//! GGUF repos name their files by convention only: `Model-Q4_K_M.gguf`,
-//! `BF16/Model-BF16-00001-of-00002.gguf`, `model.Q8_0.gguf`. [`levels`] groups a repo's
-//! file list into models, one [`Level`] each, and [`select`] picks one. The rules:
-//!
-//! - Only `.gguf` files count, and not projector or imatrix files: a name starting with
-//!   `mmproj` or containing `imatrix` is skipped.
-//! - Split parts, `<name>-00001-of-00003.gguf` and so on in one directory, are one
-//!   model. They may sit in a subdirectory, as unsloth puts them under `BF16/`.
-//! - The type comes from the file name. Every [`Ftype`] name is tried, longest first,
-//!   ignoring case, plus `llama-quantize`'s aliases and three spellings repos use for
-//!   llama.cpp's own: FP16, FP32 and MXFP4. A match must start the name or follow `-`,
-//!   `.` or `_`, and must end the name or come before `-` or `.`. The end rule is what
-//!   keeps `Q4_K` from matching inside `Q4_K_XL`. The parent directory is tried when the
-//!   file name has no match.
-//! - A name with no llama ftype, such as unsloth's `UD-Q4_K_XL` or bartowski's `Q4_K_L`,
-//!   keeps its label and has no ftype. So does anything after `UD-`, even `UD-IQ1_M`:
-//!   unsloth's Dynamic quants mix types per tensor, so they are not what `llama-quantize`
-//!   makes for that name. These can still be fetched by naming the file.
-//! - [`Want::Unquantized`] takes BF16, then F16, then F32. BF16 comes first because it
-//!   is what most models are trained in, so it holds them exactly at half the size of
-//!   F32. With none of the three, it takes the most precise type the repo offers, by
-//!   [`Ftype::rank`]. A repo with one model and no recognizable type gives that model.
-//! - [`Want::Ftype`] takes exactly that type or fails with [`SelectError::NotOffered`].
-//!
-//! After the download, the file's `general.file_type` must agree with the type its name
-//! gave, or the fetch is refused: a mislabeled upload would otherwise plan as one type
-//! and hold another.
-//!
-//! # Pure core, network edge
-//!
-//! Parsing a source, grouping files and selecting are pure and always built, so they are
-//! tested here against real file lists copied from the Hub into `testdata/`. Local paths
-//! always work. The download itself is `fetch.rs`, behind the `hub` cargo feature;
-//! without it, a Hub source is refused with a message naming the feature.
+//! Author: Joe Ricks
+//! File: src/hub/mod.rs
+//! Description: Finds one model's GGUF files, on disk or on the Hugging Face Hub.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -65,13 +13,16 @@ use crate::quantize::{model_stem, split_suffix, strip_suffix_ignore_case, Ftype}
 #[cfg(feature = "hub")]
 mod fetch;
 
-/// Where a model comes from.
+/// Purpose: This enum holds where a model comes from: a path or a Hub repo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelSource {
     /// A GGUF file on disk, or the first or any part of a split one.
     Path(PathBuf),
     /// A model repo on the Hugging Face Hub.
     Hub {
+        /// The Hub to download from, such as `https://huggingface.co`, taken from the
+        /// Hub link given to [`ModelSource::parse`]. There is no default.
+        endpoint: String,
         /// `org/repo`.
         repo: String,
         /// A branch, tag or commit. `None` is the repo's `main`.
@@ -83,24 +34,13 @@ pub enum ModelSource {
 }
 
 impl ModelSource {
-    /// Read a source from what a user typed.
+    /// Purpose: This function reads a model source from a file path or a Hugging Face
+    /// link.
     ///
-    /// Accepted forms:
+    /// Inputs:
+    /// - `s`: the text, such as `/models/x.gguf` or a huggingface.co link.
     ///
-    /// - a local path: `/models/x.gguf`, `./x.gguf`, `~/x.gguf`, or any path that exists
-    /// - a repo id: `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`
-    /// - a repo URL: `https://huggingface.co/org/repo`
-    /// - a file link: `https://huggingface.co/org/repo/blob/<rev>/<path>.gguf`, or
-    ///   `.../resolve/<rev>/<path>.gguf`, the download link
-    /// - a revision or directory link: `https://huggingface.co/org/repo/tree/<rev>`, or
-    ///   `.../tree/<rev>/<dir>` for a directory holding one model's parts
-    ///
-    /// The rule for a path against a repo id, in order: a URL is always the Hub; a
-    /// string starting with `/`, `.` or `~` is always a path; a string that names
-    /// something on disk is a path; `org/repo`, exactly one slash between two names of
-    /// letters, digits, `-`, `_` and `.`, and not ending in `.gguf`, is a repo id;
-    /// anything else is a path, which [`fetch`] then reports as missing. So `models/x`
-    /// is a repo id unless `./models/x` exists, and `./models/x` is always a path.
+    /// Outputs: the source, or an error when the text names no model.
     pub fn parse(s: &str) -> Result<ModelSource, SourceError> {
         let s = s.trim();
         let fail = |reason: &str| SourceError { input: s.to_owned(), reason: reason.to_owned() };
@@ -123,7 +63,9 @@ impl ModelSource {
             return Ok(ModelSource::Path(PathBuf::from(s)));
         }
         if is_repo_id(s) && strip_suffix_ignore_case(s, ".gguf").is_none() {
-            return Ok(ModelSource::Hub { repo: s.to_owned(), revision: None, file: None });
+            return Err(fail(&format!(
+                "it is not a file on disk, and a Hub model needs its full link, as in https://huggingface.co/{s}"
+            )));
         }
         Ok(ModelSource::Path(PathBuf::from(s)))
     }
@@ -131,39 +73,64 @@ impl ModelSource {
 
 impl std::str::FromStr for ModelSource {
     type Err = SourceError;
+    /// Purpose: This function reads a model source from text, the same as
+    /// `ModelSource::parse`.
+    ///
+    /// Inputs:
+    /// - `s`: the text.
+    ///
+    /// Outputs: the source, or an error.
     fn from_str(s: &str) -> Result<ModelSource, SourceError> {
         ModelSource::parse(s)
     }
 }
 
-/// Shown in messages: a path as it is, a bare repo as its id, and anything more as the
-/// Hub link to it, which [`ModelSource::parse`] reads back.
+/// Shown in messages: a path as it is, and a Hub source as the link to it, which
+/// [`ModelSource::parse`] reads back.
 impl fmt::Display for ModelSource {
+    /// Purpose: This function formats a model source as a file path or a Hugging Face
+    /// link.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ModelSource::Path(p) => write!(f, "{}", p.display()),
-            ModelSource::Hub { repo, revision: None, file: None } => f.write_str(repo),
-            ModelSource::Hub { repo, revision, file } => {
+            ModelSource::Hub { endpoint, repo, revision: None, file: None } => write!(f, "{endpoint}/{repo}"),
+            ModelSource::Hub { endpoint, repo, revision, file } => {
                 let rev = revision.as_deref().unwrap_or("main").replace('/', "%2F");
                 match file {
-                    None => write!(f, "https://huggingface.co/{repo}/tree/{rev}"),
+                    None => write!(f, "{endpoint}/{repo}/tree/{rev}"),
                     Some(file) if strip_suffix_ignore_case(file, ".gguf").is_some() => {
-                        write!(f, "https://huggingface.co/{repo}/blob/{rev}/{file}")
+                        write!(f, "{endpoint}/{repo}/blob/{rev}/{file}")
                     }
-                    Some(dir) => write!(f, "https://huggingface.co/{repo}/tree/{rev}/{dir}"),
+                    Some(dir) => write!(f, "{endpoint}/{repo}/tree/{rev}/{dir}"),
                 }
             }
         }
     }
 }
 
-/// A Hub URL, after its scheme.
+/// Purpose: This function reads a Hugging Face link, given without its `https://`.
+///
+/// Inputs:
+/// - `rest`: the link after its scheme.
+///
+/// Outputs: the Hub source, or the reason the link names no model.
 fn parse_url(rest: &str) -> Result<ModelSource, String> {
     let rest = rest.split(['?', '#']).next().unwrap_or(rest);
     let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    if !matches!(host, "huggingface.co" | "www.huggingface.co" | "hf.co") {
-        return Err(format!("{host} is not the Hugging Face Hub"));
-    }
+    // `hf.co` and `www.huggingface.co` redirect to `huggingface.co`, and hf-hub keeps the
+    // token only on a redirect to the same host (`RedirectAuthHeaders::SameHost` in
+    // hf-hub's `api/sync.rs`), so a gated repo would fail through the redirect. The
+    // endpoint is the host they redirect to. It is always `https`, even for an `http`
+    // link, so a token never goes out in plain text.
+    let endpoint = match host {
+        "huggingface.co" | "www.huggingface.co" | "hf.co" => "https://huggingface.co".to_owned(),
+        _ => return Err(format!("{host} is not the Hugging Face Hub")),
+    };
     let segs: Vec<String> = path.split('/').filter(|s| !s.is_empty()).map(percent_decode).collect();
     if matches!(segs.first().map(String::as_str), Some("datasets" | "spaces")) {
         return Err("only model repos hold models".to_owned());
@@ -175,7 +142,12 @@ fn parse_url(rest: &str) -> Result<ModelSource, String> {
     if !is_repo_id(&repo) {
         return Err(format!("{repo} is not a repo id"));
     }
-    let hub = |revision: Option<&String>, file: Option<String>| ModelSource::Hub { repo: repo.clone(), revision: revision.cloned(), file };
+    let hub = |revision: Option<&String>, file: Option<String>| ModelSource::Hub {
+        endpoint: endpoint.clone(),
+        repo: repo.clone(),
+        revision: revision.cloned(),
+        file,
+    };
     match segs.get(2).map(String::as_str) {
         None => Ok(hub(None, None)),
         Some("tree") => match &segs[3..] {
@@ -197,13 +169,23 @@ fn parse_url(rest: &str) -> Result<ModelSource, String> {
     }
 }
 
-/// `org/repo`: two names of letters, digits, `-`, `_` and `.`, with no `..`.
+/// Purpose: This function tells whether text is a Hub repo id such as `org/repo`.
+///
+/// Inputs:
+/// - `s`: the text.
+///
+/// Outputs: `true` when it is.
 fn is_repo_id(s: &str) -> bool {
     let ok = |n: &str| !n.is_empty() && n != "." && !n.contains("..") && n.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b));
     matches!(s.split_once('/'), Some((org, name)) if ok(org) && ok(name))
 }
 
-/// Undo `%XX` escapes, as Hub links use for a revision like `refs%2Fpr%2F1`.
+/// Purpose: This function decodes the `%XX` escapes in one part of a link.
+///
+/// Inputs:
+/// - `s`: the text.
+///
+/// Outputs: the decoded text.
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -223,7 +205,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// A string [`ModelSource::parse`] could not read.
+/// Purpose: This struct holds the error for text that does not name a model source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceError {
     pub input: String,
@@ -231,6 +213,12 @@ pub struct SourceError {
 }
 
 impl fmt::Display for SourceError {
+    /// Purpose: This function formats model source errors.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "cannot read {:?} as a model: {}", self.input, self.reason)
     }
@@ -238,7 +226,7 @@ impl fmt::Display for SourceError {
 
 impl std::error::Error for SourceError {}
 
-/// Which model of a repo to take when the source does not name a file.
+/// Purpose: This enum holds which model of a Hub repo to take when no file is named.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Want {
     /// The unquantized model: BF16, then F16, then F32, else the most precise one.
@@ -249,6 +237,12 @@ pub enum Want {
 }
 
 impl fmt::Display for Want {
+    /// Purpose: This function formats which model of a repo is wanted.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Want::Unquantized => f.write_str("the unquantized model"),
@@ -257,7 +251,7 @@ impl fmt::Display for Want {
     }
 }
 
-/// One model in a repo: a single file, or every part of a split one.
+/// Purpose: This struct holds one model in a Hub repo: its label, its type and its files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Level {
     /// What the repo calls it, from the file name: `Q4_K_M`, `BF16`, `UD-Q4_K_XL`.
@@ -269,6 +263,12 @@ pub struct Level {
 }
 
 impl fmt::Display for Level {
+    /// Purpose: This function formats a model's label and part count.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.label)?;
         if self.files.len() > 1 {
@@ -278,12 +278,15 @@ impl fmt::Display for Level {
     }
 }
 
-/// One group per model, keyed by its directory, its name less any part suffix, and its
-/// part count, 0 for a one-file model. Each holds `(part number, path)`.
+/// Purpose: This type alias names the map that groups a repo's files into models.
 type Groups<'a> = BTreeMap<(&'a str, &'a str, u16), Vec<(u16, String)>>;
 
-/// Group a repo's file list into models, most precise first. See the module header for
-/// the rules.
+/// Purpose: This function groups a Hub repo's file list into models.
+///
+/// Inputs:
+/// - `files`: the file paths in the Hub repo.
+///
+/// Outputs: one entry per model, most precise first.
 pub fn levels(files: &[String]) -> Vec<Level> {
     let mut groups: Groups<'_> = BTreeMap::new();
     for path in files.iter().filter(|p| is_model_gguf(p)) {
@@ -311,7 +314,13 @@ pub fn levels(files: &[String]) -> Vec<Level> {
     out
 }
 
-/// A GGUF that holds a model, not a vision projector or an importance matrix.
+/// Purpose: This function tells whether a file is a GGUF that holds a model.
+///
+/// Inputs:
+/// - `path`: the file's path in the repo.
+///
+/// Outputs: `true` for a model, and `false` for a vision projector or an importance
+/// matrix.
 fn is_model_gguf(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
     name.ends_with(".gguf") && !name.starts_with("mmproj") && !name.contains("imatrix")
@@ -328,7 +337,13 @@ const NAME_ALIASES: [(&str, Ftype); 6] = [
     ("MXFP4", Ftype::MXFP4_MOE),
 ];
 
-/// The label and ftype of a model file, from its name or else its directory.
+/// Purpose: This function finds a model file's label and type from its name or its
+/// directory.
+///
+/// Inputs:
+/// - `path`: the file's path in the repo.
+///
+/// Outputs: the label, and the type or `None`.
 fn classify(path: &str) -> (String, Option<Ftype>) {
     let mut comps = path.rsplit('/');
     let name = comps.next().unwrap_or(path);
@@ -349,8 +364,12 @@ fn classify(path: &str) -> (String, Option<Ftype>) {
     (label, None)
 }
 
-/// The longest type name found in `text` on token boundaries, as a label and ftype.
-/// Behind `UD-`, the ftype is dropped and the label keeps the prefix.
+/// Purpose: This function finds the longest type name in a file or directory name.
+///
+/// Inputs:
+/// - `text`: the name.
+///
+/// Outputs: the label and type, or `None`.
 fn find_ftype(text: &str) -> Option<(String, Option<Ftype>)> {
     let up = text.to_ascii_uppercase();
     let names = Ftype::ALL.iter().map(|f| (f.name(), *f)).chain(NAME_ALIASES);
@@ -373,7 +392,13 @@ fn find_ftype(text: &str) -> Option<(String, Option<Ftype>)> {
     Some(if dynamic { (format!("UD-{}", ftype.name()), None) } else { (ftype.name().to_owned(), Some(ftype)) })
 }
 
-/// Choose one model from a repo's file list. See the module header for the rules.
+/// Purpose: This function chooses one model from a Hub repo's file list.
+///
+/// Inputs:
+/// - `files`: the file paths in the Hub repo.
+/// - `want`: which type is wanted.
+///
+/// Outputs: the chosen model, or an error.
 pub fn select(files: &[String], want: Want) -> Result<Level, SelectError> {
     let all = levels(files);
     if all.is_empty() {
@@ -401,6 +426,13 @@ pub fn select(files: &[String], want: Want) -> Result<Level, SelectError> {
     }
 }
 
+/// Purpose: This function returns the only model in a list.
+///
+/// Inputs:
+/// - `found`: the models that match.
+/// - `want`: what was asked for.
+///
+/// Outputs: the model, or an error when there is more than one.
 fn one(mut found: Vec<Level>, want: Want) -> Result<Level, SelectError> {
     match found.len() {
         1 => Ok(found.remove(0)),
@@ -408,8 +440,13 @@ fn one(mut found: Vec<Level>, want: Want) -> Result<Level, SelectError> {
     }
 }
 
-/// Choose the model a source names: the one a file belongs to, every part of it when
-/// split, or the one model inside a directory.
+/// Purpose: This function chooses the model a file or directory name points to.
+///
+/// Inputs:
+/// - `files`: the file paths in the Hub repo.
+/// - `name`: the file or directory.
+///
+/// Outputs: the chosen model, or an error.
 pub fn select_file(files: &[String], name: &str) -> Result<Level, SelectError> {
     let name = name.trim_matches('/');
     let all = levels(files);
@@ -428,7 +465,7 @@ pub fn select_file(files: &[String], name: &str) -> Result<Level, SelectError> {
     }
 }
 
-/// Why no model could be chosen from a repo.
+/// Purpose: This enum lists the errors from choosing a model in a Hub repo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectError {
     /// The repo holds no GGUF model files.
@@ -445,7 +482,12 @@ pub enum SelectError {
     NotAModel(String),
 }
 
-/// `BF16, Q8_0, ...`, and the labels with no ftype after them.
+/// Purpose: This function lists models as text for an error message.
+///
+/// Inputs:
+/// - `levels`: the models.
+///
+/// Outputs: the list as text.
 fn list(levels: &[Level]) -> String {
     let typed: Vec<String> = levels.iter().filter(|l| l.ftype.is_some()).map(ToString::to_string).collect();
     let named: Vec<String> = levels.iter().filter(|l| l.ftype.is_none()).map(ToString::to_string).collect();
@@ -457,6 +499,12 @@ fn list(levels: &[Level]) -> String {
 }
 
 impl fmt::Display for SelectError {
+    /// Purpose: This function formats model selection errors.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SelectError::NoGguf => write!(
@@ -492,7 +540,7 @@ impl fmt::Display for SelectError {
 
 impl std::error::Error for SelectError {}
 
-/// How to reach the Hub. Both fields have defaults that match the Hugging Face tools.
+/// Purpose: This struct holds a fetch's cache directory and access token.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct FetchOptions {
     /// The hf-hub cache directory. `None` is `HF_HUB_CACHE`, else `HF_HOME/hub`, else
@@ -505,6 +553,12 @@ pub struct FetchOptions {
 
 /// Debug without the token, so a logged options value never leaks it.
 impl fmt::Debug for FetchOptions {
+    /// Purpose: This function formats fetch options with the access token hidden.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FetchOptions")
             .field("cache_dir", &self.cache_dir)
@@ -513,7 +567,7 @@ impl fmt::Debug for FetchOptions {
     }
 }
 
-/// One model's files on disk.
+/// Purpose: This struct holds a fetched model's files, type, repo and commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fetched {
     /// Every part, part 1 first. For a Hub model these are paths in the hf-hub cache.
@@ -527,7 +581,7 @@ pub struct Fetched {
     pub revision: Option<String>,
 }
 
-/// Why a fetch failed.
+/// Purpose: This enum lists the errors a fetch can return.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FetchError {
     /// This build has no Hub client: the `hub` feature is off.
@@ -545,12 +599,24 @@ pub enum FetchError {
 }
 
 impl From<model::Error> for FetchError {
+    /// Purpose: This function wraps a model loading error as a fetch error.
+    ///
+    /// Inputs:
+    /// - `e`: the model loading error.
+    ///
+    /// Outputs: the fetch error.
     fn from(e: model::Error) -> FetchError {
         FetchError::Model(e)
     }
 }
 
 impl fmt::Display for FetchError {
+    /// Purpose: This function formats fetch errors.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FetchError::NotBuilt { source } => write!(
@@ -576,35 +642,37 @@ impl fmt::Display for FetchError {
 
 impl std::error::Error for FetchError {}
 
-/// Get one model's files on disk.
+/// Purpose: This function gets one model's files on disk.
 ///
-/// A local path gives that file, plus its sibling parts when it is one part of a split
-/// model; any part may be given. `want` does not apply to a local path. A Hub source
-/// gives the model the source names, or else the one `want` picks by [`select`],
-/// downloaded into the hf-hub cache; see `fetch.rs` for tokens and caching. Either way
-/// the files are opened as one [`Model`] before they are returned.
+/// Inputs:
+/// - `source`: where the model comes from.
+/// - `want`: which model of a repo to take.
+/// - `opts`: the cache directory and the access token.
 ///
-/// Fetching never quantizes. Without the `hub` feature, a Hub source returns
-/// [`FetchError::NotBuilt`] and local paths still work.
+/// Outputs: the model's file paths, part 1 first, or an error.
 pub fn fetch(source: &ModelSource, want: Want, opts: &FetchOptions) -> Result<Fetched, FetchError> {
     match source {
         ModelSource::Path(path) => local(path),
-        ModelSource::Hub { repo, revision, file } => {
+        ModelSource::Hub { endpoint, repo, revision, file } => {
             #[cfg(feature = "hub")]
             {
-                fetch::from_hub(repo, revision.as_deref(), file.as_deref(), want, opts)
+                fetch::from_hub(endpoint, repo, revision.as_deref(), file.as_deref(), want, opts)
             }
             #[cfg(not(feature = "hub"))]
             {
-                let _ = (repo, revision, file, want, opts);
+                let _ = (endpoint, repo, revision, file, want, opts);
                 Err(FetchError::NotBuilt { source: source.to_string() })
             }
         }
     }
 }
 
-/// A local file and its split siblings. `Model::open` covers a one-file model and a
-/// first part; a later part needs its header's `split.count` to name the rest.
+/// Purpose: This function gets a local model file and the other parts of a split model.
+///
+/// Inputs:
+/// - `path`: the file, or any part of a split model.
+///
+/// Outputs: the model's file paths, or an error.
 fn local(path: &Path) -> Result<Fetched, FetchError> {
     let model = match later_part_count(path) {
         Some(count) => {
@@ -616,9 +684,12 @@ fn local(path: &Path) -> Result<Fetched, FetchError> {
     Ok(fetched(&model, None, None))
 }
 
-/// `split.count` when `path` is a split part after the first, read from its header.
-/// `None` for anything else, including a file that does not read, which `Model::open`
-/// then reports properly.
+/// Purpose: This function reads the part count of a split model part after the first.
+///
+/// Inputs:
+/// - `path`: the file.
+///
+/// Outputs: the part count, or `None` for any other file.
 fn later_part_count(path: &Path) -> Option<u16> {
     use std::io::Read;
     let mut bytes = Vec::new();
@@ -627,6 +698,14 @@ fn later_part_count(path: &Path) -> Option<u16> {
     (split.no != 0).then_some(split.count)
 }
 
+/// Purpose: This function builds a fetch result from an opened model.
+///
+/// Inputs:
+/// - `model`: the opened model.
+/// - `repo`: the Hub repo, if any.
+/// - `revision`: the commit, if any.
+///
+/// Outputs: the fetch result.
 fn fetched(model: &Model, repo: Option<String>, revision: Option<String>) -> Fetched {
     Fetched {
         parts: model.paths.clone(),
@@ -640,7 +719,12 @@ fn fetched(model: &Model, repo: Option<String>, revision: Option<String>) -> Fet
 mod tests {
     use super::*;
 
-    /// A real repo's file list from `testdata/`, comments dropped.
+    /// Purpose: This function reads a saved Hub file list from `testdata/`.
+    ///
+    /// Inputs:
+    /// - `name`: the list's short name.
+    ///
+    /// Outputs: the file paths.
     fn repo(name: &str) -> Vec<String> {
         let text = match name {
             "coder" => include_str!("testdata/unsloth--Qwen3-Coder-30B-A3B-Instruct-GGUF.txt"),
@@ -655,23 +739,42 @@ mod tests {
         text.lines().filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_owned).collect()
     }
 
+    /// Purpose: This function turns string slices into a file list.
+    ///
+    /// Inputs:
+    /// - `files`: the paths.
+    ///
+    /// Outputs: the paths as strings.
     fn names(files: &[&str]) -> Vec<String> {
         files.iter().map(|s| (*s).to_owned()).collect()
     }
 
+    /// Purpose: This function builds a huggingface.co model source for the tests.
+    ///
+    /// Inputs:
+    /// - `repo`: the repo id.
+    /// - `revision`: the revision, if any.
+    /// - `file`: the file, if any.
+    ///
+    /// Outputs: the source.
     fn hub(repo: &str, revision: Option<&str>, file: Option<&str>) -> ModelSource {
-        ModelSource::Hub { repo: repo.into(), revision: revision.map(Into::into), file: file.map(Into::into) }
+        ModelSource::Hub {
+            endpoint: "https://huggingface.co".into(),
+            repo: repo.into(),
+            revision: revision.map(Into::into),
+            file: file.map(Into::into),
+        }
     }
 
     const CODER: &str = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF";
 
     #[test]
-    fn parses_ids_urls_blob_and_resolve_links() {
+    fn parses_urls_blob_and_resolve_links() {
         let p = |s: &str| ModelSource::parse(s).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(p(CODER), hub(CODER, None, None));
         assert_eq!(p(&format!("https://huggingface.co/{CODER}")), hub(CODER, None, None));
         assert_eq!(p(&format!("https://huggingface.co/{CODER}/")), hub(CODER, None, None));
-        assert_eq!(p(&format!("https://hf.co/{CODER}")), hub(CODER, None, None));
+        assert_eq!(p(&format!("https://hf.co/{CODER}")), hub(CODER, None, None), "an alias, at the host it redirects to");
+        assert_eq!(p(&format!("http://huggingface.co/{CODER}")), hub(CODER, None, None), "always https");
         assert_eq!(
             p(&format!("https://huggingface.co/{CODER}/blob/main/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf")),
             hub(CODER, Some("main"), Some("Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"))
@@ -702,6 +805,10 @@ mod tests {
         }
         // `src/hub` has the shape of a repo id, but it exists here, the package root.
         assert_eq!(p("src/hub"), ModelSource::Path("src/hub".into()), "an existing path wins");
+
+        // A bare repo id names no server, so it is refused, with the link it meant.
+        let err = ModelSource::parse(CODER).unwrap_err();
+        assert!(err.reason.contains(&format!("https://huggingface.co/{CODER}")), "{err}");
 
         for bad in [
             "https://example.com/org/repo",
@@ -928,7 +1035,7 @@ mod tests {
     #[cfg(not(feature = "hub"))]
     fn hub_source_is_refused_without_feature() {
         let err = fetch(&hub(CODER, None, None), Want::Unquantized, &FetchOptions::default()).unwrap_err();
-        assert_eq!(err, FetchError::NotBuilt { source: CODER.into() });
+        assert_eq!(err, FetchError::NotBuilt { source: format!("https://huggingface.co/{CODER}") });
         assert!(err.to_string().contains("`hub` cargo feature"), "{err}");
     }
 }

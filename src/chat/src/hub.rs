@@ -1,41 +1,6 @@
-//! [`Chat::from_hub`](crate::Chat::from_hub): the GGUF header and `tokenizer.json` from
-//! the Hugging Face Hub.
-//!
-//! # The rule
-//!
-//! `repo` is a GGUF repo, the same id dovata's own Hub fetch takes, such as
-//! `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`.
-//!
-//! 1. The template and the special tokens come from a GGUF header in that repo, exactly
-//!    as [`Chat::from_files`](crate::Chat::from_files) reads them. Every quant of one
-//!    model carries the same tokenizer metadata, so any of its GGUFs will do. Projector
-//!    (`mmproj`) and importance-matrix (`imatrix`) files are skipped, since neither is
-//!    the language model, and so are split parts after the first, which carry no
-//!    metadata. A GGUF already in the local hf-hub cache is preferred: it is the file
-//!    the program will run, and reading it costs no network. Otherwise the first one in
-//!    name order is range-fetched, its header only, never its tensor data.
-//! 2. `tokenizer.json` comes from the same repo when it has one at its root. GGUF repos
-//!    usually do not, so otherwise it comes from the model the GGUF was converted from.
-//!    That is the header's `general.base_model.0.repo_url` when the converter recorded
-//!    it, as Unsloth's files do, and otherwise the `base_model` the repo's model card
-//!    names, which is the only place Qwen's own GGUF repos record it. The base repo is
-//!    read at `main`: `revision` names a commit of the GGUF repo, and the base repo has
-//!    a history of its own.
-//! 3. The pair is checked like any other, by [`vocab::check`](crate::vocab::check).
-//!    That check is what makes step 2 safe. A base repo whose tokenizer has since
-//!    changed is refused rather than used.
-//!
-//! The alternative was to take the template from the base repo's
-//! `tokenizer_config.json` and need no GGUF at all. It was rejected because the GGUF is
-//! what the program runs, and GGUF publishers do fix templates: the Unsloth
-//! Qwen3-Coder GGUF carries a corrected one, so the base repo's would be the older
-//! template.
-//!
-//! # Tokens
-//!
-//! A Hub token comes from `HF_TOKEN`, or else from the file `huggingface-cli login`
-//! writes, which is where hf-hub looks. Gated base models, such as Meta's Llama, need
-//! one.
+//! Author: Joe Ricks
+//! File: src/chat/src/hub.rs
+//! Description: Builds a `Chat` from a model repo on the Hugging Face Hub.
 
 use std::io::Read;
 
@@ -48,8 +13,7 @@ use crate::{header, Chat, ChatError, Gguf, Result, Tokenizer};
 const TOKENIZER_JSON: &str = "tokenizer.json";
 const KEY_BASE_REPO_URL: &str = "general.base_model.0.repo_url";
 
-/// The part of the Hub's repo info this module reads. hf-hub's own `RepoInfo` keeps
-/// only the file list and the commit, and the model card's `base_model` is needed too.
+/// Purpose: This struct holds the parts of a Hub repo's info that `from_hub` reads.
 #[derive(Deserialize)]
 pub(crate) struct RepoInfo {
     siblings: Vec<Sibling>,
@@ -57,11 +21,13 @@ pub(crate) struct RepoInfo {
     card: Option<Card>,
 }
 
+/// Purpose: This struct holds one file name from a Hub repo's file list.
 #[derive(Deserialize)]
 struct Sibling {
     rfilename: String,
 }
 
+/// Purpose: This struct holds the part of a Hub repo's model card that `from_hub` reads.
 #[derive(Deserialize)]
 struct Card {
     /// A repo id, or a list of them for a merge. Read loosely, since the card is
@@ -71,7 +37,12 @@ struct Card {
 }
 
 impl RepoInfo {
-    /// The first `base_model` the model card names, if it is a plain `org/name` id.
+    /// Purpose: This function reads the base model's repo id from a Hub repo's model
+    /// card.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the repo id, such as `Qwen/Qwen3-0.6B`, or `None`.
     pub(crate) fn card_base_model(&self) -> Option<String> {
         let value = &self.card.as_ref()?.base_model;
         let id = value.as_str().or_else(|| value.as_array()?.first()?.as_str())?;
@@ -80,6 +51,13 @@ impl RepoInfo {
     }
 }
 
+/// Purpose: This function builds a [`Chat`] from a GGUF repo on the Hugging Face Hub.
+///
+/// Inputs:
+/// - `repo`: the GGUF repo id.
+/// - `revision`: a branch, tag or commit of `repo`, or `None` for `main`.
+///
+/// Outputs: the [`Chat`], or an error if a download fails or the files do not match.
 pub(crate) fn from_hub(repo: &str, revision: Option<&str>) -> Result<Chat> {
     let revision = revision.unwrap_or("main");
     let cache = Cache::from_env();
@@ -133,14 +111,26 @@ pub(crate) fn from_hub(repo: &str, revision: Option<&str>) -> Result<Chat> {
     Chat::from_gguf(&header, tokenizer)
 }
 
-/// The GGUF to read the header of, by the rule in the module docs. `cached` says
-/// whether a file is in the local hf-hub cache.
+/// Purpose: This function picks which GGUF file in a Hub repo to read the header of.
+///
+/// Inputs:
+/// - `files`: the file names in the repo.
+/// - `cached`: tells whether a file is already in the local Hugging Face cache.
+///
+/// Outputs: the chosen file name, or `None` if the repo has no model GGUF.
 pub(crate) fn pick_gguf<'a>(files: &[&'a str], cached: impl Fn(&str) -> bool) -> Option<&'a str> {
     let mut candidates: Vec<&str> = files.iter().copied().filter(|f| is_model_gguf(f)).collect();
     candidates.sort_unstable();
     candidates.iter().copied().find(|f| cached(f)).or_else(|| candidates.first().copied())
 }
 
+/// Purpose: This function tells whether a file is a GGUF file that holds the model's
+/// metadata.
+///
+/// Inputs:
+/// - `name`: a file name from the repo.
+///
+/// Outputs: `true` for a model GGUF, `false` for anything else.
 fn is_model_gguf(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     let Some(stem) = lower.strip_suffix(".gguf") else {
@@ -150,7 +140,13 @@ fn is_model_gguf(name: &str) -> bool {
     !file.contains("mmproj") && !file.contains("imatrix") && !is_later_split_part(file)
 }
 
-/// `<name>-00002-of-00003`: a split part after the first, which has no metadata.
+/// Purpose: This function tells whether a file name is a second or later part of a split
+/// GGUF.
+///
+/// Inputs:
+/// - `stem`: the file name without `.gguf`.
+///
+/// Outputs: `true` for a part after the first.
 fn is_later_split_part(stem: &str) -> bool {
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let Some((head, total)) = stem.rsplit_once("-of-") else {
@@ -162,9 +158,12 @@ fn is_later_split_part(stem: &str) -> bool {
     digits(total) && digits(part) && part.trim_start_matches('0') != "1"
 }
 
-/// The base model's repo id, from the URL the converter records. Only a
-/// `huggingface.co/<org>/<name>` URL counts; anything else is somewhere this package
-/// cannot fetch from.
+/// Purpose: This function reads the base model's repo id from a GGUF header.
+///
+/// Inputs:
+/// - `gguf`: the parsed GGUF header.
+///
+/// Outputs: the repo id, or `None` if the header has no Hugging Face URL.
 pub(crate) fn base_repo(gguf: &Gguf) -> Option<String> {
     let url = gguf.string(KEY_BASE_REPO_URL)?;
     let id = ["https://huggingface.co/", "http://huggingface.co/"]
@@ -175,9 +174,15 @@ pub(crate) fn base_repo(gguf: &Gguf) -> Option<String> {
     (!org.is_empty() && !name.is_empty() && !name.contains('/')).then(|| format!("{org}/{name}"))
 }
 
-/// Read a remote GGUF's header with HTTP range requests, in the growing prefixes
-/// [`header::grow`] asks for. hf-hub has no range API of its own, so this is `ureq`, the
-/// client hf-hub is built on.
+/// Purpose: This function downloads and parses just the header of a GGUF file on the
+/// Hub.
+///
+/// Inputs:
+/// - `url`: the file's download URL.
+/// - `token`: the Hugging Face access token, if any.
+///
+/// Outputs: the parsed header, or an error if a request fails or the header does not
+/// parse.
 fn range_fetch(url: &str, token: Option<&str>) -> Result<Gguf> {
     // Keep the token on same-host redirects, which the Hub uses between revisions, and
     // drop it on the hop to the storage CDN, whose URL is already signed. That is
@@ -215,7 +220,12 @@ fn range_fetch(url: &str, token: Option<&str>) -> Result<Gguf> {
     })
 }
 
-/// Map an hf-hub error to [`ChatError::Hub`].
+/// Purpose: This function makes a converter from hf-hub errors to `ChatError::Hub`.
+///
+/// Inputs:
+/// - `repo`: the repo id to name in the message.
+///
+/// Outputs: the converter.
 fn hub_error(repo: &str) -> impl Fn(ApiError) -> ChatError + '_ {
     move |e| {
         let hint = match &e {
@@ -226,12 +236,23 @@ fn hub_error(repo: &str) -> impl Fn(ApiError) -> ChatError + '_ {
     }
 }
 
-/// Map a request error to [`ChatError::Hub`].
+/// Purpose: This function converts an HTTP request error into a `ChatError::Hub`.
+///
+/// Inputs:
+/// - `repo`: the repo id to name in the message.
+/// - `e`: the request error.
+///
+/// Outputs: the `ChatError::Hub`.
 fn request_error(repo: &str, e: &ureq::Error) -> ChatError {
     ChatError::Hub(format!("{repo}: {e}{}", status_hint(e)))
 }
 
-/// A hint for the statuses that mean the caller has to do something.
+/// Purpose: This function picks a fix-it hint for a Hub HTTP status.
+///
+/// Inputs:
+/// - `e`: the request error.
+///
+/// Outputs: the hint, or an empty string.
 fn status_hint(e: &ureq::Error) -> &'static str {
     match e {
         // The Hub answers 401 for a repo that does not exist, as well as for one that is

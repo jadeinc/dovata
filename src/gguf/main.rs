@@ -1,15 +1,6 @@
-//! `gguf-inspect` — print what llama.cpp and dovata will see in a `.gguf`.
-//!
-//! Answers the first questions you have when someone hands you a new model file: what
-//! architecture it declares, whether it carries the hyperparameters that architecture
-//! needs, what it is quantized to, and whether it is one part of a split model. All of
-//! it comes from the header alone, so this runs on a laptop against a file you have not
-//! finished downloading.
-//!
-//! ```sh
-//! cargo run --bin gguf-inspect -- model.gguf
-//! cargo run --bin gguf-inspect -- model.gguf --all
-//! ```
+//! Author: Joe Ricks
+//! File: src/gguf/main.rs
+//! Description: Prints what is in a GGUF file's header, as the `gguf-inspect` command.
 
 use std::fs::File;
 use std::io::Read;
@@ -23,6 +14,12 @@ use dovata::gguf::Gguf;
 /// what keeps `gguf-inspect` from pulling 18 GB into RAM to print forty lines.
 const HEADER_BUDGET: u64 = 64 * 1024 * 1024;
 
+/// Purpose: This function runs `gguf-inspect` on the file named on the command line.
+///
+/// Inputs: none.
+///
+/// Outputs: exit status 0 when nothing required is missing, 1 when something is or the
+/// file is unreadable, and 2 with no path.
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
@@ -55,8 +52,12 @@ fn main() -> ExitCode {
     if model.report().blocking().is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
-/// Read at most [`HEADER_BUDGET`] bytes. Reading the whole file would work and would
-/// also be a way to fill a laptop's RAM by accident.
+/// Purpose: This function reads at most [`HEADER_BUDGET`] bytes from the start of a file.
+///
+/// Inputs:
+/// - `path`: the file.
+///
+/// Outputs: the bytes, or an I/O error.
 fn read_head(path: &Path) -> std::io::Result<Vec<u8>> {
     let file = File::open(path)?;
     let mut buf = Vec::new();
@@ -64,6 +65,14 @@ fn read_head(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Purpose: This function prints the `gguf-inspect` report for one GGUF header.
+///
+/// Inputs:
+/// - `path`: the file's path, printed as the title.
+/// - `g`: the parsed header.
+/// - `all`: whether to print every metadata key.
+///
+/// Outputs: none.
 fn print_report(path: &str, g: &Gguf, all: bool) {
     let report = g.report();
 
@@ -149,6 +158,13 @@ fn print_report(path: &str, g: &Gguf, all: bool) {
     }
 }
 
+/// Purpose: This function shortens a string for display, adding an ellipsis when it cuts.
+///
+/// Inputs:
+/// - `s`: the text.
+/// - `max`: the most characters to keep.
+///
+/// Outputs: the shortened text.
 fn elide(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();

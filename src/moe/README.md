@@ -12,12 +12,18 @@ with the rest of the runtime on the 3.0 branch. It is on `main` under `src/moe/d
 and the design is in [`docs/moe-expert-offload.md`](../../docs/moe-expert-offload.md).
 
 What is left is the part that never ran a model: the loader for the `expert_order`
-asset, in `mod.rs`.
+asset, in `mod.rs`. The validation stayed because it is the part that is easy to get
+wrong without noticing. `ExpertOrder::flat` still gives the ranking in the row-major
+form the 2.x driver took over FFI, `flat[layer * n_experts + rank]`.
 
 The driver's residency policy, `LayerResidency` in `main:src/moe/driver/include/moe_policy.h`,
 is the one piece of the old driver the planner still wants. It decided which experts
-are pinned and which get cache slots. The 3.0 plan ports it to Rust, together with its
-test cases from `main:src/moe/driver/test/moe_policy_test.cpp`.
+are pinned and which get cache slots: the first `pin` experts of a layer's ranking were
+pinned in VRAM, and the next `cache` got cache slots. The 3.0 plan ports it to Rust,
+together with its test cases from `main:src/moe/driver/test/moe_policy_test.cpp`.
+
+The capability is behind the `moe` cargo feature, so a build without it proves that
+nothing else depends on the ranking.
 
 ## Why the asset is validated so strictly
 
@@ -28,6 +34,10 @@ count, that every id is in range, and that each layer is an exact permutation.
 A non-permutation leaves one expert unreachable and another placed twice. The model
 would still answer, worse, with nothing logged. Catching it here means it fails in a
 unit test on a laptop, not on a GPU box.
+
+The loader parses the JSON into a `serde_json::Value` and walks it by hand, instead of
+deserializing into a typed struct, because the asset is tiny and the validation, not
+the deserialization, is the part that matters.
 
 ## Who uses it
 

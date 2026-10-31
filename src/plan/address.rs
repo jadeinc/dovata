@@ -1,36 +1,6 @@
-//! The address table: every tensor's region and offset, the thing the compiler bakes in.
-//!
-//! ## Why region and offset, not addresses
-//!
-//! An absolute address cannot be known at build time. The driver picks where
-//! `cuMemAlloc` lands, ASLR moves every mapping, `cuMemAddressReserve` may ignore the
-//! address it is asked for, and `MTLBuffer.gpuAddress` is read-only. So the plan works
-//! the way a linker's relocations do: offsets are fixed now, and the program adds each
-//! region's base once, at startup. On Metal it binds `(buffer, offset)` instead.
-//!
-//! ## What goes where
-//!
-//! | target | weights | KV cache and state | scratch |
-//! |---|---|---|---|
-//! | Apple | the mapped GGUF, in windows no larger than one Metal buffer | `Unified` | `Unified` |
-//! | CPU | the mapped GGUF, one window per part | `Host` | `Host` |
-//! | CUDA | copied into `Vram` | `Vram` | `Vram` |
-//!
-//! Weights are never copied on Apple or CPU. On Apple the GPU reads the mapping through
-//! no-copy buffers, as ggml's Metal backend does. Nothing moves while the model runs.
-//!
-//! ## The invariants
-//!
-//! [`Plan::check`] asserts, on every plan this module returns:
-//! - every offset is a multiple of its entry's alignment;
-//! - every entry ends inside its region;
-//! - a mapped entry sits at its file offset minus its window's start;
-//! - two entries share bytes only if both are scratch and never alive at once, or one
-//!   is a view of the other;
-//! - every tensor in the GGUF has exactly one weight entry.
-//!
-//! A violation means a kernel reads the wrong bytes, which no later check would catch,
-//! so the planner refuses to return such a plan rather than trusting itself.
+//! Author: Joe Ricks
+//! File: src/plan/address.rs
+//! Description: Gives every tensor a memory region and byte offset, and checks the result.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -46,7 +16,8 @@ use crate::load::{Model, PartIdentity};
 /// The version of the plan's JSON form. Bumped on any change the compiler must notice.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// A non-weight tensor for the planner, from the bound layout.
+/// Purpose: This struct holds one non-weight tensor from the layout for the planner to
+/// place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanTensor {
     /// Its name, unique across the model and the layout.
@@ -65,7 +36,8 @@ pub struct PlanTensor {
     pub last: u32,
 }
 
-/// What a tensor is for.
+/// Purpose: This enum lists what a tensor can be for, which decides where the planner
+/// puts it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Role {
@@ -93,16 +65,28 @@ pub enum Role {
 }
 
 impl Role {
+    /// Purpose: This function checks whether a tensor of this role lives for the whole
+    /// program.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `true` for the KV cache and recurrent state.
     fn persists(&self) -> bool {
         matches!(self, Role::Kv | Role::State)
     }
 
+    /// Purpose: This function checks whether a tensor of this role lives for one forward
+    /// step only.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `true` for inputs, scratch tensors and outputs.
     fn per_step(&self) -> bool {
         matches!(self, Role::Input | Role::Scratch | Role::Output)
     }
 }
 
-/// How a region gets its memory at run time.
+/// Purpose: This enum lists how a memory region gets its memory when the program starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Backing {
@@ -117,7 +101,7 @@ pub enum Backing {
     Alloc,
 }
 
-/// One block of memory the program sets up once at startup.
+/// Purpose: This struct holds one block of memory the program sets up once at startup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Region {
     /// Dense from 0, assigned in a fixed order: weights, then persistent state, then
@@ -133,7 +117,7 @@ pub struct Region {
     pub align: u64,
 }
 
-/// Where a tensor's bytes come from, before the first step.
+/// Purpose: This enum lists where a tensor's starting bytes come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Source {
@@ -148,7 +132,8 @@ pub enum Source {
     None,
 }
 
-/// One tensor's address.
+/// Purpose: This struct holds one tensor's address: its region, byte offset, size and
+/// type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AddressEntry {
     /// The tensor's name.
@@ -174,7 +159,7 @@ pub struct AddressEntry {
     pub live: Option<(u32, u32)>,
 }
 
-/// Which model a plan is for.
+/// Purpose: This struct holds which model a plan was made for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModelIdentity {
     /// `general.architecture`.
@@ -183,7 +168,7 @@ pub struct ModelIdentity {
     pub parts: Vec<PartFile>,
 }
 
-/// One part file of the model.
+/// Purpose: This struct holds one part file of the model a plan was made for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PartFile {
     /// The file name, without its directory, which differs between machines.
@@ -193,7 +178,7 @@ pub struct PartFile {
     pub identity: PartIdentity,
 }
 
-/// Bytes the plan uses, by kind of memory.
+/// Purpose: This struct holds the bytes a plan uses, by kind of memory.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Totals {
     /// Mapped GGUF bytes, counted once per file even where windows overlap.
@@ -202,7 +187,8 @@ pub struct Totals {
     pub allocated: BTreeMap<String, u64>,
 }
 
-/// The plan: every tensor's region and offset on one target.
+/// Purpose: This struct holds the plan: every tensor's region and byte offset on one
+/// target machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Plan {
     /// [`SCHEMA_VERSION`].
@@ -219,14 +205,14 @@ pub struct Plan {
     pub entries: Vec<AddressEntry>,
     /// Bytes used.
     pub totals: Totals,
-    /// Things the caller should know that are not errors.
+    /// Things the Jade compiler should know about the plan that are not errors.
     pub notes: Vec<String>,
     /// SHA-256 over everything above, in lowercase hex. Two plans with the same hash
     /// give the compiler the same constants.
     pub table_hash: String,
 }
 
-/// Why a model could not be planned.
+/// Purpose: This enum lists the errors the planner can return.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanError {
     /// The model does not fit in the memory the target has.
@@ -248,6 +234,12 @@ pub enum PlanError {
 }
 
 impl fmt::Display for PlanError {
+    /// Purpose: This function formats planner errors.
+    ///
+    /// Inputs:
+    /// - `f`: the formatter Rust writes the text into.
+    ///
+    /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PlanError::DoesNotFit { need, have, what } => {
@@ -279,18 +271,36 @@ impl fmt::Display for PlanError {
 
 impl std::error::Error for PlanError {}
 
+/// Purpose: This function formats a byte count in GiB with two decimals.
+///
+/// Inputs:
+/// - `bytes`: the byte count.
+///
+/// Outputs: text such as `17.28 GiB`.
 fn gib(bytes: u64) -> String {
     format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64)
 }
 
+/// Purpose: This function rounds a byte offset up to a multiple of an alignment.
+///
+/// Inputs:
+/// - `x`: the offset.
+/// - `align`: the alignment, a power of two.
+///
+/// Outputs: the rounded offset.
 fn align_up(x: u64, align: u64) -> u64 {
     x.div_ceil(align) * align
 }
 
-/// Lay out a model's weights and a bound layout's other tensors on one target.
+/// Purpose: This function places every tensor of a model on one target machine and checks
+/// the result.
 ///
-/// `others` holds every non-weight tensor the layout uses, with the op range each is
-/// alive for. Weights come from the model itself, so every GGUF tensor gets an entry.
+/// Inputs:
+/// - `model`: the opened GGUF model.
+/// - `others`: the layout's non-weight tensors, with their sizes and lifetimes.
+/// - `target`: the machine to plan for.
+///
+/// Outputs: the [`Plan`], or a [`PlanError`] saying why the model cannot be planned.
 pub fn place(model: &Model, others: &[PlanTensor], target: &Target) -> Result<Plan, PlanError> {
     let mut regions: Vec<Region> = Vec::new();
     let mut entries: Vec<AddressEntry> = Vec::new();
@@ -526,6 +536,12 @@ pub fn place(model: &Model, others: &[PlanTensor], target: &Target) -> Result<Pl
     Ok(plan)
 }
 
+/// Purpose: This function returns the largest single GPU buffer a target allows.
+///
+/// Inputs:
+/// - `target`: the machine.
+///
+/// Outputs: the limit in bytes on Apple, or `None` on CPU and CUDA.
 fn max_buffer_bytes_of(target: &Target) -> Option<u64> {
     match target {
         Target::Apple { max_buffer_bytes, .. } => Some(*max_buffer_bytes),
@@ -533,6 +549,12 @@ fn max_buffer_bytes_of(target: &Target) -> Option<u64> {
     }
 }
 
+/// Purpose: This function returns the lowercase name of a kind of memory.
+///
+/// Inputs:
+/// - `k`: the kind of memory.
+///
+/// Outputs: a name such as `vram` or `host`.
 fn kind_name(k: RegionKind) -> &'static str {
     match k {
         RegionKind::Mmap => "mmap",
@@ -542,10 +564,26 @@ fn kind_name(k: RegionKind) -> &'static str {
     }
 }
 
+/// Purpose: This function returns the id the next memory region will get.
+///
+/// Inputs:
+/// - `regions`: the regions made so far.
+///
+/// Outputs: the next id, or an error past 65535 regions.
 fn next_id(regions: &[Region]) -> Result<u16, PlanError> {
     u16::try_from(regions.len()).map_err(|_| PlanError::Invariant("more than 65535 regions".into()))
 }
 
+/// Purpose: This function builds the address table entry for one model weight.
+///
+/// Inputs:
+/// - `t`: the weight, with its part file and file offset.
+/// - `bytes`: its size in bytes.
+/// - `region`: the region it is placed in.
+/// - `offset`: its offset from the region's base.
+/// - `align`: the alignment `offset` has.
+///
+/// Outputs: the [`AddressEntry`].
 fn weight_entry(t: &crate::load::TensorRef<'_>, bytes: u64, region: u16, offset: u64, align: u64) -> AddressEntry {
     AddressEntry {
         tensor: t.info.name.clone(),
@@ -562,11 +600,21 @@ fn weight_entry(t: &crate::load::TensorRef<'_>, bytes: u64, region: u16, offset:
 }
 
 impl Plan {
-    /// The plan as JSON, the form the compiler reads.
+    /// Purpose: This function writes the plan as pretty-printed JSON.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the JSON text.
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("a plan always serializes")
     }
 
+    /// Purpose: This function computes the SHA-256 of the plan with its `table_hash`
+    /// field empty.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the hash in lowercase hex.
     fn compute_hash(&self) -> String {
         let mut copy = self.clone();
         copy.table_hash = String::new();
@@ -574,12 +622,23 @@ impl Plan {
         Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    /// One entry by tensor name.
+    /// Purpose: This function finds one tensor's entry in the plan by name.
+    ///
+    /// Inputs:
+    /// - `tensor`: the tensor's name.
+    ///
+    /// Outputs: the entry, or `None` when there is no such tensor.
     pub fn entry(&self, tensor: &str) -> Option<&AddressEntry> {
         self.entries.binary_search_by(|e| e.tensor.as_str().cmp(tensor)).ok().map(|i| &self.entries[i])
     }
 
-    /// Check the invariants in the module docs against the model the plan was made from.
+    /// Purpose: This function checks that the plan keeps its invariants for the model it
+    /// was made from.
+    ///
+    /// Inputs:
+    /// - `model`: the model the plan was made from.
+    ///
+    /// Outputs: `Ok(())`, or an error naming the first broken invariant.
     pub fn check(&self, model: &Model) -> Result<(), String> {
         for (i, r) in self.regions.iter().enumerate() {
             if usize::from(r.id) != i {
@@ -639,11 +698,25 @@ mod tests {
     use super::*;
     use crate::load::preflight::tests::header_with;
 
-    /// A model with `n` F32 weights of `elems` elements each, in one file.
+    /// Purpose: This function builds a one-file test model of F32 weights.
+    ///
+    /// Inputs:
+    /// - `n`: how many weights.
+    /// - `elems`: the elements in each weight.
+    ///
+    /// Outputs: the [`Model`].
     fn model(n: usize, elems: u64) -> Model {
         Model::from_headers(&[("m.gguf".into(), header_bytes(n, elems, &[]))]).unwrap()
     }
 
+    /// Purpose: This function builds the GGUF header of a test model of F32 weights.
+    ///
+    /// Inputs:
+    /// - `n`: how many weights.
+    /// - `elems`: the elements in each weight.
+    /// - `extra`: more metadata entries, as `(key, type tag, encoded value)`.
+    ///
+    /// Outputs: the header bytes.
     fn header_bytes(n: usize, elems: u64, extra: &[(&str, u32, Vec<u8>)]) -> Vec<u8> {
         let mut b = header_with("llama", None, extra);
         b[8..16].copy_from_slice(&(n as u64).to_le_bytes());
@@ -660,10 +733,26 @@ mod tests {
         b
     }
 
+    /// Purpose: This function builds one non-weight test tensor.
+    ///
+    /// Inputs:
+    /// - `name`: the tensor's name.
+    /// - `role`: what it is for.
+    /// - `bytes`: its size in bytes.
+    /// - `first`: the first op that uses it.
+    /// - `last`: the last op that uses it.
+    ///
+    /// Outputs: the [`PlanTensor`].
     fn t(name: &str, role: Role, bytes: u64, first: u32, last: u32) -> PlanTensor {
         PlanTensor { name: name.into(), role, dims: vec![bytes / 4], ggml_type: 0, bytes, first, last }
     }
 
+    /// Purpose: This function lists a small test layout with one tensor of every
+    /// non-weight role.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the tensors.
     fn others() -> Vec<PlanTensor> {
         vec![
             t("inp_tokens", Role::Input, 64, 0, 1),

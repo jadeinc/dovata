@@ -1,23 +1,8 @@
-//! Splitting a mapped GGUF file into windows a GPU can bind.
-//!
-//! ## Why windows
-//!
-//! On Apple Silicon the weights are never copied: the program maps each GGUF part once,
-//! and Metal reads the mapping through `newBufferWithBytesNoCopy`. A Metal buffer is
-//! limited to `maxBufferLength`, which can be smaller than the model, so the mapping is
-//! bound as several buffers. A tensor must lie wholly inside one of them, since a kernel
-//! addresses a tensor as one buffer plus an offset.
-//!
-//! ggml's Metal backend does the same thing with fixed-stride views that overlap by the
-//! largest tensor (`ggml-metal-device.m`, `ggml_backend_metal_buffer_from_ptr`). This
-//! module packs greedily instead: a window grows tensor by tensor until the next one
-//! would not fit, and the next window starts at the page holding that tensor. Every
-//! tensor gets exactly one window, and windows overlap by at most a page.
-//!
-//! On a CPU target there is no buffer limit, so each part is one window from byte 0, and
-//! every offset in it equals the file offset.
+//! Author: Joe Ricks
+//! File: src/plan/window.rs
+//! Description: Splits a mapped GGUF file into windows no larger than one GPU buffer.
 
-/// One tensor in a mapped file.
+/// Purpose: This struct holds one tensor's file offset and size in a mapped file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     /// Where its data starts in the file.
@@ -26,7 +11,8 @@ pub struct Span {
     pub bytes: u64,
 }
 
-/// A window over a mapped file.
+/// Purpose: This struct holds one window over a mapped file: where it starts and how long
+/// it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Window {
     /// Where the window starts in the file. A multiple of the page size, so the
@@ -36,18 +22,23 @@ pub struct Window {
     pub bytes: u64,
 }
 
-/// Why a file could not be windowed.
+/// Purpose: This enum lists the errors splitting a file into windows can return.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// One tensor, padded out to the pages it touches, is larger than a GPU buffer.
     TensorTooLarge { index: usize, bytes: u64, limit: u64 },
 }
 
-/// Split a file's tensors into windows. Returns the windows and, for each span in the
-/// input order, the index of the window that holds it.
+/// Purpose: This function splits one mapped GGUF file's tensors into windows a GPU can
+/// bind.
 ///
-/// The first window starts at byte 0, so with no limit, as on a CPU target, there is
-/// one window and every offset in it is the file offset.
+/// Inputs:
+/// - `spans`: each tensor's file offset and size.
+/// - `limit`: the largest window in bytes.
+/// - `page`: the page size each window must start on.
+///
+/// Outputs: the windows, and the window index of each tensor, or an error when one tensor
+/// is larger than `limit`.
 pub fn windows(spans: &[Span], limit: u64, page: u64) -> Result<(Vec<Window>, Vec<usize>), Error> {
     let mut order: Vec<usize> = (0..spans.len()).collect();
     order.sort_by_key(|&i| (spans[i].file_offset, i));
@@ -78,6 +69,13 @@ mod tests {
 
     const PAGE: u64 = 16384;
 
+    /// Purpose: This function builds one test tensor span.
+    ///
+    /// Inputs:
+    /// - `file_offset`: where the tensor starts in the file.
+    /// - `bytes`: its size in bytes.
+    ///
+    /// Outputs: the [`Span`].
     fn span(file_offset: u64, bytes: u64) -> Span {
         Span { file_offset, bytes }
     }
