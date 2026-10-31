@@ -58,6 +58,9 @@ with the pinned llama.cpp.
   sizes each tensor (`TensorInfo::bytes`, from `ggml_type_layout`), and reads the split
   keys and `general.file_type`. Every read is bounds-checked, because pointing this at a
   half-downloaded model is a normal thing to do.
+- `write.rs` — a small GGUF v3 writer: metadata, the tensor index, and aligned data.
+  It exists for test fixtures, such as the tiny llama model the quantize tests feed to
+  llama.cpp, and for `refback`'s fixtures later. Its output round-trips through `parse`.
 - `main.rs` — the `gguf-inspect` CLI. Reads at most 64 MB of the file.
 - `sample-qwen3-coder-30b.txt` — real output for Qwen3-Coder-30B at Q4_K_M, annotated.
 
@@ -66,7 +69,8 @@ with the pinned llama.cpp.
 `ggml_type_layout` gives each `ggml_type`'s block: how many elements, how many bytes.
 The numbers were read out of the vendored ggml through `ggml_get_type_traits`, not worked
 out from struct definitions. A size wrong by a byte per block moves every tensor after
-it, so the table is checked against a real file: on the Qwen3-Coder header above, the
+it, so with the `quantize` feature on, `type_table_matches_ggml` compares the table with
+ggml's own `ggml_type_size` and `ggml_blck_size`. It was also checked against a real file: on the Qwen3-Coder header above, the
 last tensor ends exactly at the file's size on the Hub, 18,556,689,568 bytes. A type
 newer than the table has no size, and a tensor of that type cannot be planned until the
 table is extended.

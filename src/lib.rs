@@ -65,7 +65,8 @@ pub mod moe;
 
 #[cfg(test)]
 mod capabilities {
-    //! That each capability's pure half is reachable under default features.
+    //! That each feature-gated capability is reachable under default features: the
+    //! `moe` module, and the native and network halves of `quantize` and `hub`.
     //!
     //! A `#[cfg(feature = "…")]` with a mis-typed feature name compiles fine and
     //! silently drops the module. These name each feature once more, so a typo in

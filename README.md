@@ -28,14 +28,17 @@ memory and the model file:
 |---|---|
 | [`src/gguf/`](src/gguf/README.md) | GGUF header reader and the `gguf-inspect` CLI: metadata, the tensor index, each tensor's size and file offset, split parts. No llama.cpp. |
 | [`src/load/`](src/load/README.md) | preflight, which refuses a file that cannot be planned; `Model`, which treats a split GGUF as one model; the model's shape and KV cost |
+| [`src/hub/`](src/hub/README.md) | getting a model: a local path, or one GGUF from the Hugging Face Hub, all parts of a split one. Never quantizes; the code default is the unquantized file. |
+| [`src/quantize/`](src/quantize/README.md) | quantizing with llama.cpp's own `llama_model_quantize`, only when the caller asks |
+| [`src/plan/`](src/plan/README.md) | the planner: every tensor's region and offset on one target, checked and hashed |
 | [`src/moe/`](src/moe/README.md) | MoE expert ranking: which experts each layer uses most |
+| [`src/chat/`](src/chat/README.md) | `dovata-chat`, the optional tokenizer and chat-template package for Jade users. Its own crate; dovata never depends on it. |
 | [`src/llama/`](src/llama/README.md) | the bindgen'd llama.cpp C API over the stock upstream submodule, kept for quantization and as the reference for ggml's tensor formats |
 | [`src/jade-gpu-mon/`](src/jade-gpu-mon/README.md) | a terminal dashboard for VRAM and bandwidth on the GPU box |
 
 Still to come: the layout file format and the built-in layouts in `src/layout/`, the
-quantization wrapper in `src/quantize/`, Hugging Face downloads in `src/hub/`, the
-planner and its address table, the optional `dovata-chat` package in `src/chat/`, and a
-small reference backend. The reference backend is for
+step that feeds a bound layout to the planner, the `dovata-plan` CLI, and a small
+reference backend. The reference backend is for
 testing only. It places the tensors for real and runs one simple call over each, to
 prove the weights land where the plan says on split memory: VRAM and host RAM together,
 more than one GPU, or Apple's unified memory.
