@@ -75,8 +75,6 @@ Outside `src/`:
 
 | | |
 |---|---|
-| [`tools/`](tools/README.md) | the Python: `scripts/` local, `ec2/` for the GPU box |
-| [`ci/`](ci/README.md) | pinned inputs for building the model |
 | `docs/` | `moe-expert-offload.md`, the design of the 2.x expert pager |
 
 ## Building and testing

@@ -28,16 +28,13 @@ Thumbs.db
 CLAUDE.md
 
 # Credentials and machine-local state
-keys/
 jade.toml
 .env
-.ec2.env
-.ec2-host
 # No trailing slash: on a dev box this is a symlink to a venv shared with the
 # sibling jade-os repo, and `.venv/` matches only a real directory.
 .venv
 
-# Python bytecode cache (everything under tools/ is Python)
+# Python bytecode cache, from src/chat/jinja2_cases.py
 __pycache__/
 *.pyc
 
