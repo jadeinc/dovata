@@ -498,18 +498,21 @@ impl Report {
             });
         }
 
-        // MoE keys, only meaningful — and only required — when the file says it is MoE.
+        // MoE keys, only meaningful when the file says it is MoE. The expert FFN width
+        // is required by some architectures, such as deepseek2, and optional in others,
+        // such as qwen3moe and Mixtral-style llama, which fall back to the dense width.
+        // That is per-architecture, so it is the layout's to require, not this check's.
         if g.is_moe() {
-            for (suffix, note) in [
-                ("expert_count", "total experts per MoE layer"),
-                ("expert_used_count", "experts routed to per token"),
-                ("expert_feed_forward_length", "per-expert FFN width"),
+            for (suffix, required, note) in [
+                ("expert_count", true, "total experts per MoE layer"),
+                ("expert_used_count", true, "experts routed to per token"),
+                ("expert_feed_forward_length", false, "per-expert FFN width; some architectures require it"),
             ] {
                 let key = format!("{arch}.{suffix}");
                 checks.push(Check {
                     found: g.get(&key).map(ToString::to_string),
                     key,
-                    required: true,
+                    required,
                     note,
                 });
             }

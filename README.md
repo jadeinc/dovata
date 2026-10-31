@@ -28,6 +28,7 @@ memory and the model file:
 |---|---|
 | [`src/gguf/`](src/gguf/README.md) | GGUF header reader and the `gguf-inspect` CLI: metadata, the tensor index, each tensor's size and file offset, split parts. No llama.cpp. |
 | [`src/load/`](src/load/README.md) | preflight, which refuses a file that cannot be planned; `Model`, which treats a split GGUF as one model; the model's shape and KV cost |
+| [`src/layout/`](src/layout/README.md) | layouts: each architecture's compute graph as data in ggml's op names, and the binder that resolves one against a model. A built-in layout is one supported architecture. |
 | [`src/hub/`](src/hub/README.md) | getting a model: a local path, or one GGUF from the Hugging Face Hub, all parts of a split one. Never quantizes; the code default is the unquantized file. |
 | [`src/quantize/`](src/quantize/README.md) | quantizing with llama.cpp's own `llama_model_quantize`, only when the caller asks |
 | [`src/plan/`](src/plan/README.md) | the planner: every tensor's region and offset on one target, checked and hashed |
@@ -36,9 +37,8 @@ memory and the model file:
 | [`src/llama/`](src/llama/README.md) | the bindgen'd llama.cpp C API over the stock upstream submodule, kept for quantization and as the reference for ggml's tensor formats |
 | [`src/jade-gpu-mon/`](src/jade-gpu-mon/README.md) | a terminal dashboard for VRAM and bandwidth on the GPU box |
 
-Still to come: the layout file format and the built-in layouts in `src/layout/`, the
-step that feeds a bound layout to the planner, the `dovata-plan` CLI, and a small
-reference backend. The reference backend is for
+Still to come: the remaining built-in layouts, the step that feeds a bound layout to
+the planner, the `dovata-plan` CLI, and a small reference backend. The reference backend is for
 testing only. It places the tensors for real and runs one simple call over each, to
 prove the weights land where the plan says on split memory: VRAM and host RAM together,
 more than one GPU, or Apple's unified memory.

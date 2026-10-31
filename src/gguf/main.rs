@@ -125,6 +125,18 @@ fn print_report(path: &str, g: &Gguf, all: bool) {
         println!("  {mark} {:<44} {}", c.key, elide(shown, 60));
     }
 
+    println!("\ndovata layout");
+    match report.architecture.as_deref() {
+        Some(arch) if dovata::layout::builtin(arch).is_some() => {
+            println!("  {arch} has a built-in layout, so dovata can plan this file.");
+        }
+        Some(arch) => {
+            println!("  {arch} has no built-in layout. dovata plans it only with a layout file");
+            println!("  you supply. Built in: {}.", dovata::layout::SUPPORTED.join(", "));
+        }
+        None => println!("  no architecture, so no layout applies."),
+    }
+
     let blocking = report.blocking();
     if blocking.is_empty() {
         println!("\nNothing obviously missing. This is not a promise it loads — the only");
