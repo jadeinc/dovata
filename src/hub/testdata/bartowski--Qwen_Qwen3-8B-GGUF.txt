@@ -1,0 +1,29 @@
+# The file list of https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF at commit 0b69f75b7472688e6808490aa2b85efdb81b5ce7,
+# from https://huggingface.co/api/models/bartowski/Qwen_Qwen3-8B-GGUF on 2026-10-31.
+.gitattributes
+Qwen_Qwen3-8B-IQ2_M.gguf
+Qwen_Qwen3-8B-IQ3_M.gguf
+Qwen_Qwen3-8B-IQ3_XS.gguf
+Qwen_Qwen3-8B-IQ3_XXS.gguf
+Qwen_Qwen3-8B-IQ4_NL.gguf
+Qwen_Qwen3-8B-IQ4_XS.gguf
+Qwen_Qwen3-8B-Q2_K.gguf
+Qwen_Qwen3-8B-Q2_K_L.gguf
+Qwen_Qwen3-8B-Q3_K_L.gguf
+Qwen_Qwen3-8B-Q3_K_M.gguf
+Qwen_Qwen3-8B-Q3_K_S.gguf
+Qwen_Qwen3-8B-Q3_K_XL.gguf
+Qwen_Qwen3-8B-Q4_0.gguf
+Qwen_Qwen3-8B-Q4_1.gguf
+Qwen_Qwen3-8B-Q4_K_L.gguf
+Qwen_Qwen3-8B-Q4_K_M.gguf
+Qwen_Qwen3-8B-Q4_K_S.gguf
+Qwen_Qwen3-8B-Q5_K_L.gguf
+Qwen_Qwen3-8B-Q5_K_M.gguf
+Qwen_Qwen3-8B-Q5_K_S.gguf
+Qwen_Qwen3-8B-Q6_K.gguf
+Qwen_Qwen3-8B-Q6_K_L.gguf
+Qwen_Qwen3-8B-Q8_0.gguf
+Qwen_Qwen3-8B-bf16.gguf
+Qwen_Qwen3-8B.imatrix
+README.md

@@ -1,0 +1,37 @@
+# The file list of https://huggingface.co/unsloth/gemma-3-4b-it-GGUF at commit 5a3566e716d80f709ed7b79817eaf7733d2a1fce,
+# from https://huggingface.co/api/models/unsloth/gemma-3-4b-it-GGUF on 2026-10-31.
+.gitattributes
+README.md
+config.json
+gemma-3-4b-it-BF16.gguf
+gemma-3-4b-it-IQ4_NL.gguf
+gemma-3-4b-it-IQ4_XS.gguf
+gemma-3-4b-it-Q2_K.gguf
+gemma-3-4b-it-Q2_K_L.gguf
+gemma-3-4b-it-Q3_K_M.gguf
+gemma-3-4b-it-Q3_K_S.gguf
+gemma-3-4b-it-Q4_0.gguf
+gemma-3-4b-it-Q4_1.gguf
+gemma-3-4b-it-Q4_K_M.gguf
+gemma-3-4b-it-Q4_K_S.gguf
+gemma-3-4b-it-Q5_K_M.gguf
+gemma-3-4b-it-Q5_K_S.gguf
+gemma-3-4b-it-Q6_K.gguf
+gemma-3-4b-it-Q8_0.gguf
+gemma-3-4b-it-UD-IQ1_M.gguf
+gemma-3-4b-it-UD-IQ1_S.gguf
+gemma-3-4b-it-UD-IQ2_M.gguf
+gemma-3-4b-it-UD-IQ2_XXS.gguf
+gemma-3-4b-it-UD-IQ3_XXS.gguf
+gemma-3-4b-it-UD-Q2_K_XL.gguf
+gemma-3-4b-it-UD-Q3_K_XL.gguf
+gemma-3-4b-it-UD-Q4_K_XL.gguf
+gemma-3-4b-it-UD-Q5_K_XL.gguf
+gemma-3-4b-it-UD-Q6_K_XL.gguf
+gemma-3-4b-it-UD-Q8_K_XL.gguf
+imatrix_unsloth.dat
+mmproj-BF16.gguf
+mmproj-F16.gguf
+mmproj-F32.gguf
+params
+template

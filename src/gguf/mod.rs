@@ -32,6 +32,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub mod write;
+
 /// GGUF's four-byte file magic, little-endian: `b"GGUF"`.
 const MAGIC: [u8; 4] = *b"GGUF";
 

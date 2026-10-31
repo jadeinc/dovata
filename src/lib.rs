@@ -80,4 +80,26 @@ mod capabilities {
         // A malformed asset must be rejected, which also proves the loader linked.
         assert!(crate::moe::ExpertOrder::from_json(b"{}").is_err());
     }
+
+    #[test]
+    #[cfg(feature = "quantize")]
+    fn quantize_native_half_is_present() {
+        // The pure half always builds; the feature adds the call into llama.cpp. With
+        // it, a missing input is a bad input. Without it, every call is NotBuilt.
+        use crate::quantize::{quantize, Ftype, QuantError, QuantSpec};
+        let path = std::path::Path::new("/nonexistent/model.gguf");
+        let err = quantize(path, path, &QuantSpec::new(Ftype::Q8_0)).unwrap_err();
+        assert!(matches!(err, QuantError::BadInput(_)), "{err:?}");
+    }
+
+    #[test]
+    #[cfg(feature = "hub")]
+    fn hub_network_half_is_present() {
+        // With the feature, a Hub source reaches the download code, which refuses a
+        // malformed repo id before touching the network. Without it, it is NotBuilt.
+        use crate::hub::{fetch, FetchError, FetchOptions, ModelSource, Want};
+        let src = ModelSource::Hub { repo: "no such/id here".into(), revision: None, file: None };
+        let err = fetch(&src, Want::Unquantized, &FetchOptions::default()).unwrap_err();
+        assert!(matches!(err, FetchError::BadSource(_)), "{err:?}");
+    }
 }

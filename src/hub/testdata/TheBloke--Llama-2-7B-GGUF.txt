@@ -1,0 +1,20 @@
+# The file list of https://huggingface.co/TheBloke/Llama-2-7B-GGUF at commit b4e04e128f421c93a5f1e34ac4d7ca9b0af47b80,
+# from https://huggingface.co/api/models/TheBloke/Llama-2-7B-GGUF on 2026-10-31.
+.gitattributes
+LICENSE.txt
+Notice
+README.md
+USE_POLICY.md
+config.json
+llama-2-7b.Q2_K.gguf
+llama-2-7b.Q3_K_L.gguf
+llama-2-7b.Q3_K_M.gguf
+llama-2-7b.Q3_K_S.gguf
+llama-2-7b.Q4_0.gguf
+llama-2-7b.Q4_K_M.gguf
+llama-2-7b.Q4_K_S.gguf
+llama-2-7b.Q5_0.gguf
+llama-2-7b.Q5_K_M.gguf
+llama-2-7b.Q5_K_S.gguf
+llama-2-7b.Q6_K.gguf
+llama-2-7b.Q8_0.gguf
