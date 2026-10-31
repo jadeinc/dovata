@@ -1,21 +1,18 @@
-//! MoE expert offload — the whole capability's Rust side.
+//! MoE expert ranking: which experts each layer of a mixture-of-experts model uses most.
 //!
-//! Loads and validates the per-layer `expert_order` asset (the usage-ranked
-//! expert permutation produced offline; see `docs/moe-expert-offload.md`) and
-//! flattens it for hand-off to the C `moe_driver_init` over FFI. Keeping the
-//! parse + validation here means the C++ driver never touches JSON, and the
-//! bug-prone "is this a valid permutation" check is unit-tested on any platform.
+//! Loads and validates the per-layer `expert_order` asset, a usage-ranked permutation of
+//! expert ids made offline from routing counts. In 3.0 the planner will read it to decide
+//! which experts stay in VRAM when a MoE model does not fit there whole. That case is
+//! deferred, so nothing calls this yet.
 //!
-//! This file is the pure half and builds anywhere. [`ffi`] is the thin
-//! declaration over the C driver, Linux-only. The paging machinery itself is
-//! C++ and CUDA in `src/moe/driver/`, compiled into libllama by the
-//! driver's CMake wiring.
+//! Up to 2.x this module was the Rust side of a C++ and CUDA pager that moved cold experts
+//! into VRAM while the model ran, and it flattened the ranking for that driver over FFI.
+//! The pager went with the rest of the runtime; see `docs/moe-expert-offload.md` and
+//! `main:src/moe/driver/`. The validation stayed, because it is the part that is easy to
+//! get wrong without noticing.
 //!
-//! The whole capability is behind the `moe` cargo feature. Turning it off drops
-//! this module, the FFI, and the llama.cpp seam together — and makes a config
-//! that asks for offload fail the load rather than run stock, because a driver
-//! that quietly did not engage looks exactly like one that did, at three times
-//! the VRAM.
+//! The capability is behind the `moe` cargo feature, so a build without it proves nothing
+//! else depends on the ranking.
 
 use serde_json::Value;
 
@@ -25,18 +22,18 @@ use serde_json::Value;
 pub struct ExpertOrder {
     pub n_layers: usize,
     pub n_experts: usize,
-    /// Row-major flatten: `flat[layer * n_experts + rank]`. Ready for FFI.
+    /// Row-major flatten: `flat[layer * n_experts + rank]`.
     flat: Vec<i32>,
 }
 
 impl ExpertOrder {
-    /// Parse + validate the asset JSON. Rejects anything the driver couldn't
-    /// safely consume: wrong layer/expert counts, or a layer that isn't an exact
-    /// permutation of `0..n_experts` (a non-permutation would mean some expert is
-    /// unreachable and another double-mapped — silent wrong answers).
+    /// Parse and validate the asset JSON. Rejects wrong layer or expert counts, and any
+    /// layer that is not an exact permutation of `0..n_experts`: a non-permutation leaves
+    /// one expert unreachable and places another twice, and the model still answers,
+    /// worse, with nothing logged.
     ///
-    /// Parsed via `serde_json::Value` (no serde-derive dep): the asset is tiny
-    /// and the validation, not deserialization, is the load-bearing part.
+    /// Parsed via `serde_json::Value` because the asset is tiny and the validation, not
+    /// the deserialization, is the part that matters.
     pub fn from_json(bytes: &[u8]) -> Result<Self, String> {
         let v: Value = serde_json::from_slice(bytes).map_err(|e| format!("expert_order parse: {e}"))?;
         let usize_field = |k: &str| -> Result<usize, String> {
@@ -81,13 +78,13 @@ impl ExpertOrder {
         Ok(ExpertOrder { n_layers, n_experts, flat })
     }
 
-    /// Load from a file path (the `JADE_MOE_ORDER_PATH` value).
+    /// Load from a file path.
     pub fn load(path: &str) -> Result<Self, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("expert_order read {path}: {e}"))?;
         Self::from_json(&bytes)
     }
 
-    /// Row-major `[n_layers * n_experts]` slice for `moe_driver_init` over FFI.
+    /// Row-major `[n_layers * n_experts]` slice: `flat[layer * n_experts + rank]`.
     pub fn flat(&self) -> &[i32] {
         &self.flat
     }
@@ -148,7 +145,7 @@ mod tests {
         // and its capabilities are the children of src/.
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/src/model/profiles/qwen3-coder-30b.expert-order.json"
+            "/src/moe/assets/qwen3-coder-30b.expert-order.json"
         );
         let o = ExpertOrder::load(path).expect("ship asset loads");
         assert_eq!(o.n_layers, 48);

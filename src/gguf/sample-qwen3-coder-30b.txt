@@ -1,28 +1,28 @@
-# Sample: `gguf-inspect` on the production model
+# Sample: `gguf-inspect` on Qwen3-Coder-30B-A3B-Instruct, Q4_K_M
 #
 # Real output, not a mock-up. Produced by range-fetching the first 40 MB of the
-# 18.6 GB Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf that `tools/ec2/first-run.py`
-# installs, then running the inspector on that fragment:
+# 18.6 GB file and running the inspector on that fragment:
 #
-#   curl -sL -r 0-41943039 -o head.gguf \
+#   curl -sL -r 0-41943039 -o Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf \
 #     https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
-#   cargo run --bin gguf-inspect -- head.gguf
+#   cargo run --bin gguf-inspect -- Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
 #
-# 40 MB was enough for the whole header here — metadata and the full 579-entry tensor
-# index — so nothing below is truncated. Fetch less and the metadata still parses; the
+# 40 MB was enough for the whole header here, metadata and the full 579-entry tensor
+# index, so nothing below is truncated. Fetch less and the metadata still parses; the
 # tensor line then says "(index truncated)" and the quant mix is omitted.
 #
 # What to read off it:
 #
-#   * `architecture qwen3moe` is the field that decides everything downstream. Note it
-#     is not "Qwen3-Coder" — the arch vocabulary is a family name, and a later Qwen
-#     release may well keep declaring qwen3moe.
-#   * Every hyperparameter under `qwen3moe.` is namespaced by that same string. Change
-#     the architecture and you change the key names the loader looks for.
-#   * `context_length 262144` is what the weights were trained for; JADE_CTX_SIZE
-#     defaults to 32768, far below it.
+#   * `architecture qwen3moe` is the field that decides everything downstream, including
+#     which built-in layout applies. It is not "Qwen3-Coder": the arch vocabulary is a
+#     family name.
+#   * Every hyperparameter under `qwen3moe.` is namespaced by that same string.
+#   * `file type 15` is LLAMA_FTYPE_MOSTLY_Q4_K_M. The quant mix shows what that label
+#     means in practice: Q4_K for most weights, Q6_K for some, F32 for every norm.
+#   * `tensor data at byte 5973152` is where the data section starts. Every tensor's
+#     file offset is that plus its own offset; the last tensor ends at byte 18556689568,
+#     which is the file's size on the Hub.
 #   * `expert_count 128 / expert_used_count 8` is the 30B-total, ~3B-active MoE shape.
-#   * The profile matched on `general.name`, which is free text. That is the soft spot.
 
 Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
   gguf version    3
@@ -30,6 +30,8 @@ Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
   name            Qwen3-Coder-30B-A3B-Instruct
   tensors         579
   quant mix       Q4_K×289, F32×241, Q6_K×49
+  file type       15 (general.file_type, a llama_ftype)
+  tensor data at  byte 5973152 (alignment 32)
   mixture of experts, so the MoE hparams below are load-bearing
 
 hyperparameters (the architecture's own namespace)
@@ -69,9 +71,6 @@ what llama.cpp reads
   --   tokenizer.ggml.bos_token_id                  (absent)
   ok   tokenizer.ggml.eos_token_id                  151645
   ok   tokenizer.chat_template                      {# Copyright 2025-present Unsloth. Apache 2.0 License. Unslo…
-
-dovata profile selection
-  general.name = "Qwen3-Coder-30B-A3B-Instruct" matches "Qwen3-Coder*" → profiles/qwen3-coder-30b.toml
 
 Nothing obviously missing. This is not a promise it loads — the only
 authoritative check is loading it with the pinned llama.cpp.

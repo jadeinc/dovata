@@ -20,8 +20,8 @@ what ships, `tools/` is what you run against it.
   checksum and disk-usage utilities, `.env` loading, and `ENV_ALIASES` /
   `normalize_env_aliases`, which reconcile the env file's variable names with the older
   `JADE_`-prefixed ones and with the AWS CLI's own spellings.
-- [`scripts/`](scripts/README.md) — *local.* Set up a machine, fetch or build a model,
-  regenerate the Jade profile packages. Runs on your laptop or on a build host.
+- [`scripts/`](scripts/README.md) — *local.* Set up a machine, fetch or build a model.
+  Runs on your laptop or on a build host.
 - [`ec2/`](ec2/README.md) — *remote.* Start the GPU box, sync to it, run things over SSH,
   stop it again. Every script here is a thin wrapper around `aws` and `ssh`.
 
@@ -72,5 +72,5 @@ these are one command each is that a two-command stop is a stop you skip.
 Nothing, today. `.github/workflows/publish-providers.yml` used to run
 `gen-profile-package.py --check` to fail a build whose Jade profile package had drifted
 from its TOML, and `check-package-abi.py` to fail one that would publish packages the
-Jade runtime refuses. That workflow and `check-package-abi.py` went with the 3.0 runtime
-removal and live on `main`. Everything here is invoked by a human.
+Jade runtime refuses. Both scripts and the workflow went with the 3.0 runtime removal
+and live on `main`. Everything here is invoked by a human.

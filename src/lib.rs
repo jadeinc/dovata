@@ -25,21 +25,33 @@
 //! comments below say why each capability sits where it does, because "why here and
 //! not inside that one" is the question a flat tree invites.
 
-/// Reading a model file's header and refusing a model nothing can plan for, plus the
-/// KV-cache sizing math. Separate from [`gguf`] because it is policy, and from
-/// [`model`] because it decides once per model file, not per profile.
+/// Refusing a model file that cannot be planned, and reading the model's shape and KV
+/// cost from its header. Separate from [`gguf`] because it is policy: the reader reports
+/// what any file says, and this decides whether that is enough to plan from.
 pub mod load;
-
-/// Per-model vocabulary as data: tool-call delimiters, turn markers, chat templates.
-/// A peer of `load` rather than part of it because the profile outlives admission, and
-/// because swapping a `.gguf` must not mean editing the code.
-pub mod model;
 
 /// GGUF header reading: what a model file holds, answered without llama.cpp.
 /// [`load::preflight`] is its caller, and `gguf-inspect`, a bin of this package, is its
 /// CLI. It is dependency-free by design, since it has to run on a laptop against a
 /// model no GPU has touched.
 pub mod gguf;
+
+/// Getting a model's files: a local path, or a GGUF downloaded from the Hugging Face
+/// Hub. A peer of [`load`] rather than part of it because it is the one capability that
+/// talks to the network; the pure half, which picks the file, always builds, and the
+/// download is behind the `hub` feature.
+pub mod hub;
+
+/// Quantizing a GGUF with llama.cpp's own quantizer. Never called implicitly: fetching
+/// and planning never quantize, so a caller who wants a smaller model calls this. The
+/// quant-type table always builds; the call into llama.cpp is behind `quantize`.
+pub mod quantize;
+
+/// Layouts: an architecture's compute graph as data, written in ggml's op names. Each
+/// built-in layout is one architecture dovata supports. Separate from the planner
+/// because the layout is the contract with the Jade compiler's kernels, and the planner
+/// only decides where its tensors live.
+pub mod layout;
 
 /// MoE expert ranking: which experts each layer uses most, from an offline asset. The
 /// planner will use it to decide which experts stay resident in VRAM.

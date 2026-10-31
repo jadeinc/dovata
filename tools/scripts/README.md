@@ -1,8 +1,8 @@
 # tools/scripts — the local half of the tooling
 
-Python scripts you run by hand to set up a machine, fetch or build a model, and keep the
-Jade profile packages in step with their TOML. Stdlib only, no dependencies to install; they shell out to the same
-system tools (`curl`, `git`, `cmake`, `aws`) the work actually needs.
+Python scripts you run by hand to set up a machine and fetch or build a model. Stdlib
+only, no dependencies to install; they shell out to the same system tools (`curl`, `git`,
+`cmake`, `aws`) the work actually needs.
 
 These were bash. The flatten converted them to Python because the quantization pipeline in
 particular had grown past what is reasonable in shell — argument handling, provenance
@@ -29,20 +29,14 @@ this directory puts its parent on `sys.path` and imports from it.
   that is already quantized: it fetches a `.gguf` straight from a URL, verifies the
   header, and publishes it to the same S3 contract — no GPU, no llama.cpp build, no
   150 GB of scratch.
-- `gen-profile-package.py` — regenerates the Jade-side model profile
-  (`src/model/profiles/<model>.jde`) from the dovata-side `<model>.toml`. A profile is
-  two files describing one model, shipped on two different pipelines with no runtime link
-  between them, and they drifted on the tool-call delimiters. The TOML is the source of
-  truth now; this copies the three shared constants down into the marked region of the
-  `.jde` and leaves the hand-written parser body alone. `--check` writes nothing and
-  exits non-zero if a package is stale. Needs Python 3.11+ for `tomllib`.
 
-Four scripts that used to sit here went with the 3.0 runtime removal and live on `main`.
+Five scripts that used to sit here went with the 3.0 rewrite and live on `main`.
 `check-engine.py` typechecked the Linux-only engine from a Mac, `check-bundles.py`
 checked the llama.cpp capability bundles against the pin, `check-package-abi.py` checked
-the Jade value ABI of built provider packages, and `configure-provider.py` stored API
-keys for the Anthropic and OpenAI providers. Each one served a part of the runtime that
-is no longer in the tree.
+the Jade value ABI of built provider packages, `configure-provider.py` stored API keys
+for the Anthropic and OpenAI providers, and `gen-profile-package.py` kept the Jade side
+of each model profile in step with its TOML. Each one served a part of 2.x that is no
+longer in the tree.
 
 ## Two ways a model reaches S3
 

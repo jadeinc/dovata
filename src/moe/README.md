@@ -31,6 +31,7 @@ unit test on a laptop, not on a GPU box.
 
 ## Who uses it
 
-Nothing calls it yet. The planner will, once it exists. The real asset for Qwen3-Coder,
-48 layers by 128 experts, sits in [`../model/profiles/`](../model/profiles/README.md),
-and the tests load it.
+Nothing calls it yet. The planner will, once the case of a MoE model that does not fit
+in VRAM is designed. The real asset for Qwen3-Coder-30B, 48 layers by 128 experts, is
+`assets/qwen3-coder-30b.expert-order.json`, and the tests load it. It moved here from
+the 2.x model profiles, which 3.0 dropped.

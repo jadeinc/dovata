@@ -1,27 +1,26 @@
-//! A pure-Rust reader for the GGUF metadata header.
+//! A pure-Rust reader for the GGUF header: the metadata, the tensor index, and where
+//! the tensor data starts.
 //!
 //! # Why this exists
 //!
-//! Swapping the model under the daemon is a one-variable change (`JADE_MODEL_PATH`),
-//! but whether a given `.gguf` will actually load is decided by things you cannot see
-//! from the filename: the architecture string llama.cpp keys off, the hyperparameters
-//! it demands for that architecture, and the free-text name our profile registry
-//! matches against. Until now the only way to find out was to build the CUDA daemon on
-//! a GPU box and watch it fail.
+//! Everything dovata decides about a model comes from this header. The planner needs
+//! every tensor's name, shape, `ggml_type`, byte size and file offset to place it in
+//! memory, and the layout binder needs the architecture and hyperparameters to pick and
+//! check a layout. None of that needs the tensor data, so none of it needs llama.cpp.
 //!
-//! So this crate parses the header itself. It has no dependencies, does not link
-//! llama.cpp, and never reads the tensor data — which means it runs on a laptop, and
-//! (because a GGUF puts all its metadata up front) it works on the first few megabytes
-//! of a file fetched with an HTTP range request. You can vet a model before
-//! downloading 18 GB of it.
+//! It has no dependencies and never reads the tensor data. It runs on a laptop, and,
+//! because a GGUF puts all its metadata and its tensor index up front, it works on the
+//! first few megabytes of a file fetched with an HTTP range request. You can plan a
+//! model before downloading 18 GB of it.
 //!
 //! # What it deliberately does not do
 //!
 //! It does not decide whether llama.cpp *supports* an architecture. That answer lives
 //! in llama.cpp's `LLM_ARCH_NAMES` table at whatever commit we have pinned, it changes
-//! release to release, and a copy of it here would rot into a confident lie. This crate
+//! release to release, and a copy of it here would rot into a confident lie. This module
 //! reports what the file claims; [`Report`] pairs that with the keys llama.cpp is known
-//! to read, and the authoritative check stays "load it with the pinned engine".
+//! to read. Which architectures dovata can *plan* is a separate question, answered by
+//! the built-in layouts.
 //!
 //! # Format
 //!
@@ -40,9 +39,30 @@ const MAGIC: [u8; 4] = *b"GGUF";
 /// on — see [`Gguf::architecture`].
 pub const KEY_ARCHITECTURE: &str = "general.architecture";
 
-/// The metadata key holding the human-readable model name. Free text, used by our
-/// profile registry and by nothing inside llama.cpp — see [`Gguf::name`].
+/// The metadata key holding the human-readable model name. Free text, and used by
+/// nothing inside llama.cpp — see [`Gguf::name`].
 pub const KEY_NAME: &str = "general.name";
+
+/// The metadata key holding the data-section alignment, a `u32` power of two. Absent
+/// in most files, which means [`DEFAULT_ALIGNMENT`].
+pub const KEY_ALIGNMENT: &str = "general.alignment";
+
+/// The metadata key holding the `llama_ftype` the file was quantized to: the label for
+/// the whole file, such as `Q4_K_M`, as opposed to each tensor's own `ggml_type`.
+pub const KEY_FILE_TYPE: &str = "general.file_type";
+
+/// Which part this file is, counting from 0, when a model is split across files.
+pub const KEY_SPLIT_NO: &str = "split.no";
+
+/// How many files the model is split across.
+pub const KEY_SPLIT_COUNT: &str = "split.count";
+
+/// How many tensors the whole split model has, across every part.
+pub const KEY_SPLIT_TENSORS_COUNT: &str = "split.tensors.count";
+
+/// The alignment GGUF uses when `general.alignment` is absent: `GGUF_DEFAULT_ALIGNMENT`
+/// in the vendored `ggml/include/gguf.h`.
+pub const DEFAULT_ALIGNMENT: u64 = 32;
 
 /// A parsed GGUF metadata value. Mirrors the format's type tags one for one.
 #[derive(Debug, Clone, PartialEq)]
@@ -156,7 +176,8 @@ pub struct TensorInfo {
     pub dims: Vec<u64>,
     /// The raw `ggml_type` tag. See [`ggml_type_name`].
     pub kind: u32,
-    /// Byte offset into the tensor-data section.
+    /// Byte offset into the tensor-data section, not into the file. Add
+    /// [`Gguf::data_offset`] for the file offset, or use [`Gguf::file_offset`].
     pub offset: u64,
 }
 
@@ -165,6 +186,37 @@ impl TensorInfo {
     pub fn elements(&self) -> u64 {
         self.dims.iter().product()
     }
+
+    /// Size of the tensor's data in bytes, the way ggml's `ggml_nbytes` computes it for
+    /// a contiguous tensor.
+    ///
+    /// Quantized types store whole blocks, so the first dimension has to be a multiple
+    /// of the block size; ggml refuses a row that is not. `None` when the type is one
+    /// [`ggml_type_layout`] does not know, when the first dimension does not divide into
+    /// blocks, or when the product overflows. A guessed size here would place the next
+    /// tensor on top of this one.
+    pub fn bytes(&self) -> Option<u64> {
+        let (block_elems, block_bytes) = ggml_type_layout(self.kind)?;
+        let row = *self.dims.first().unwrap_or(&1);
+        if row % block_elems != 0 {
+            return None;
+        }
+        let rows = self.dims.iter().skip(1).try_fold(1u64, |acc, d| acc.checked_mul(*d))?;
+        (row / block_elems).checked_mul(block_bytes)?.checked_mul(rows)
+    }
+}
+
+/// Where a file sits in a split model. Large uploads come as several files named
+/// `<name>-00001-of-00003.gguf`, written by llama.cpp's `gguf-split`. Only part 0 carries
+/// the model's metadata; every part carries its own tensor index and data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Split {
+    /// This file's index, from 0.
+    pub no: u16,
+    /// How many files the model has.
+    pub count: u16,
+    /// Tensors across every part.
+    pub tensors_count: u64,
 }
 
 /// A parsed GGUF header.
@@ -184,6 +236,13 @@ pub struct Gguf {
     /// case for a range-fetched header. Metadata is still complete and trustworthy;
     /// only the tensor list is partial.
     pub truncated: bool,
+    /// The data-section alignment: `general.alignment`, or [`DEFAULT_ALIGNMENT`].
+    /// Every tensor's [`TensorInfo::offset`] is a multiple of it.
+    pub alignment: u64,
+    /// File offset where the tensor data starts: the end of the tensor index, rounded
+    /// up to [`Gguf::alignment`]. `None` when the index was truncated, since then the
+    /// end of it is not known.
+    pub data_offset: Option<u64>,
 }
 
 impl Gguf {
@@ -230,7 +289,58 @@ impl Gguf {
             }
         }
 
-        Ok(Gguf { version, tensor_count, metadata, tensors, truncated })
+        // gguf.cpp reads `general.alignment` as a u32 and refuses anything that is not a
+        // power of two. A file that gets this wrong cannot be loaded, so it cannot be
+        // planned either.
+        let alignment = match metadata.iter().find(|(k, _)| k == KEY_ALIGNMENT) {
+            None => DEFAULT_ALIGNMENT,
+            Some((_, Value::U32(a))) if a.is_power_of_two() => u64::from(*a),
+            Some(_) => return Err(Error::Implausible("general.alignment is not a u32 power of two")),
+        };
+
+        // The data section starts at the next multiple of the alignment after the index.
+        // gguf.cpp pads only when there are tensors, so a tensorless file is not padded.
+        let data_offset = if truncated {
+            None
+        } else if tensor_count == 0 {
+            Some(r.pos as u64)
+        } else {
+            Some((r.pos as u64).div_ceil(alignment) * alignment)
+        };
+
+        Ok(Gguf { version, tensor_count, metadata, tensors, truncated, alignment, data_offset })
+    }
+
+    /// Look up one tensor by name.
+    pub fn tensor(&self, name: &str) -> Option<&TensorInfo> {
+        self.tensors.iter().find(|t| t.name == name)
+    }
+
+    /// Where a tensor's data starts in the file: [`Gguf::data_offset`] plus the
+    /// tensor's own offset. `None` for a truncated index.
+    pub fn file_offset(&self, t: &TensorInfo) -> Option<u64> {
+        self.data_offset?.checked_add(t.offset)
+    }
+
+    /// The `llama_ftype` the file declares in `general.file_type`, such as 15 for
+    /// `Q4_K_M`. A label for the file as a whole; individual tensors keep their own
+    /// types, and a "Q4_K_M" file still holds F32 norms and Q6_K output weights.
+    pub fn file_type(&self) -> Option<u32> {
+        self.u64(KEY_FILE_TYPE).and_then(|v| u32::try_from(v).ok())
+    }
+
+    /// Where this file sits in a split model, or `None` when the model is one file.
+    /// A file that declares `split.count` of 1 is not split either.
+    pub fn split(&self) -> Option<Split> {
+        let count = u16::try_from(self.u64(KEY_SPLIT_COUNT)?).ok()?;
+        if count <= 1 {
+            return None;
+        }
+        Some(Split {
+            no: u16::try_from(self.u64(KEY_SPLIT_NO)?).ok()?,
+            count,
+            tensors_count: self.u64(KEY_SPLIT_TENSORS_COUNT)?,
+        })
     }
 
     /// Look up one metadata key.
@@ -261,9 +371,9 @@ impl Gguf {
 
     /// The human-readable name — `general.name`.
     ///
-    /// Free text set by whoever ran the conversion. llama.cpp does nothing with it.
-    /// Our profile registry, however, selects on exactly this string, so two GGUFs of
-    /// the same model from different publishers can pick different profiles.
+    /// Free text set by whoever ran the conversion. llama.cpp does nothing with it, and
+    /// neither does dovata's planning: two GGUFs of the same model from different
+    /// publishers often disagree here. Select on [`Gguf::architecture`] instead.
     pub fn name(&self) -> Option<&str> {
         self.string(KEY_NAME)
     }
@@ -411,7 +521,7 @@ impl Report {
             ("tokenizer.ggml.merges", false, "BPE merge table; required for BPE tokenizers"),
             ("tokenizer.ggml.bos_token_id", false, "beginning-of-sequence id"),
             ("tokenizer.ggml.eos_token_id", false, "end-of-sequence id; wrong here means generation never stops"),
-            ("tokenizer.chat_template", false, "the publisher's Jinja template — dovata uses its own profile instead, but this is what to read when writing one"),
+            ("tokenizer.chat_template", false, "the publisher's Jinja chat template; dovata-chat renders it"),
         ] {
             checks.push(Check {
                 key: key.to_owned(),
@@ -621,8 +731,60 @@ pub fn ggml_type_name(t: u32) -> &'static str {
         28 => "F64",
         29 => "IQ1_M",
         30 => "BF16",
+        34 => "TQ1_0",
+        35 => "TQ2_0",
+        39 => "MXFP4",
+        40 => "NVFP4",
+        41 => "Q1_0",
         _ => "type ?",
     }
+}
+
+/// How a `ggml_type` stores its elements: `(elements per block, bytes per block)`.
+///
+/// Copied from `type_traits` in the vendored `ggml/src/ggml.c`, read through
+/// `ggml_get_type_traits` rather than worked out from the struct definitions. Plain
+/// types are blocks of one element. Retired tags, such as 4, 5 and 31 to 33, return
+/// `None`, and so does any tag newer than this table: a size that is wrong by a few
+/// bytes per block makes every offset after it wrong.
+pub fn ggml_type_layout(t: u32) -> Option<(u64, u64)> {
+    Some(match t {
+        0 => (1, 4),      // F32
+        1 => (1, 2),      // F16
+        2 => (32, 18),    // Q4_0
+        3 => (32, 20),    // Q4_1
+        6 => (32, 22),    // Q5_0
+        7 => (32, 24),    // Q5_1
+        8 => (32, 34),    // Q8_0
+        9 => (32, 36),    // Q8_1
+        10 => (256, 84),  // Q2_K
+        11 => (256, 110), // Q3_K
+        12 => (256, 144), // Q4_K
+        13 => (256, 176), // Q5_K
+        14 => (256, 210), // Q6_K
+        15 => (256, 292), // Q8_K
+        16 => (256, 66),  // IQ2_XXS
+        17 => (256, 74),  // IQ2_XS
+        18 => (256, 98),  // IQ3_XXS
+        19 => (256, 50),  // IQ1_S
+        20 => (32, 18),   // IQ4_NL
+        21 => (256, 110), // IQ3_S
+        22 => (256, 82),  // IQ2_S
+        23 => (256, 136), // IQ4_XS
+        24 => (1, 1),     // I8
+        25 => (1, 2),     // I16
+        26 => (1, 4),     // I32
+        27 => (1, 8),     // I64
+        28 => (1, 8),     // F64
+        29 => (256, 56),  // IQ1_M
+        30 => (1, 2),     // BF16
+        34 => (256, 54),  // TQ1_0
+        35 => (256, 66),  // TQ2_0
+        39 => (32, 17),   // MXFP4
+        40 => (64, 36),   // NVFP4
+        41 => (128, 18),  // Q1_0
+        _ => return None,
+    })
 }
 
 /// Truncate for display, with an ellipsis when something was cut.
@@ -776,6 +938,128 @@ mod tests {
         .unwrap();
         assert!(moe.is_moe());
         assert!(moe.report().checks.iter().any(|c| c.key == "qwen3moe.expert_used_count"));
+    }
+
+    /// One tensor-index entry, encoded the way gguf.cpp writes it.
+    fn tensor_entry(name: &str, dims: &[u64], kind: u32, offset: u64) -> Vec<u8> {
+        let mut b = (name.len() as u64).to_le_bytes().to_vec();
+        b.extend_from_slice(name.as_bytes());
+        b.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+        for d in dims {
+            b.extend_from_slice(&d.to_le_bytes());
+        }
+        b.extend_from_slice(&kind.to_le_bytes());
+        b.extend_from_slice(&offset.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn data_offset_is_aligned_after_the_index() {
+        let (at, av) = str_val("llama");
+        let mut bytes = build(&[("general.architecture", at, av)], 2);
+        bytes.extend(tensor_entry("token_embd.weight", &[64, 8], 0, 0));
+        bytes.extend(tensor_entry("output_norm.weight", &[64], 0, 2048));
+        let index_end = bytes.len() as u64;
+
+        let g = Gguf::parse(&bytes).unwrap();
+        assert!(!g.truncated);
+        assert_eq!(g.alignment, DEFAULT_ALIGNMENT);
+        let data = g.data_offset.expect("a complete index has a data offset");
+        assert!(data >= index_end && data < index_end + DEFAULT_ALIGNMENT, "{data} vs {index_end}");
+        assert_eq!(data % DEFAULT_ALIGNMENT, 0);
+        let norm = g.tensor("output_norm.weight").unwrap();
+        assert_eq!(g.file_offset(norm), Some(data + 2048));
+    }
+
+    #[test]
+    fn a_truncated_index_has_no_data_offset() {
+        let (at, av) = str_val("llama");
+        let mut bytes = build(&[("general.architecture", at, av)], 2);
+        bytes.extend(tensor_entry("token_embd.weight", &[64, 8], 0, 0));
+        let g = Gguf::parse(&bytes).unwrap();
+        assert!(g.truncated);
+        assert_eq!(g.data_offset, None);
+        assert_eq!(g.file_offset(&g.tensors[0]), None);
+    }
+
+    #[test]
+    fn a_tensorless_file_is_not_padded() {
+        // gguf.cpp pads to the alignment only when there is tensor data to align.
+        let (at, av) = str_val("llama");
+        let bytes = build(&[("general.architecture", at, av)], 0);
+        let g = Gguf::parse(&bytes).unwrap();
+        assert_eq!(g.data_offset, Some(bytes.len() as u64));
+    }
+
+    #[test]
+    fn alignment_key_overrides_default() {
+        let (at, av) = str_val("llama");
+        let (lt, lv) = u32_val(64);
+        let mut bytes = build(&[("general.architecture", at, av), ("general.alignment", lt, lv)], 1);
+        bytes.extend(tensor_entry("output_norm.weight", &[64], 0, 0));
+        let g = Gguf::parse(&bytes).unwrap();
+        assert_eq!(g.alignment, 64);
+        assert_eq!(g.data_offset.unwrap() % 64, 0);
+    }
+
+    #[test]
+    fn an_alignment_that_is_not_a_power_of_two_is_refused() {
+        let (at, av) = str_val("llama");
+        let (lt, lv) = u32_val(48);
+        let bytes = build(&[("general.architecture", at, av), ("general.alignment", lt, lv)], 0);
+        assert!(matches!(Gguf::parse(&bytes).unwrap_err(), Error::Implausible(_)));
+    }
+
+    #[test]
+    fn tensor_bytes_for_block_types() {
+        let t = |dims: &[u64], kind| TensorInfo { name: "t".into(), dims: dims.to_vec(), kind, offset: 0 };
+        assert_eq!(t(&[4096, 2], 0).bytes(), Some(4096 * 2 * 4), "F32");
+        assert_eq!(t(&[4096, 2], 30).bytes(), Some(4096 * 2 * 2), "BF16");
+        assert_eq!(t(&[4096, 2], 8).bytes(), Some(4096 / 32 * 34 * 2), "Q8_0");
+        assert_eq!(t(&[4096, 2], 2).bytes(), Some(4096 / 32 * 18 * 2), "Q4_0");
+        assert_eq!(t(&[4096, 2], 12).bytes(), Some(4096 / 256 * 144 * 2), "Q4_K");
+        // A MoE expert stack: experts are the third dimension.
+        assert_eq!(t(&[2048, 768, 128], 12).bytes(), Some(2048 / 256 * 144 * 768 * 128));
+        // A row that does not divide into whole blocks has no valid size.
+        assert_eq!(t(&[100, 2], 12).bytes(), None);
+    }
+
+    #[test]
+    fn unknown_type_has_no_size() {
+        assert_eq!(ggml_type_layout(4), None, "Q4_2 was removed from ggml");
+        assert_eq!(ggml_type_layout(9999), None);
+        let t = TensorInfo { name: "t".into(), dims: vec![32], kind: 31, offset: 0 };
+        assert_eq!(t.bytes(), None);
+    }
+
+    #[test]
+    fn every_named_type_has_a_layout() {
+        // The two tables are kept side by side; a type with a name and no size would
+        // print fine and then fail to plan.
+        for t in 0..64 {
+            assert_eq!(ggml_type_name(t) != "type ?", ggml_type_layout(t).is_some(), "type {t}");
+        }
+    }
+
+    #[test]
+    fn file_type_and_split_are_read() {
+        let (at, av) = str_val("llama");
+        let (ft, fv) = u32_val(15);
+        let one = Gguf::parse(&build(&[("general.architecture", at, av.clone()), ("general.file_type", ft, fv)], 0)).unwrap();
+        assert_eq!(one.file_type(), Some(15));
+        assert_eq!(one.split(), None);
+
+        let part = Gguf::parse(&build(
+            &[
+                ("general.architecture", at, av),
+                ("split.no", 2, 1u16.to_le_bytes().to_vec()),
+                ("split.count", 2, 3u16.to_le_bytes().to_vec()),
+                ("split.tensors.count", 5, 579i32.to_le_bytes().to_vec()),
+            ],
+            0,
+        ))
+        .unwrap();
+        assert_eq!(part.split(), Some(Split { no: 1, count: 3, tensors_count: 579 }));
     }
 
     #[test]

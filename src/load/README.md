@@ -1,39 +1,37 @@
-# load/ — admission
+# load/ — reading a model file
 
-Everything that happens once, before any request: read the `JADE_*` environment into a
-`Config`, vet the model file, pick its profile, and size the generation cap from the
-VRAM left after the weights.
+Everything dovata does starts here: read a model file's header, refuse it if it cannot
+be planned, gather the parts of a split model into one value, and read the model's shape.
 
 ## Why it is its own capability
 
-Because it is the only part of the engine that can decline to come up.
-
-Load-time policy and per-request policy fail differently. A request that cannot be
-served returns an `Error` frame and the engine carries on. A model file with incomplete
-metadata, or one no profile matches, is not a bad request — it is a provider that should
-not exist. `Provider::from_config` returns `Err`, the loader sees a null handle, and the
-caller finds out immediately instead of receiving confident nonsense later.
-
-That is worth keeping in one place, which is why it is separate from
-[`dispatch/`](../dispatch/README.md) rather than the first half of it.
+Because it is policy, and [`src/gguf/`](../gguf/README.md) is not. The GGUF reader
+reports what any file says, even a truncated one, because `gguf-inspect` has to work on
+a half-downloaded model. Planning needs more: every required key present and every
+tensor in the index. This module is where that line is drawn.
 
 ## What each file does
 
-- `config.rs` — the `JADE_*` environment into a `Config`, and `validate()`. The KV cache
-  type is modelled as our own `KvType` enum rather than llama's, so the
-  flash-attention rule stays testable without a GPU. `validate()` is also where a config
-  asking for a capability this binary was not built with is refused.
-- `preflight.rs` — reads the GGUF header with [`crate::gguf`](../gguf/README.md) *before*
-  llama.cpp opens the file, checks the metadata llama.cpp will require, and selects the
-  profile on architecture as well as name. Refuses with a message that names the fix.
-- `vram.rs` — estimates how many tokens can be generated from the KV cache that fits
-  after the weights, using the model's own shape from the GGUF header. Exists because
-  nothing sets `max_tokens` any more and `u32::default()` is 0, which the engine would
-  otherwise read as "generate nothing".
+- `preflight.rs` — reads up to 64 MB of the file, checks the metadata llama.cpp requires,
+  and refuses a tensor index that is cut off or a file that is a later part of a split
+  model. It does not decide which architectures dovata supports; a layout does that.
+- `model.rs` — `Model`, one model in one or more files. A split GGUF, named
+  `<name>-00001-of-00003.gguf` and so on, is opened from its first part; the others are
+  found by llama.cpp's naming rule and checked to belong: right part numbers, tensor
+  counts that add up, no tensor in two parts. The parts are never merged. Each tensor
+  keeps the part it lives in and its offset in that part's file.
+- `dims.rs` — `ModelDims`, the model's shape from its header, and `KvType`, the KV cache
+  element type. `kv_bytes_per_token` prices one token of KV cache, checked against the
+  864 MiB KV buffer llama.cpp reports for Qwen3-Coder-30B at 32768 tokens.
 
-## Gotchas
+## What changed in 3.0
 
-Pure apart from one file read, so all of it is unit-tested on macOS against synthetic
-GGUF headers. `JADE_ALLOW_UNPROFILED=1` downgrades the no-profile refusal to a warning —
-an unprofiled model generates text fine and mis-parses every tool call, which is why it
-is off by default.
+2.x read the `JADE_*` environment into a runtime config, picked a model profile, and
+guessed a generation cap from the VRAM left after the weights. The config and the
+profiles went with the runtime. The guess went because the planner sizes the KV cache
+exactly.
+
+## Who uses it
+
+The layout binder and the planner take a `Model`. `gguf-inspect` uses the reader
+directly, since it must work on files that preflight would refuse.

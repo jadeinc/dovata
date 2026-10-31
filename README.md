@@ -26,15 +26,16 @@ memory and the model file:
 
 | | |
 |---|---|
-| [`src/gguf/`](src/gguf/README.md) | GGUF header reader and the `gguf-inspect` CLI. Answers what a model file holds without llama.cpp. |
-| [`src/load/`](src/load/README.md) | preflight, which refuses a model no profile covers, and the KV-cache sizing math |
-| [`src/model/`](src/model/README.md) | per-model vocabulary as data: tool-call delimiters, turn markers, chat templates |
+| [`src/gguf/`](src/gguf/README.md) | GGUF header reader and the `gguf-inspect` CLI: metadata, the tensor index, each tensor's size and file offset, split parts. No llama.cpp. |
+| [`src/load/`](src/load/README.md) | preflight, which refuses a file that cannot be planned; `Model`, which treats a split GGUF as one model; the model's shape and KV cost |
 | [`src/moe/`](src/moe/README.md) | MoE expert ranking: which experts each layer uses most |
 | [`src/llama/`](src/llama/README.md) | the bindgen'd llama.cpp C API over the stock upstream submodule, kept for quantization and as the reference for ggml's tensor formats |
 | [`src/jade-gpu-mon/`](src/jade-gpu-mon/README.md) | a terminal dashboard for VRAM and bandwidth on the GPU box |
 
-Still to come: the layout file format, the planner and its address table, the
-quantization wrapper, and a small reference backend. The reference backend is for
+Still to come: the layout file format and the built-in layouts in `src/layout/`, the
+quantization wrapper in `src/quantize/`, Hugging Face downloads in `src/hub/`, the
+planner and its address table, the optional `dovata-chat` package in `src/chat/`, and a
+small reference backend. The reference backend is for
 testing only. It places the tensors for real and runs one simple call over each, to
 prove the weights land where the plan says on split memory: VRAM and host RAM together,
 more than one GPU, or Apple's unified memory.

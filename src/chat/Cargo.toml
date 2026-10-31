@@ -1,0 +1,9 @@
+[package]
+name = "dovata-chat"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Optional tokenizer and chat-template helpers for models planned with dovata"
+
+[dependencies]

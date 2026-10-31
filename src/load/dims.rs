@@ -1,38 +1,83 @@
-//! Sizing the generation cap from what VRAM is actually left after the weights.
+//! A model's shape, read from its GGUF header, and what one token of KV cache costs.
 //!
-//! A Jade program cannot say how long a reply may be. `max_tokens` went with the
-//! daemon, and `InferRequest` carries only `input`, `grammar`, `anchor` and
-//! `stop_anchor`, so the engine has to pick the number itself. The first attempt was
-//! a flat 2048, which is a guess dressed as a default: too small on a card with room
-//! to spare, and too large on one already full of weights.
-//!
-//! The number that actually constrains a reply is how much KV cache fits. Weights
-//! are resident for the life of the process, so whatever they do not occupy is what
-//! is left to hold tokens, and each token costs a fixed number of bytes decided by
-//! the model's shape and the cache's element type.
+//! The planner sizes the KV cache from these numbers: one key and one value entry per KV
+//! head per layer for every token of context. The formula is
 //!
 //! ```text
-//!   headroom      = vram - weights - overhead
-//!   bytes/token   = layers * kv_heads * (key_dim * k_elem_bytes + value_dim * v_elem_bytes)
-//!   capacity      = headroom / bytes/token
+//!   bytes/token = layers * kv_heads * (key_dim * k_elem_bytes + value_dim * v_elem_bytes)
 //! ```
 //!
-//! Everything here is arithmetic over numbers read from the GGUF header, so it is
-//! pure and unit-tested on any machine — no CUDA, no model, no llama.cpp. The engine
-//! still clamps the result to what the context window leaves after the prompt, so
-//! this is an upper bound rather than a promise.
-//!
-//! ## What this deliberately does not model
-//!
-//! The estimate assumes the weights are resident in VRAM. With MoE expert offload
-//! that is false and pessimistic: cold experts live in host RAM and only a pinned
-//! working set sits on the card, so the file size overstates VRAM use — sometimes by
-//! more than half. A model larger than the budget therefore does not mean "will not
-//! run"; it means this estimator cannot see how much of it is resident, and it falls
-//! back rather than returning zero. Set `JADE_MAX_TOKENS` when the offload driver is
-//! doing the real work and this arithmetic no longer describes the machine.
+//! It is arithmetic over numbers read from the header, so it is pure and unit-tested on
+//! any machine. Up to 2.x this file also guessed a generation cap from the VRAM left
+//! after the weights; 3.0 plans the KV cache exactly instead, so that estimate is gone.
 
-use crate::load::config::KvType;
+/// The element type of the KV cache. The subset of `ggml_type` that llama.cpp accepts
+/// for a K or V cache, with K and V chosen separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KvType {
+    F32,
+    F16,
+    BF16,
+    Q8_0,
+    Q5_1,
+    Q5_0,
+    Q4_1,
+    Q4_0,
+}
+
+impl KvType {
+    /// Every KV type, in the order a reader would list them.
+    pub const ALL: [KvType; 8] = [
+        KvType::F32,
+        KvType::F16,
+        KvType::BF16,
+        KvType::Q8_0,
+        KvType::Q5_1,
+        KvType::Q5_0,
+        KvType::Q4_1,
+        KvType::Q4_0,
+    ];
+
+    /// Parse a name such as `q4_0`, in any case. `None` for anything else: 2.x fell back
+    /// to `q8_0` on a typo, which hid the typo.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name().eq_ignore_ascii_case(s))
+    }
+
+    /// The lowercase name llama.cpp's `--cache-type-k` flag uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            KvType::F32 => "f32",
+            KvType::F16 => "f16",
+            KvType::BF16 => "bf16",
+            KvType::Q8_0 => "q8_0",
+            KvType::Q5_1 => "q5_1",
+            KvType::Q5_0 => "q5_0",
+            KvType::Q4_1 => "q4_1",
+            KvType::Q4_0 => "q4_0",
+        }
+    }
+
+    /// The `ggml_type` tag, the same numbering [`crate::gguf::TensorInfo::kind`] uses.
+    pub fn ggml_type(self) -> u32 {
+        match self {
+            KvType::F32 => 0,
+            KvType::F16 => 1,
+            KvType::Q4_0 => 2,
+            KvType::Q4_1 => 3,
+            KvType::Q5_0 => 6,
+            KvType::Q5_1 => 7,
+            KvType::Q8_0 => 8,
+            KvType::BF16 => 30,
+        }
+    }
+
+    /// Whether the type is block-quantized. llama.cpp needs flash attention for a
+    /// quantized V cache, so a layout without `flash_attn_ext` cannot use one.
+    pub fn is_quantized(self) -> bool {
+        !matches!(self, KvType::F16 | KvType::BF16 | KvType::F32)
+    }
+}
 
 impl ModelDims {
     /// Read a model's shape out of its GGUF header.
@@ -42,8 +87,7 @@ impl ModelDims {
     /// absent on models without grouped-query attention and falls back to
     /// `head_count`, which is what that absence means.
     ///
-    /// `None` when a required key is missing — the same condition preflight already
-    /// refuses a load for, so in practice this is reached only with an override.
+    /// `None` when a required key is missing, the same condition preflight refuses.
     #[must_use]
     pub fn from_gguf(model: &crate::gguf::Gguf) -> Option<Self> {
         let arch = model.architecture()?;
@@ -61,27 +105,6 @@ impl ModelDims {
         })
     }
 }
-
-/// Assumed VRAM when nothing says otherwise, in bytes. 16 GiB is the smaller of the
-/// two cards this engine targets, so guessing it is the safe direction: a 24 GiB card
-/// gets a conservative cap rather than an over-commit that fails at allocation.
-pub const DEFAULT_VRAM_BYTES: u64 = 16 * 1024 * 1024 * 1024;
-
-/// Held back for the CUDA context, compute buffers, and fragmentation. Not a
-/// measured figure — a deliberately generous slice, because over-committing VRAM
-/// fails at allocation time with an error that names none of this.
-pub const DEFAULT_OVERHEAD_BYTES: u64 = 1024 * 1024 * 1024;
-
-/// Floor for the returned cap. Below roughly this a reply is too short to be worth
-/// serving, so returning it would turn a sizing problem into a mysteriously truncated
-/// answer. Hitting the floor means the arithmetic no longer describes the machine —
-/// see the MoE note above.
-pub const MIN_MAX_TOKENS: u32 = 256;
-
-/// Ceiling for the returned cap. A card with room for a million tokens of KV does not
-/// mean a single reply should run that long; past this, a runaway generation costs
-/// more than it can be worth, and a caller who genuinely wants more sets the override.
-pub const MAX_MAX_TOKENS: u32 = 8192;
 
 /// Bytes per element in the KV cache.
 ///
@@ -157,8 +180,7 @@ impl ModelDims {
     /// Bytes of KV cache one token occupies, across every layer.
     ///
     /// The keys and values are two separate caches, one entry per KV head per layer,
-    /// each `head_dim` elements wide. They are quantized *independently* —
-    /// `JADE_KV_TYPE_K` and `JADE_KV_TYPE_V` are separate settings — so this takes
+    /// each `head_dim` elements wide. They are typed *independently*, so this takes
     /// both types and sums them rather than doubling one. A common deployment
     /// quantizes the values harder than the keys, and treating them as one type
     /// misestimates every figure downstream.
@@ -170,44 +192,6 @@ impl ModelDims {
         let v = heads * u64::from(self.value_dim()) * kv_elem_bytes_x32(kv_v);
         (k + v) / 32
     }
-}
-
-/// What the card has, and what is already spoken for.
-#[derive(Debug, Clone, Copy)]
-pub struct Budget {
-    pub vram_bytes: u64,
-    pub weights_bytes: u64,
-    pub overhead_bytes: u64,
-}
-
-impl Budget {
-    /// Bytes left for KV cache, or `None` when the weights and overhead already
-    /// exceed the card. `None` is not "will not run" — see the MoE note above.
-    #[must_use]
-    pub fn headroom(&self) -> Option<u64> {
-        self.vram_bytes
-            .checked_sub(self.weights_bytes)?
-            .checked_sub(self.overhead_bytes)
-    }
-}
-
-/// How many tokens of KV cache fit in the headroom, clamped to a usable range.
-///
-/// Returns `MIN_MAX_TOKENS` when the model does not visibly fit, rather than zero: a
-/// zero cap generates an empty reply, which reads as the model saying nothing instead
-/// of as a sizing problem. That exact failure is what prompted this module.
-#[must_use]
-pub fn estimate_max_tokens(dims: ModelDims, kv_k: KvType, kv_v: KvType, budget: Budget) -> u32 {
-    let per_token = dims.kv_bytes_per_token(kv_k, kv_v);
-    if per_token == 0 {
-        return MIN_MAX_TOKENS;
-    }
-    let Some(headroom) = budget.headroom() else {
-        return MIN_MAX_TOKENS;
-    };
-    let capacity = headroom / per_token;
-    let capped = u32::try_from(capacity).unwrap_or(u32::MAX);
-    capped.clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)
 }
 
 #[cfg(test)]
@@ -236,7 +220,7 @@ mod tests {
     #[test]
     fn grouped_query_attention_is_not_ignored() {
         // Using query heads in place of KV heads would overstate the per-token cost
-        // 8x for this model, and the resulting cap would be pointlessly small.
+        // 8x for this model, and the planner would reserve 8x the KV memory.
         let gqa = qwen();
         let no_gqa = ModelDims { kv_heads: gqa.heads, ..gqa };
         assert_eq!(
@@ -247,61 +231,10 @@ mod tests {
 
     #[test]
     fn kv_bytes_per_token_is_the_documented_formula() {
-        // 2 * 48 layers * 4 kv heads * 64 head_dim = 24576 elements, f16 = 2 bytes.
+        // 2 caches * 48 layers * 4 kv heads * 128 head_dim = 49152 elements, f16 = 2 bytes.
         assert_eq!(qwen().kv_bytes_per_token(KvType::F16, KvType::F16), 49_152 * 2);
         // q4_0 is 18 bytes per 32 elements.
         assert_eq!(qwen().kv_bytes_per_token(KvType::Q4_0, KvType::Q4_0), 49_152 * 18 / 32);
-    }
-
-    #[test]
-    fn a_quantized_cache_holds_more_than_an_unquantized_one() {
-        let budget = Budget {
-            vram_bytes: DEFAULT_VRAM_BYTES,
-            weights_bytes: 8 * 1024 * 1024 * 1024,
-            overhead_bytes: DEFAULT_OVERHEAD_BYTES,
-        };
-        let f16 = estimate_max_tokens(qwen(), KvType::F16, KvType::F16, budget);
-        let q4 = estimate_max_tokens(qwen(), KvType::Q4_0, KvType::Q4_0, budget);
-        assert!(q4 >= f16, "q4_0 ({q4}) should fit at least as many tokens as f16 ({f16})");
-    }
-
-    #[test]
-    fn heavier_weights_leave_room_for_fewer_tokens() {
-        let mk = |weights| Budget {
-            vram_bytes: DEFAULT_VRAM_BYTES,
-            weights_bytes: weights,
-            overhead_bytes: DEFAULT_OVERHEAD_BYTES,
-        };
-        // Small enough that neither result is pinned to the ceiling.
-        let dims = ModelDims { layers: 80, heads: 64, kv_heads: 64, embedding_length: 8192, key_length: None, value_length: None };
-        let light = estimate_max_tokens(dims, KvType::F16, KvType::F16, mk(2 * 1024 * 1024 * 1024));
-        let heavy = estimate_max_tokens(dims, KvType::F16, KvType::F16, mk(12 * 1024 * 1024 * 1024));
-        assert!(light > heavy, "light={light} heavy={heavy}");
-    }
-
-    #[test]
-    fn a_model_larger_than_the_card_falls_back_rather_than_returning_zero() {
-        // The production case: an 18 GiB model against the assumed 16 GiB. Zero would
-        // generate an empty reply and read as the model saying nothing.
-        let budget = Budget {
-            vram_bytes: DEFAULT_VRAM_BYTES,
-            weights_bytes: 18 * 1024 * 1024 * 1024,
-            overhead_bytes: DEFAULT_OVERHEAD_BYTES,
-        };
-        assert!(budget.headroom().is_none());
-        assert_eq!(estimate_max_tokens(qwen(), KvType::F16, KvType::F16, budget), MIN_MAX_TOKENS);
-    }
-
-    #[test]
-    fn the_result_stays_inside_the_usable_range() {
-        // A tiny model on a big card would otherwise return a cap in the millions.
-        let budget = Budget {
-            vram_bytes: 80 * 1024 * 1024 * 1024,
-            weights_bytes: 1024 * 1024 * 1024,
-            overhead_bytes: DEFAULT_OVERHEAD_BYTES,
-        };
-        let dims = ModelDims { layers: 4, heads: 8, kv_heads: 1, embedding_length: 512, key_length: None, value_length: None };
-        assert_eq!(estimate_max_tokens(dims, KvType::Q4_0, KvType::Q4_0, budget), MAX_MAX_TOKENS);
     }
 
     #[test]
@@ -319,7 +252,7 @@ mod tests {
         assert_eq!(dims.kv_heads, 32);
     }
 
-    /// The whole estimate is checkable against a number llama.cpp prints, so check it.
+    /// The per-token cost is checkable against a number llama.cpp prints, so check it.
     ///
     /// Loading Qwen3-Coder-30B at `ctx_size=32768` with a q4_0 cache reports:
     ///
@@ -333,7 +266,7 @@ mod tests {
     /// model declares 128. Being off by a clean factor of two is what made it
     /// findable; a subtler error would have looked plausible.
     #[test]
-    fn the_estimate_matches_llama_cpps_own_kv_buffer() {
+    fn the_per_token_cost_matches_llama_cpps_own_kv_buffer() {
         const OBSERVED_KV_BYTES: u64 = 864 * 1024 * 1024;
         const OBSERVED_CTX: u64 = 32768;
         assert_eq!(
@@ -344,9 +277,9 @@ mod tests {
 
     #[test]
     fn keys_and_values_are_costed_separately() {
-        // JADE_KV_TYPE_K and JADE_KV_TYPE_V are independent settings, and a common
-        // deployment quantizes the values harder than the keys. Doubling one type
-        // would misprice that case in both directions.
+        // K and V are typed independently, and a common deployment quantizes the
+        // values harder than the keys. Doubling one type would misprice that case in
+        // both directions.
         let d = qwen();
         let both_f16 = d.kv_bytes_per_token(KvType::F16, KvType::F16);
         let mixed = d.kv_bytes_per_token(KvType::F16, KvType::Q4_0);
@@ -360,11 +293,25 @@ mod tests {
     fn a_malformed_header_does_not_divide_by_zero() {
         let dims = ModelDims { layers: 0, heads: 0, kv_heads: 0, embedding_length: 0, key_length: None, value_length: None };
         assert_eq!(dims.key_dim(), 0);
-        let budget = Budget {
-            vram_bytes: DEFAULT_VRAM_BYTES,
-            weights_bytes: 0,
-            overhead_bytes: DEFAULT_OVERHEAD_BYTES,
-        };
-        assert_eq!(estimate_max_tokens(dims, KvType::F16, KvType::F16, budget), MIN_MAX_TOKENS);
+        assert_eq!(dims.kv_bytes_per_token(KvType::F16, KvType::F16), 0);
+    }
+
+    #[test]
+    fn kv_types_parse_by_name_and_refuse_typos() {
+        assert_eq!(KvType::parse("Q4_0"), Some(KvType::Q4_0));
+        assert_eq!(KvType::parse("bf16"), Some(KvType::BF16));
+        assert_eq!(KvType::parse("q4_O"), None, "a typo must not fall back silently");
+        for k in KvType::ALL {
+            assert_eq!(KvType::parse(k.name()), Some(k));
+        }
+    }
+
+    #[test]
+    fn kv_element_cost_matches_the_gguf_type_table() {
+        // Two tables describe the same block formats; they must agree.
+        for k in KvType::ALL {
+            let (elems, bytes) = crate::gguf::ggml_type_layout(k.ggml_type()).unwrap();
+            assert_eq!(kv_elem_bytes_x32(k), bytes * 32 / elems, "{}", k.name());
+        }
     }
 }

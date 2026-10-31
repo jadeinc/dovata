@@ -1,37 +1,31 @@
 # gguf — reading a model file without llama.cpp
 
-A dependency-free Rust crate that parses the GGUF metadata header, plus the
-`gguf-inspect` CLI that prints it. Nothing here links llama.cpp, touches CUDA, or reads
-tensor data, so it builds and runs on a laptop.
+A dependency-free reader for the GGUF header, plus the `gguf-inspect` CLI that prints
+it. Nothing here links llama.cpp, touches a GPU, or reads tensor data, so it builds and
+runs on a laptop.
 
 ## Why it exists
 
-Pointing the daemon at a different model is a one-variable change — set
-`JADE_MODEL_PATH` and restart. Whether the new model *works* is decided by three things
-you cannot see from the filename, and until this crate existed the only way to find out
-was to build the CUDA daemon on the GPU box and watch it fail:
+Everything dovata decides about a model comes from this header. The planner needs every
+tensor's name, shape, `ggml_type`, byte size and file offset to place it in memory. The
+layout binder needs the architecture and hyperparameters to pick a layout and check it.
+`fetch` needs `general.file_type` to confirm a download is the quantization it asked
+for. None of that needs the tensor data.
 
-1. Does llama.cpp recognise the architecture the file declares.
-2. Does the file carry the hyperparameters that architecture needs.
-3. Will the daemon's profile registry match it, or silently fall back to bare ChatML.
-
-A GGUF puts all of its metadata before the tensor data, so all three are answerable from
-the first few megabytes. You can vet a model with an HTTP range request before
-downloading 18 GB of it — which is exactly how `sample-qwen3-coder-30b.txt` was made.
+A GGUF puts its metadata and its tensor index before the data, so all of it is
+answerable from the first few megabytes. You can plan a model from an HTTP range request
+before downloading 18 GB of it, which is how `sample-qwen3-coder-30b.txt` was made.
 
 ## What llama.cpp actually requires
-
-This is the part worth internalising, because our own profile matching does it
-differently and that difference is the sharp edge.
 
 *The architecture is a controlled vocabulary.* llama.cpp reads `general.architecture`,
 looks the string up in its `LLM_ARCH_NAMES` table, and everything after that decision —
 which hyperparameters are read, which tensor names are expected, which graph is built —
 follows from the match. A string not in the table is the `unknown model architecture`
 error, and no amount of correct weights gets past it. The vocabulary is family-level and
-deliberately unglamorous: our production model declares `qwen3moe`, not
-`Qwen3-Coder-30B`. A future Qwen release may well keep declaring `qwen3moe`, in which
-case it loads on the engine we already ship.
+deliberately unglamorous: Qwen3-Coder-30B declares `qwen3moe`. dovata's built-in
+layouts key on the same string, so a later release that keeps declaring `qwen3moe`
+plans with the layout we already ship.
 
 *The hyperparameters are namespaced by that same string.* Once the arch is `qwen3moe`,
 the loader reads `qwen3moe.block_count`, `qwen3moe.embedding_length`,
@@ -45,81 +39,57 @@ the BPE merges — and fails just as hard when incomplete.
 with the right arch string and the wrong tensor names still fails.
 
 *`general.name` is free text, and llama.cpp ignores it entirely.* It is whatever the
-person who ran the conversion typed. That is the field the daemon's profile registry
-globs against, which means the same model from two publishers can select two different
-profiles, or none. The architecture is the stable identifier; the name is not. Worth
-remembering when a profile mysteriously does not apply.
+person who ran the conversion typed, and two publishers of the same model often
+disagree on it. dovata ignores it too. 2.x selected model profiles on it, which is one
+reason profiles went in 3.0.
 
 None of this is transcribed from the loader source, and this crate does not carry a copy
 of the arch table — that table moves upstream every few releases and a stale copy here
 would be a confident lie. `gguf-inspect` reports what the file claims and flags the keys
 that are known to be load-bearing. The authoritative check is still loading the model
-with the pinned engine.
+with the pinned llama.cpp.
 
 ## Files
 
-- `src/lib.rs` — the parser. `Gguf::parse` over a byte slice, `Value` for the twelve
-  metadata types plus arrays, `TensorInfo` for the index, and `Report`, which pairs the
-  file against the keys llama.cpp reads and tells you which required ones are missing.
-  Every read is bounds-checked and array lengths are sanity-checked against the input
-  size, because "point this at a half-downloaded model" is a normal thing to do.
-- `src/main.rs` — the `gguf-inspect` CLI. Reads at most 64 MB of the file.
-- `sample-qwen3-coder-30b.txt` — real output for the production model, annotated. Read
-  this first if you want the shape of the answer before running anything.
+- `mod.rs` — the parser. `Gguf::parse` over a byte slice, `Value` for the twelve metadata
+  types plus arrays, `TensorInfo` for the index, and `Report`, which pairs the file
+  against the keys llama.cpp reads and lists the required ones that are missing. It also
+  finds where the tensor data starts (`data_offset`, after `general.alignment` padding),
+  sizes each tensor (`TensorInfo::bytes`, from `ggml_type_layout`), and reads the split
+  keys and `general.file_type`. Every read is bounds-checked, because pointing this at a
+  half-downloaded model is a normal thing to do.
+- `main.rs` — the `gguf-inspect` CLI. Reads at most 64 MB of the file.
+- `sample-qwen3-coder-30b.txt` — real output for Qwen3-Coder-30B at Q4_K_M, annotated.
+
+## The type table
+
+`ggml_type_layout` gives each `ggml_type`'s block: how many elements, how many bytes.
+The numbers were read out of the vendored ggml through `ggml_get_type_traits`, not worked
+out from struct definitions. A size wrong by a byte per block moves every tensor after
+it, so the table is checked against a real file: on the Qwen3-Coder header above, the
+last tensor ends exactly at the file's size on the Hub, 18,556,689,568 bytes. A type
+newer than the table has no size, and a tensor of that type cannot be planned until the
+table is extended.
 
 ## Usage
 
 ```sh
-# What is in this file, and will it load
+# What is in this file
 cargo run --bin gguf-inspect -- model.gguf
 
 # Everything, including tokenizer.chat_template printed verbatim
 cargo run --bin gguf-inspect -- model.gguf --all
 
-# Vet a model you have not downloaded
+# Look at a model you have not downloaded
 curl -sL -r 0-41943039 -o head.gguf "<huggingface resolve url>"
 cargo run --bin gguf-inspect -- head.gguf
 ```
 
-Exit status is 0 when no required key is missing, 1 when one is, so it drops into a
+Exit status is 0 when no required key is missing and 1 when one is, so it drops into a
 script or a CI gate as-is.
-
-## Adding a model, end to end
-
-```sh
-cargo run --bin gguf-inspect -- new-model.gguf                    # 1. does it load
-cargo run --bin gguf-inspect -- new-model.gguf --profile-stub \
-  > src/model/profiles/new-model.toml                                    # 2. starter profile
-```
-
-The stub arrives with `model`, `match`, and `[limits] context_window` already filled in
-from the header, and with the tool-call and tool-result blocks left as explicit TODOs —
-those tokens are a training convention, not a recorded field, so they cannot be read out
-of the file. The stub appends the model's `tokenizer.chat_template` verbatim as a
-comment, which is where the delimiters are actually written down. Fill them in, add the
-file to `BUILTIN_PROFILES` in `src/model/mod.rs`, and `cargo test -p dovata`
-validates it. The language-side `.jde` twin is a separate file; see
-`src/model/profiles/README.md`.
 
 ## Who uses it
 
-the engine links it. `dovata::preflight` runs at daemon startup, before the engine
-loads: it reads the header, checks the required keys, selects the model profile, and
-refuses the boot with a specific message when something is wrong. That turns a mistyped
-`JADE_MODEL_PATH` or an unprofiled model from a minutes-long load followed by a vague
-failure into a one-second error naming the fix.
-
-There is deliberately only *one* reader of this decision. The engine used to select a
-profile itself after `LlamaModel::load_from_file` returned; now it reads the choice the
-preflight published, so the profile that approved the boot is the profile that serves
-requests. llama.cpp remains the only authority on whether a model loads — this crate
-never claims otherwise, it just gets there first with a better error.
-
-Everything else is still humans at a terminal. The obvious next users are
-`src/packaging` (record the shipped model's arch and hyperparameters in
-`manifest.json`) and `tools/scripts/quantize-model.py` (assert a freshly quantized GGUF
-declares what the pinned engine expects before it is uploaded).
-
-The `KNOWN_PROFILE_GLOBS` constant in `src/main.rs` is a hand-copied mirror of the globs
-in `src/model/profiles/*.toml`, kept so this crate builds standalone. Add a profile and
-it needs updating here too, or `gguf-inspect` will under-report a match.
+[`src/load/`](../load/README.md) reads every model through it: preflight checks the
+header, and `Model` gathers the parts of a split file. The planner and the layout binder
+read tensors through `Model`, so this module is underneath everything dovata does.
