@@ -48,6 +48,9 @@ serde_json = { version = "1", features = ["std"] }
 # Layout files are TOML, and the plan serializes to JSON for the compiler.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# The plan records a SHA-256 of each GGUF part's header, so the program can refuse a
+# file other than the one its offsets were computed for. Pure Rust.
+sha2 = "0.10"
 
 # Only `default-features = false`: the sys crate's default `common` feature builds
 # llama.cpp's `common/` library, which quantization does not use.

@@ -1,0 +1,121 @@
+//! Splitting a mapped GGUF file into windows a GPU can bind.
+//!
+//! ## Why windows
+//!
+//! On Apple Silicon the weights are never copied: the program maps each GGUF part once,
+//! and Metal reads the mapping through `newBufferWithBytesNoCopy`. A Metal buffer is
+//! limited to `maxBufferLength`, which can be smaller than the model, so the mapping is
+//! bound as several buffers. A tensor must lie wholly inside one of them, since a kernel
+//! addresses a tensor as one buffer plus an offset.
+//!
+//! ggml's Metal backend does the same thing with fixed-stride views that overlap by the
+//! largest tensor (`ggml-metal-device.m`, `ggml_backend_metal_buffer_from_ptr`). This
+//! module packs greedily instead: a window grows tensor by tensor until the next one
+//! would not fit, and the next window starts at the page holding that tensor. Every
+//! tensor gets exactly one window, and windows overlap by at most a page.
+//!
+//! On a CPU target there is no buffer limit, so each part is one window from byte 0, and
+//! every offset in it equals the file offset.
+
+/// One tensor in a mapped file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    /// Where its data starts in the file.
+    pub file_offset: u64,
+    /// Its size in bytes.
+    pub bytes: u64,
+}
+
+/// A window over a mapped file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Window {
+    /// Where the window starts in the file. A multiple of the page size, so the
+    /// program can hand `base + file_start` to Metal without copying.
+    pub file_start: u64,
+    /// Its length in bytes, no more than the buffer limit.
+    pub bytes: u64,
+}
+
+/// Why a file could not be windowed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    /// One tensor, padded out to the pages it touches, is larger than a GPU buffer.
+    TensorTooLarge { index: usize, bytes: u64, limit: u64 },
+}
+
+/// Split a file's tensors into windows. Returns the windows and, for each span in the
+/// input order, the index of the window that holds it.
+///
+/// The first window starts at byte 0, so with no limit, as on a CPU target, there is
+/// one window and every offset in it is the file offset.
+pub fn windows(spans: &[Span], limit: u64, page: u64) -> Result<(Vec<Window>, Vec<usize>), Error> {
+    let mut order: Vec<usize> = (0..spans.len()).collect();
+    order.sort_by_key(|&i| (spans[i].file_offset, i));
+
+    let mut out: Vec<Window> = Vec::new();
+    let mut which = vec![0usize; spans.len()];
+    for &i in &order {
+        let s = spans[i];
+        let end = s.file_offset + s.bytes;
+        let fits_current = out.last().is_some_and(|w| end - w.file_start <= limit);
+        if !fits_current {
+            let file_start = if out.is_empty() { 0 } else { s.file_offset / page * page };
+            if end - file_start > limit {
+                return Err(Error::TensorTooLarge { index: i, bytes: end - file_start, limit });
+            }
+            out.push(Window { file_start, bytes: 0 });
+        }
+        let w = out.last_mut().expect("a window was just ensured");
+        w.bytes = w.bytes.max(end - w.file_start);
+        which[i] = out.len() - 1;
+    }
+    Ok((out, which))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAGE: u64 = 16384;
+
+    fn span(file_offset: u64, bytes: u64) -> Span {
+        Span { file_offset, bytes }
+    }
+
+    #[test]
+    fn without_a_limit_one_window_starts_at_zero() {
+        let spans = [span(6_000_000, 1000), span(6_001_024, 5000)];
+        let (ws, which) = windows(&spans, u64::MAX, 4096).unwrap();
+        assert_eq!(ws, vec![Window { file_start: 0, bytes: 6_001_024 + 5000 }]);
+        assert_eq!(which, vec![0, 0]);
+    }
+
+    #[test]
+    fn a_limit_splits_and_every_tensor_fits_one_window() {
+        let spans: Vec<Span> = (0..10).map(|i| span(PAGE + i * 300_000, 300_000)).collect();
+        let (ws, which) = windows(&spans, 1_000_000, PAGE).unwrap();
+        assert!(ws.len() > 1);
+        for (s, &w) in spans.iter().zip(&which) {
+            let w = ws[w];
+            assert!(w.file_start <= s.file_offset && s.file_offset + s.bytes <= w.file_start + w.bytes);
+            assert!(w.bytes <= 1_000_000);
+            assert_eq!(w.file_start % PAGE, 0);
+        }
+    }
+
+    #[test]
+    fn a_tensor_larger_than_the_limit_is_refused() {
+        let err = windows(&[span(PAGE, 10), span(2 * PAGE, 5_000_000)], 1_000_000, PAGE).unwrap_err();
+        assert!(matches!(err, Error::TensorTooLarge { index: 1, .. }), "{err:?}");
+    }
+
+    #[test]
+    fn input_order_does_not_matter() {
+        let a = [span(PAGE, 600_000), span(PAGE + 600_000, 600_000)];
+        let b = [a[1], a[0]];
+        let (wa, ia) = windows(&a, 1_000_000, PAGE).unwrap();
+        let (wb, ib) = windows(&b, 1_000_000, PAGE).unwrap();
+        assert_eq!(wa, wb);
+        assert_eq!((ia[0], ia[1]), (ib[1], ib[0]));
+    }
+}

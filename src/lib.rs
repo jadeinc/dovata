@@ -53,6 +53,11 @@ pub mod quantize;
 /// only decides where its tensors live.
 pub mod layout;
 
+/// The planner: where every tensor of a bound layout lives on one target machine,
+/// handed to the compiler as an address table of region and offset pairs. Separate from
+/// [`layout`] because the same layout plans differently on every target.
+pub mod plan;
+
 /// MoE expert ranking: which experts each layer uses most, from an offline asset. The
 /// planner will use it to decide which experts stay resident in VRAM.
 #[cfg(feature = "moe")]

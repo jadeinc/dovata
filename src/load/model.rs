@@ -23,6 +23,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 use crate::gguf::{Gguf, TensorInfo};
 use crate::load::preflight::{self, Preflight};
 
@@ -46,28 +48,71 @@ pub struct Model {
     pub paths: Vec<PathBuf>,
     /// The headers of the parts after the first, in order. Empty for a one-file model.
     rest: Vec<Gguf>,
+    /// Each part's identity, part 1 first.
+    identity: Vec<PartIdentity>,
+}
+
+/// What identifies one part file, so a program can refuse a file other than the one a
+/// plan was made from. The plan's offsets are compiled in as constants; mapping a
+/// different file would read the wrong bytes with no error.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PartIdentity {
+    /// SHA-256 of the file's first `data_offset` bytes, the metadata and the tensor
+    /// index, in lowercase hex. Any change to a tensor's name, type, shape or offset
+    /// changes it. Hashing the whole file would also catch changed weights, at the cost
+    /// of reading every byte at startup.
+    pub header_sha256: String,
+    /// The size the file must have: the data offset plus the tensor data, padded to the
+    /// alignment the way gguf.cpp writes it. A cheap check for a cut-off download.
+    pub file_bytes: u64,
+}
+
+impl PartIdentity {
+    fn of(bytes: &[u8], g: &Gguf) -> PartIdentity {
+        let data = g.data_offset.unwrap_or(bytes.len() as u64);
+        let header = &bytes[..usize::try_from(data).unwrap_or(bytes.len()).min(bytes.len())];
+        let digest = Sha256::digest(header);
+        let end = g.tensors.iter().filter_map(|t| t.bytes().map(|b| t.offset + b)).max().unwrap_or(0);
+        PartIdentity {
+            header_sha256: digest.iter().map(|b| format!("{b:02x}")).collect(),
+            file_bytes: data + end.div_ceil(g.alignment) * g.alignment,
+        }
+    }
 }
 
 impl Model {
     /// Open a model from its first file. For a split model, the other parts are found
     /// next to it by llama.cpp's naming rule, `<prefix>-%05d-of-%05d.gguf`.
     pub fn open(path: &Path) -> Result<Model, Error> {
-        let preflight = Preflight::read(path)?;
+        let first = read_head(path).map_err(|detail| preflight::Error::Unreadable { path: path.display().to_string(), detail })?;
+        let preflight = Preflight::evaluate(&first)?;
         let paths = match preflight.split {
             None => vec![path.to_path_buf()],
             Some(s) => split_paths(path, s.count).ok_or_else(|| Error::SplitName(path.display().to_string()))?,
         };
-        let rest = paths[1..].iter().map(|p| read_header(p)).collect::<Result<Vec<_>, _>>()?;
-        Self::assemble(preflight, paths, rest)
+        Self::read_rest(preflight, &first, paths)
     }
 
     /// Open a model from an explicit list of part files, part 1 first, such as the list
     /// a Hub download returns.
     pub fn from_parts(paths: &[PathBuf]) -> Result<Model, Error> {
-        let first = paths.first().ok_or(Error::NoParts)?;
-        let preflight = Preflight::read(first)?;
-        let rest = paths[1..].iter().map(|p| read_header(p)).collect::<Result<Vec<_>, _>>()?;
-        Self::assemble(preflight, paths.to_vec(), rest)
+        let path = paths.first().ok_or(Error::NoParts)?;
+        let first = read_head(path).map_err(|detail| preflight::Error::Unreadable { path: path.display().to_string(), detail })?;
+        let preflight = Preflight::evaluate(&first)?;
+        Self::read_rest(preflight, &first, paths.to_vec())
+    }
+
+    fn read_rest(preflight: Preflight, first: &[u8], paths: Vec<PathBuf>) -> Result<Model, Error> {
+        let mut identity = vec![PartIdentity::of(first, &preflight.gguf)];
+        let mut rest = Vec::new();
+        for p in &paths[1..] {
+            let fail = |detail: String| Error::Part { path: p.display().to_string(), detail };
+            let bytes = read_head(p).map_err(fail)?;
+            let g = Gguf::parse(&bytes).map_err(|e| fail(e.to_string()))?;
+            identity.push(PartIdentity::of(&bytes, &g));
+            rest.push(g);
+        }
+        Self::assemble(preflight, paths, rest, identity)
     }
 
     /// Build a model from header bytes already in memory, part 1 first. Pure, so this is
@@ -75,16 +120,19 @@ impl Model {
     pub fn from_headers(parts: &[(PathBuf, Vec<u8>)]) -> Result<Model, Error> {
         let (first_path, first) = parts.first().ok_or(Error::NoParts)?;
         let preflight = Preflight::evaluate(first)?;
+        let mut identity = vec![PartIdentity::of(first, &preflight.gguf)];
         let mut rest = Vec::new();
         for (path, bytes) in &parts[1..] {
-            rest.push(Gguf::parse(bytes).map_err(|e| Error::Part { path: path.display().to_string(), detail: e.to_string() })?);
+            let g = Gguf::parse(bytes).map_err(|e| Error::Part { path: path.display().to_string(), detail: e.to_string() })?;
+            identity.push(PartIdentity::of(bytes, &g));
+            rest.push(g);
         }
         let mut paths = vec![first_path.clone()];
         paths.extend(parts[1..].iter().map(|(p, _)| p.clone()));
-        Self::assemble(preflight, paths, rest)
+        Self::assemble(preflight, paths, rest, identity)
     }
 
-    fn assemble(preflight: Preflight, paths: Vec<PathBuf>, rest: Vec<Gguf>) -> Result<Model, Error> {
+    fn assemble(preflight: Preflight, paths: Vec<PathBuf>, rest: Vec<Gguf>, identity: Vec<PartIdentity>) -> Result<Model, Error> {
         let expected = preflight.split.map_or(1, |s| usize::from(s.count));
         if paths.len() != expected {
             return Err(Error::PartCount { expected, found: paths.len() });
@@ -103,7 +151,7 @@ impl Model {
             }
         }
 
-        let model = Model { preflight, paths, rest };
+        let model = Model { preflight, paths, rest, identity };
         if let Some(s) = model.preflight.split {
             let total = (0..model.part_count()).map(|i| model.part(i).tensors.len() as u64).sum::<u64>();
             if total != s.tensors_count {
@@ -161,17 +209,21 @@ impl Model {
     pub fn tensor(&self, name: &str) -> Option<TensorRef<'_>> {
         self.tensors().find(|t| t.info.name == name)
     }
+
+    /// Each part's identity, part 1 first.
+    pub fn identity(&self) -> &[PartIdentity] {
+        &self.identity
+    }
 }
 
-/// Read one part's header off disk. Later parts carry no metadata, so preflight does
-/// not apply to them; [`Model::assemble`] checks them instead.
-fn read_header(path: &Path) -> Result<Gguf, Error> {
+/// Read the first [`preflight::HEADER_BUDGET`] bytes of a file. Later parts carry no
+/// metadata, so preflight does not apply to them; [`Model::assemble`] checks them.
+fn read_head(path: &Path) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    let fail = |detail: String| Error::Part { path: path.display().to_string(), detail };
-    let file = std::fs::File::open(path).map_err(|e| fail(e.to_string()))?;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    file.take(preflight::HEADER_BUDGET).read_to_end(&mut bytes).map_err(|e| fail(e.to_string()))?;
-    Gguf::parse(&bytes).map_err(|e| fail(e.to_string()))
+    file.take(preflight::HEADER_BUDGET).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(bytes)
 }
 
 /// The paths of every part of a split model, from the path of any one of them, by
@@ -344,6 +396,18 @@ mod tests {
         let p1 = later_part(1, 2, 2, &[("a", &[32], 0, 0)]);
         let err = Model::from_headers(&[("0".into(), p0), ("1".into(), p1)]).unwrap_err();
         assert_eq!(err, Error::DuplicateTensor("a".into()));
+    }
+
+    #[test]
+    fn identity_changes_with_the_header_and_predicts_the_file_size() {
+        let a = with_tensors(header_with("llama", None, &[]), &[("t", &[64], 0, 0)]);
+        let b = with_tensors(header_with("llama", None, &[]), &[("t", &[64], 1, 0)]);
+        let ma = Model::from_headers(&[("a".into(), a)]).unwrap();
+        let mb = Model::from_headers(&[("b".into(), b)]).unwrap();
+        assert_ne!(ma.identity()[0].header_sha256, mb.identity()[0].header_sha256);
+        assert_eq!(ma.identity()[0].header_sha256.len(), 64);
+        // 64 F32 elements is 256 bytes, already a multiple of the 32-byte alignment.
+        assert_eq!(ma.identity()[0].file_bytes, ma.meta().data_offset.unwrap() + 256);
     }
 
     #[test]

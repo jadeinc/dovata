@@ -15,5 +15,5 @@ pub mod model;
 pub mod preflight;
 
 pub use dims::{KvType, ModelDims};
-pub use model::{Model, TensorRef};
+pub use model::{Model, PartIdentity, TensorRef};
 pub use preflight::Preflight;
