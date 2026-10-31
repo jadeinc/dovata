@@ -95,11 +95,10 @@ common = []
 # Capability bundles: a per-capability patch series applied to a staged copy of the
 # pinned upstream llama.cpp, instead of carrying a fork. Off by default so a plain
 # build of this crate is stock upstream, byte for byte, with no staging step at all.
-# The engine crate turns the ones it needs on through its own capability features.
-#
-# See src/moe/driver/bundle/ for the format, and the "De-forking" section
-# of this crate's README for why the delta lives here rather than in a fork.
-bundle-moe = []
+# None exist today: the only one, `bundle-moe`, went with the runtime MoE pager in
+# dovata 3.0. Add a `bundle-<name>` feature here and an arm in build.rs's
+# `enabled_bundles` to bring one back; `bundle-kit` documents the format, and the
+# "De-forking" section of this crate's README says why the delta lives here.
 cuda = []
 # Disables the need to dynamically link against libcuda.so / cuda.dll
 cuda-no-vmm = ["cuda"]

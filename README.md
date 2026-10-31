@@ -1,152 +1,70 @@
-# dovata — the JADE OS inference engine
+# dovata: the JADE OS model memory and inference layout planner
 
-A library, not a daemon. `dovata` is an `ovata-infer-protocol` provider built as a
-`cdylib`, wrapping llama.cpp. A compiled Jade program `dlopen`s it once and calls `infer`
-in-process for every `?p` dereference, so the chain is
-`jadelang -> dovata.so -> nvidia.ko`, with no socket and no second process.
+A Rust library the Jade compiler uses at build time. dovata reads a model's GGUF file and
+a layout file describing its compute graph, decides where every tensor lives on the
+target machine, and quantizes the weights with existing open-source tools. It hands the
+compiler that placement as data: for each tensor, a memory region and a byte offset into
+it. The compiler generates the GPU code from that. dovata never runs a model.
 
-## Why there is no daemon
+The first targets are NVIDIA GPUs on Linux, Apple Silicon on macOS, and CPU only.
 
-It used to be one: a Unix socket at `~/.jade/llm.sock`, and a host that read framed
-requests and routed each to a provider.
+## What changed in 3.0
 
-The work is almost entirely GPU-bound, so a socket, a framing layer, and a second process
-in front of it bought nothing and cost real time on every request — plus a second thing to
-install, supervise, and explain. The engine was already reachable in-process, because it
-implements `Provider` and that is all `export_provider!` needs, so the host came out
-without the engine changing at all.
+Up to 2.x, dovata was a runtime: a provider library a running Jade program loaded to do
+inference through llama.cpp, with request paths, sampling, a wire protocol, and remote
+providers next to it. That code is on `main` and in the `v2.*` tags.
 
-Dropping the process boundary does not mean every program pays for its own copy of the
-model. Weights are `mmap`ed out of the GGUF, and MoE cold experts sit in the CPU backend's
-default buffer type, so the kernel's page cache shares them across every process that maps
-the same `model.gguf`. The model costs the machine once, not once per program.
+3.0 moves the work to build time. The work is GPU-bound, and the compiler is what should
+emit the machine code, so a runtime engine between the program and the GPU was overhead.
+The interface is a Rust crate the compiler takes as a cargo dependency; there is no
+protocol and no C ABI.
 
-The one job that genuinely wants a resident process is checking whether the GPU is
-healthy. That lives in a separate daemon, outside this repo.
+## Where the rewrite stands
 
-## How the source is organized
-
-Every child of `src/` is one *capability* — a slice of the engine, named for what it does,
-behind a cargo feature that can compile it out whole. They are flat: `ls src/` is a list,
-and the grouping lives here rather than in a directory tree.
-
-**The shape of a request.** Nothing reaches backwards.
-
-```
-dlopen -> load -> model + context built
-per request: dispatch -> decode | compose | batch  -> frames out
-             each built on tokenize + kv + sample
-```
-
-**Admission** — once, before any request
+The runtime has been removed. What is left are the parts of 2.x that were already about
+memory and the model file:
 
 | | |
 |---|---|
-| [`src/load/`](src/load/README.md) | env, preflight, VRAM sizing. The only thing that can refuse the load. |
-| [`src/model/`](src/model/README.md) | per-model vocabulary as data; the profiles themselves |
-| [`src/gguf/`](src/gguf/README.md) | GGUF header reader + `gguf-inspect`. Vets a model on a laptop. |
+| [`src/gguf/`](src/gguf/README.md) | GGUF header reader and the `gguf-inspect` CLI. Answers what a model file holds without llama.cpp. |
+| [`src/load/`](src/load/README.md) | preflight, which refuses a model no profile covers, and the KV-cache sizing math |
+| [`src/model/`](src/model/README.md) | per-model vocabulary as data: tool-call delimiters, turn markers, chat templates |
+| [`src/moe/`](src/moe/README.md) | MoE expert ranking: which experts each layer uses most |
+| [`src/llama/`](src/llama/README.md) | the bindgen'd llama.cpp C API over the stock upstream submodule, kept for quantization and as the reference for ggml's tensor formats |
+| [`src/jade-gpu-mon/`](src/jade-gpu-mon/README.md) | a terminal dashboard for VRAM and bandwidth on the GPU box |
 
-**Primitives over the context** — shared by all three request paths
+Still to come: the layout file format, the planner and its address table, the
+quantization wrapper, and a small reference backend. The reference backend is for
+testing only. It places the tensors for real and runs one simple call over each, to
+prove the weights land where the plan says on split memory: VRAM and host RAM together,
+more than one GPU, or Apple's unified memory.
 
-| | |
-|---|---|
-| [`src/tokenize/`](src/tokenize/README.md) | text to tokens, and the UTF-8 decoder that spans them |
-| [`src/kv/`](src/kv/README.md) | prefix reuse, sequence ops, save/restore |
-| [`src/sample/`](src/sample/README.md) | the sampler chain, and the constrained-decode machine |
-
-**The three request paths**
-
-| | |
-|---|---|
-| [`src/dispatch/`](src/dispatch/README.md) | the `Provider` impl and the routing decision |
-| [`src/decode/`](src/decode/README.md) | the default: one sequence, streamed |
-| [`src/compose/`](src/compose/README.md) | long-context answering by KV composition |
-| [`src/batch/`](src/batch/README.md) | continuous batching. Compiles; nothing calls it. |
-
-**Acceleration**
+Outside `src/`:
 
 | | |
 |---|---|
-| [`src/moe/`](src/moe/README.md) | expert offload: Rust, the C++/CUDA driver, and its llama.cpp bundle |
-| [`src/llama/`](src/llama/README.md) | the vendored bindings over stock upstream. The one directory that nests. |
-
-**Providers and the wire**
-
-| | |
-|---|---|
-| [`src/protocol/`](src/protocol/README.md) | the wire protocol (git submodule) |
-| [`src/echo/`](src/echo/README.md) | the reference native provider. Copy it to write one. |
-| [`src/anthropic/`](src/anthropic/README.md), [`src/openai/`](src/openai/README.md) | remote providers, written in Jade |
-
-**Outside `src/`** — what you run, rather than what ships
-
-| | |
-|---|---|
-| [`src/packaging/`](src/packaging/README.md) | the xtask that builds `dist/` |
-| [`tools/`](tools/README.md) | all the Python: `scripts/` local, `ec2/` remote |
-| [`tests/`](tests/README.md) | the end-to-end evals in Jade, plus their runner |
-| [`ci/`](ci/README.md) | pinned model build inputs |
-| `docs/` | `blended-rag-rlm.md` (KV composition, with measured numbers), `moe-expert-offload.md` |
-
-## Two entry points, and only one of them reaches Jade
-
-`export_provider!` emits the `ovata_provider_*` C ABI. That is the right surface for a
-host that speaks plain C, and it is **not** what the Jade compiler calls. The compiler
-loads a provider through its own native-package machinery: `dlopen`, then `jade_pkg_init`
-to collect name-to-function-pointer bindings, then a binding called `infer`.
-
-The two drifted apart quietly. The compiler dropped its dependency on the protocol's Rust
-half in jade v1.1.30 and kept only `jade/infer.jde`, which declares the *messages* and
-says nothing about the entry point — so both sides agreed on `InferRequest`, `Token`,
-`Done` and `Error`, and disagreed on how to start the conversation. Loading the engine
-from Jade failed with "missing `jade_pkg_init` symbol".
-
-`src/jade_pkg.rs` is the conforming half, and both entry points sit in one library over
-one `Provider` impl. Read its module docs before touching either: two things in it are
-load-bearing and easy to get wrong.
+| [`tools/`](tools/README.md) | the Python: `scripts/` local, `ec2/` for the GPU box |
+| [`ci/`](ci/README.md) | pinned inputs for building the model |
+| `docs/` | `moe-expert-offload.md`, the design of the 2.x expert pager |
 
 ## Building and testing
 
 ```sh
-# The pure half. macOS or Linux; no model, no GPU, no llama.cpp.
-cargo test                                    # the engine
-cargo test -p ovata-infer-protocol -p ovata-provider-echo -p bundle-kit -p packaging
+# The library. Runs anywhere; no model, no GPU, no llama.cpp.
+cargo test -p dovata
 
-# One test
-cargo test sample::control::tests::stop_anchor_split_across_tokens
+# With every capability compiled out, the check that the boundaries are real
+cargo test -p dovata --lib --no-default-features
 
-# With every capability compiled out — the check that the boundaries are real
-cargo test --lib --no-default-features
+# The bundle machinery under the llama.cpp bindings
+cargo test -p bundle-kit
 
-# The shipping library, with the GPU backend (Linux, NVIDIA)
-cargo build --release --features cuda
-
-# Vet a model file before a GPU box ever sees it
+# Look at a model file
 cargo run --bin gguf-inspect -- /path/to/model.gguf
-
-# The dist/ bundle
-cargo run -p packaging -- release --cuda
 ```
 
-`cargo build --workspace` compiles llama.cpp from source and is effectively a Linux
-operation.
+Build by package name with `-p`. `src/llama/bindings-sys` compiles llama.cpp from source,
+so `cargo build --workspace` needs the submodule checked out and cmake installed.
 
-## What a green test run does not tell you
-
-Everything named `exec.rs` is `#[cfg(target_os = "linux")]`, and `src/kv/` and
-`src/tokenize/` are llama-bound end to end. The suite is fast and broad and compiles none
-of it.
-
-That gap is narrower than it looks, though, and worth closing before you push:
-
-```sh
-python3 tools/scripts/check-engine.py
-```
-
-It copies the repo to a scratch directory, drops the platform gate in the copy, and runs
-`cargo check` — so the engine is typechecked here, without slowing the default build or
-touching your tree. llama.cpp builds fine on macOS; nothing in the engine's Linux-only
-code is actually Linux-specific, only its dependency is.
-
-What still needs the GPU box: anything about CUDA, and anything at run time. The evals in
-[`tests/`](tests/README.md) are the real gate.
+There is no CI on the 3.0 branch yet. The 2.x workflows released and published the
+runtime, and went with it.

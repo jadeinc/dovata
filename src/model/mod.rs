@@ -36,9 +36,6 @@
 
 use serde::Deserialize;
 
-mod stream;
-pub use stream::{Event, ToolStreamParser};
-
 /// A model's token/turn-taking vocabulary.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelProfile {
@@ -629,24 +626,6 @@ mod tests {
         "#,
         );
         assert!(r.is_err());
-    }
-
-    #[test]
-    fn parser_from_profile_splits_tool_call() {
-        let reg = Registry::builtin();
-        let p = reg.select("Qwen3-Coder-30B").unwrap();
-        let mut parser = ToolStreamParser::from_profile(p);
-        let mut evs = parser.push_token("Sure. ");
-        evs.extend(parser.push_token(r#"<tool_call>{"tool_name":"get_weather","city":"SF"}</tool_call>"#));
-        evs.extend(parser.finish());
-        assert_eq!(evs[0], Event::Content("Sure. ".into()));
-        assert_eq!(
-            evs[1],
-            Event::ToolCall {
-                name: "get_weather".into(),
-                args: r#"{"tool_name":"get_weather","city":"SF"}"#.into(),
-            },
-        );
     }
 
     #[test]

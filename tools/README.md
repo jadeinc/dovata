@@ -12,7 +12,7 @@ a leftover from flattening the tree: pulling the scripts out of an older nested 
 dropping them beside the crates was the short move, and it stuck.
 
 The cost was that `src/` stopped meaning anything. `tools/` restores the line — `src/` is
-what ships, `tools/` is what you run against it, `tests/` is what you run.
+what ships, `tools/` is what you run against it.
 
 ## The two halves, and the file between them
 
@@ -21,8 +21,7 @@ what ships, `tools/` is what you run against it, `tests/` is what you run.
   `normalize_env_aliases`, which reconcile the env file's variable names with the older
   `JADE_`-prefixed ones and with the AWS CLI's own spellings.
 - [`scripts/`](scripts/README.md) — *local.* Set up a machine, fetch or build a model,
-  configure provider credentials, regenerate the Jade profile packages. Runs on your
-  laptop or on a build host.
+  regenerate the Jade profile packages. Runs on your laptop or on a build host.
 - [`ec2/`](ec2/README.md) — *remote.* Start the GPU box, sync to it, run things over SSH,
   stop it again. Every script here is a thin wrapper around `aws` and `ssh`.
 
@@ -48,11 +47,10 @@ machine that can do it." A script in `scripts/` should never know an instance ex
 
 ## Where the evals went
 
-`run-tests.py`, the eval harness, is not here. It moved to the repo-root
-[`tests/`](../tests/README.md) alongside the `.jde` files it runs, because it is the
-runner for that suite rather than a piece of GPU-box plumbing — it takes no AWS
-credentials and resolves nothing about an instance. It runs *on* the box, reached through
-`ec2/ssh.py` like anything else.
+`run-tests.py`, the eval harness, is not here. It had moved to a repo-root `tests/`
+alongside the `.jde` files it ran, and that whole suite went with the 3.0 runtime
+removal: dovata no longer runs a model, so there is nothing for an end-to-end eval to
+call. It lives on `main`.
 
 ## Running them
 
@@ -61,7 +59,6 @@ All paths are from the repo root.
 ```sh
 python3 tools/scripts/setup-dev.py                    # project-local venv + aws CLI
 python3 tools/scripts/download-model.py               # small CPU model for local dev
-python3 tools/scripts/configure-provider.py anthropic # prompts for the key
 python3 tools/ec2/start.py                            # bring the GPU box up
 python3 tools/ec2/ssh.py                              # shell on the box
 python3 tools/ec2/stop.py                             # and put it away
@@ -72,7 +69,8 @@ these are one command each is that a two-command stop is a stop you skip.
 
 ## Who else runs this
 
-`.github/workflows/publish-providers.yml` runs two of them: `gen-profile-package.py
---check` to fail a build whose Jade profile package has drifted from its TOML, and
-`check-package-abi.py` to fail one that would publish packages the Jade runtime refuses.
-Everything else here is invoked by a human.
+Nothing, today. `.github/workflows/publish-providers.yml` used to run
+`gen-profile-package.py --check` to fail a build whose Jade profile package had drifted
+from its TOML, and `check-package-abi.py` to fail one that would publish packages the
+Jade runtime refuses. That workflow and `check-package-abi.py` went with the 3.0 runtime
+removal and live on `main`. Everything here is invoked by a human.

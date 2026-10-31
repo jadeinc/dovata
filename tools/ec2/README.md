@@ -1,21 +1,22 @@
 # tools/ec2 — getting work onto the GPU box
 
 Python scripts that drive the remote EC2 GPU instance from your laptop: start it, sync
-the repo up, build, open a shell or a REPL, stop it again. Stdlib only; they shell out to
+the repo up, build, open a shell, stop it again. Stdlib only; they shell out to
 `aws` and `ssh`.
 
 The directory used to be called `ec2-tests`, which was misleading twice over — it holds
-no tests, and the harness that *does* run the tests now lives with them in the repo-root
-[`tests/`](../../tests/README.md). What is left here is plumbing: everything whose job is
-to get code onto a machine that can run it.
+no tests, and the harness that *did* run the tests moved out to live with them. What is
+left here is plumbing: everything whose job is to get code onto a machine that can run
+it.
 
 ## Why it exists
 
-The engine's interesting half does not run on a Mac. The llama.cpp backend is
-Linux-only, the model is 18 GB, and the CUDA paths need a real NVIDIA card — so the
-actual verification of anything in `src/dispatch/` happens on a `g5.xlarge`
-(A10G), not in a local test run. These scripts are the shortest path between an edit here
-and a result there.
+The box used to be where the runtime engine was verified, since its llama.cpp backend
+was Linux-only and its CUDA paths needed a real NVIDIA card. That engine went with the
+3.0 runtime removal and lives on `main`. What still needs the box is quantization: the
+pipeline wants around 150 GB of scratch disk and a CUDA GPU for the imatrix pass, and the
+18 GB upload to S3 is faster in-region. The box is a `g5.xlarge` with an A10G, and these
+scripts are the shortest path between an edit here and a result there.
 
 They also exist to keep the box **stopped**. It costs money by the hour, and a workflow
 where starting and stopping are one command each is a workflow where you actually stop it.
@@ -33,9 +34,6 @@ the individual scripts are a dozen lines.
 - `start.py` — starts the instance and blocks until SSH answers.
 - `stop.py` — stops it.
 - `ssh.py` — an interactive shell, or `ssh.py <cmd...>` to run one command and exit.
-- `repl.py` — opens a PTY and execs `jade repl` on the box, checking first that `jade` is
-  installed and the LLM socket is live. Gives you an interactive Jade session backed by
-  real inference. See the note under Configuration: the socket check is stale.
 - `first-run.py` — one-time provisioning, idempotent. Installs CUDA, LLVM 18, Rust,
   musl-tools, and the NVIDIA driver, then downloads the 30B model to
   `/jade/inference/model.gguf`. Run from your laptop it uploads itself to the box and
@@ -46,16 +44,14 @@ the individual scripts are a dozen lines.
   tripping through your laptop. Supports `--detached` (survives an SSH drop) and
   `--follow`.
 
-## Where the eval harness went
+## Where the eval harness and the REPL went
 
-`run-tests.py` used to live here. It now sits in the repo-root
-[`tests/`](../../tests/README.md) next to the `.jde` files it runs, because it is the
-runner for that suite and not GPU-box plumbing: it takes no AWS credentials, resolves no
-instance, and derives everything from its own path. It still runs *on* the box — you just
-reach it through `ssh.py` like anything else.
+`run-tests.py` used to live here. It moved to a repo-root `tests/` next to the `.jde`
+files it ran, because it was the runner for that suite and not GPU-box plumbing. That
+suite went with the 3.0 runtime removal, since dovata no longer runs a model.
 
-The write-up of how it stages a provider `.so` now that there is no daemon to start moved
-with it.
+`repl.py` went with it. It opened a Jade REPL on the box backed by real inference, and
+there is no inference left here to back it. Both live on `main`.
 
 ## Configuration
 
@@ -85,13 +81,6 @@ The file was called `.env.ec2` until the rename to `.ec2.env`. If you have an ol
 checkout that still dies with `.env.ec2 not found`, that is why; the contents did not
 change, only the name.
 
-### `repl.py` still assumes a daemon
-
-It checks that `~/.jade/llm.sock` is live before it execs `jade repl`. Nothing binds that
-socket any more — the engine is a library a Jade program `dlopen`s in-process — so the
-check can only fail. `run-tests.py` was ported off the same assumption; `repl.py` was not,
-and it needs the same treatment before it works again.
-
 ## Who uses it
 
 You do, by hand. `quantize.py` is the consumer of `tools/scripts/quantize-model.py`.
@@ -102,9 +91,7 @@ Nothing in the build depends on this directory.
 ```sh
 python3 tools/ec2/start.py
 python3 tools/ec2/ssh.py            # poke around, build
-python3 tools/ec2/ssh.py 'cd ~/dovata && python3 tests/run-tests.py --build'
 python3 tools/ec2/stop.py
 ```
 
-`run-tests.py` derives the repo location from its own path, so it works the same whether
-you run it locally, over SSH, or from a different `$HOME` on the box.
+For a model build, `quantize.py` does the start, sync and run for you.

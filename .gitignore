@@ -2,17 +2,18 @@
 target/
 **/*.rs.bk
 
-# C / CUDA build artifacts — src/moe/driver/ is C++ and CUDA,
-# and CMake is pointed at build/.
+# C / CUDA build artifacts. Nothing in the 3.0 tree is C++ or CUDA of our own; these
+# stay so a stray CMake build of llama.cpp or a checkout of `main` stays clean.
 *.o
 build/
 
-# Packaging output. Deleted and recreated by every `cargo run -p packaging` run.
+# Packaging output from 2.x. The packaging xtask is gone in 3.0; this keeps an old
+# dist/ from showing up as untracked.
 dist/
 
 # Local model files.
 # Hardware path: /jade/inference/model.gguf (not in repo)
-# Dev path:      models/model.gguf (loaded via JADE_MODEL_PATH)
+# Dev path:      models/model.gguf
 *.gguf
 
 # OS / editor

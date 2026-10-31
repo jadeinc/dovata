@@ -1290,11 +1290,13 @@ fn main() {
 /// One arm per `bundle-*` feature. Kept explicit rather than derived from
 /// `CARGO_FEATURE_*` env vars so that adding a bundle is a visible edit here, next to
 /// the comment explaining what bundles are.
-fn enabled_bundles(manifest_dir: &Path) -> Vec<bundle_kit::Bundle> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if cfg!(feature = "bundle-moe") {
-        dirs.push(manifest_dir.join("../../moe/driver/bundle"));
-    }
+///
+/// There are no arms today. The one bundle there was, `bundle-moe`, belonged to the
+/// runtime MoE pager, which dovata 3.0 removed along with the rest of the runtime. The
+/// machinery stays so the next capability that needs a llama.cpp change has a place
+/// to put it.
+fn enabled_bundles(_manifest_dir: &Path) -> Vec<bundle_kit::Bundle> {
+    let dirs: Vec<PathBuf> = Vec::new();
 
     dirs.into_iter()
         .map(|d| {

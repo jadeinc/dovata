@@ -1,49 +1,36 @@
-# moe/ — expert offload
+# moe/ — expert ranking
 
-Keep a MoE model's cold experts in host RAM and page them into VRAM as the router asks
-for them, so a 30B-total model runs in the VRAM its ~3B active parameters need.
+Which experts each layer of a MoE model uses most. In 3.0 the planner will use it to
+decide which experts stay resident in VRAM and which stay in host memory.
 
-The design is in [`docs/moe-expert-offload.md`](../../docs/moe-expert-offload.md).
+## What it was, and what is left
 
-## The one capability that reaches into llama.cpp
+Up to 2.x this directory was the whole expert-offload capability: a C++ and CUDA driver
+that paged cold experts into VRAM while the model ran, a patch series that hooked it
+into llama.cpp, and the FFI between them. All of that ran at inference time, so it went
+with the rest of the runtime on the 3.0 branch. It is on `main` under `src/moe/driver/`,
+and the design is in [`docs/moe-expert-offload.md`](../../docs/moe-expert-offload.md).
 
-Which is why all of it is here, in four forms:
+What is left is the part that never ran a model: the loader for the `expert_order`
+asset, in `mod.rs`.
 
-| | |
-|---|---|
-| `mod.rs` | the pure half: loads and validates the per-layer `expert_order` asset |
-| `ffi.rs` | the C ABI declaration, and the one `unsafe` call |
-| [`driver/`](driver/README.md) | the C++ and CUDA that does the paging |
-| [`driver/bundle/`](driver/bundle/README.md) | its patch series against llama.cpp |
+The driver's residency policy, `LayerResidency` in `main:src/moe/driver/include/moe_policy.h`,
+is the one piece of the old driver the planner still wants. It decided which experts
+are pinned and which get cache slots. The 3.0 plan ports it to Rust, together with its
+test cases from `main:src/moe/driver/test/moe_policy_test.cpp`.
 
-Those four used to live in three unrelated places, and the fourth was invisible — the
-llama.cpp seam existed only as commits on a fork, so nothing in this repo recorded that
-the change belonged to this capability, or that it existed at all.
+## Why the asset is validated so strictly
 
-## Why the Rust side parses the JSON
+The `expert_order` asset is a per-layer permutation of expert ids, hottest first, made
+offline from usage counts. `ExpertOrder::from_json` checks the layer count, the expert
+count, that every id is in range, and that each layer is an exact permutation.
 
-The `expert_order` asset is a per-layer permutation of expert ids, hottest first. It is
-validated here — right count, in range, no duplicates, an exact permutation — so the C++
-never touches JSON and the bug-prone check is unit-tested on a laptop.
+A non-permutation leaves one expert unreachable and another placed twice. The model
+would still answer, worse, with nothing logged. Catching it here means it fails in a
+unit test on a laptop, not on a GPU box.
 
-A non-permutation would leave one expert unreachable and another double-mapped. The
-model would still answer, worse, with nothing logged.
+## Who uses it
 
-## Failing loudly is the whole design
-
-A driver that does not engage produces *identical output* and roughly three times the
-VRAM. The first symptom is an OOM somewhere that never mentions experts, which is why
-every layer here refuses rather than falls back:
-
-- `Config::validate` refuses a build without the `moe` capability but with
-  `JADE_MOE_DRIVER` set.
-- A failed asset load, or a non-zero `moe_driver_init`, fails the library load. Both used
-  to log and continue on the stock path.
-- `ffi::init` first calls `moe_driver_seam_present`, so a llama.cpp built without the
-  seam is caught before the driver is initialised into a graph that will never call it.
-
-## Coverage
-
-The pure loader is well tested. Nothing else here is: the driver's policy has its own
-host-only gtest-free binary (see `driver/README.md`), and the paging itself is verified
-by a before-and-after VRAM comparison on the GPU box, because no eval covers it.
+Nothing calls it yet. The planner will, once it exists. The real asset for Qwen3-Coder,
+48 layers by 128 experts, sits in [`../model/profiles/`](../model/profiles/README.md),
+and the tests load it.

@@ -17,9 +17,6 @@
 //! that quietly did not engage looks exactly like one that did, at three times
 //! the VRAM.
 
-#[cfg(target_os = "linux")]
-pub(crate) mod ffi;
-
 use serde_json::Value;
 
 /// The expert ranking for every layer: `order[layer]` is the expert ids of that

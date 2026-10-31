@@ -346,7 +346,9 @@ driver_dir = ".."
             }
         }
 
-        assert!(!found.is_empty(), "no bundle.toml found under src/ — did a bundle move?");
+        // Finding none is valid: dovata 3.0 removed the only bundle, the runtime MoE
+        // pager's. This used to assert at least one, to catch a bundle that moved out of
+        // reach of the walk; with none shipped, that check has nothing to protect.
         for dir in &found {
             let b = load_manifest(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
             assert_eq!(

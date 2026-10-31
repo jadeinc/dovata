@@ -1,43 +1,46 @@
-# llama/ — the substrate every capability links
+# llama/ — the llama.cpp bindings and the bundle machinery
 
-Our in-tree fork of [utilityai/llama-cpp-rs][readme] (at 0.1.150) over a stock upstream
-llama.cpp, plus the machinery that lets a capability patch llama.cpp without anyone
-forking it.
+Our in-tree copy of the sys crate from [utilityai/llama-cpp-rs][readme] (at 0.1.150)
+over a stock upstream llama.cpp, plus the machinery that lets a capability patch
+llama.cpp without anyone forking it.
 
-> The upstream project's own README is preserved below the line. It still describes the
-> two bindings crates accurately, under their old directory names. Read this section
-> first for what is different here.
+> The upstream project's own README is preserved below the line. It describes
+> `llama-cpp-2`, the safe wrapper crate, which is no longer in this tree. The wrapper
+> went with the 3.0 runtime removal and lives on `main`. Read this section first for
+> what is here now.
 
 ## Why this is the one directory under src/ that nests
 
-Every other child of `src/` is a capability — a slice of the engine, flat, named for
-what it does. This one is not a capability. It is what all of them link.
+Every other child of `src/` is a capability — a slice of the library, flat, named for
+what it does. This one is not a capability. It is vendored plumbing.
 
-It has to nest because it is genuinely several things: a sys crate with a build script
-that compiles llama.cpp from source, a safe wrapper over it, an upstream checkout, and
-a build-time library for reading capability bundles. Flattening those into `src/` would
-put four pieces of vendored plumbing next to `decode` and `compose` as if they were
-peers of them, which is exactly the confusion the flat layout exists to avoid.
+It has to nest because it is several things: a sys crate with a build script that
+compiles llama.cpp from source, an upstream checkout, and a build-time library for
+reading capability bundles. Flattening those into `src/` would put three pieces of
+vendored plumbing next to `gguf` and `load` as if they were peers of them, which is
+exactly the confusion the flat layout exists to avoid.
 
-The crate *names* stay upstream's (`llama-cpp-2`, `llama-cpp-sys-2`) even though the
-directories were renamed. They are vendored identity, and renaming them would churn
-every `use llama_cpp_2::` in the engine for nothing.
+The crate *name* stays upstream's (`llama-cpp-sys-2`) even though the directory was
+renamed. It is vendored identity.
 
 ## Why it is vendored
 
-The engine needs to reach below the stock llama.cpp API. The KV-composition engine
-splices precomputed K/V from separate blocks into one attention window; the MoE work
-pages expert weights between host RAM and VRAM during graph build. Neither is expressible
-through the crates.io bindings, so the bindings crates live here where they can be
-edited.
+It was vendored so the runtime engine could reach below the stock llama.cpp API. The
+KV-composition engine spliced precomputed K/V from separate blocks into one attention
+window, and the MoE work paged expert weights between host RAM and VRAM during graph
+build. Neither was expressible through the crates.io bindings. Both went with the 3.0
+runtime removal and live on `main`.
 
-This is also a compatibility contract: the model GGUF is quantized with the *exact*
-llama.cpp commit the engine links, or the engine may refuse to load it.
-`tools/scripts/quantize-model.py` reads that commit from this submodule with
-`git ls-tree`, so moving the submodule moves the quantizer with it and the two cannot
-drift apart.
+What stays is the sys crate. It is kept for quantization, because `llama_model_quantize`
+is already reachable through it, and as the reference for how ggml lays out tensors.
+Nothing links it today. Quantization and the layout planner are coming in 3.0.
 
-## De-forking: `ffi/llama.cpp` is stock upstream now
+The pin is also a compatibility contract: a GGUF quantized at one llama.cpp commit can be
+refused by code built at another. `tools/scripts/quantize-model.py` reads the commit from
+this submodule with `git ls-tree`, so moving the submodule moves the quantizer with it
+and the two cannot drift apart.
+
+## De-forking: `bindings-sys/llama.cpp` is stock upstream now
 
 It used to be `joericks1998/llama.cpp`, a fork four files ahead of `ggml-org/llama.cpp`.
 Those four files were one capability's seam — the MoE expert-offload hook in
@@ -51,23 +54,23 @@ whose contents lived somewhere else.
 
 So the submodule is stock upstream at a pin, and each capability that needs a change to
 llama.cpp ships a **bundle**: a patch series plus cmake defines, in that capability's own
-directory. `ffi/build.rs` stages a copy of the pinned tree, applies the enabled bundles'
-patches to the copy, and points cmake at the copy — the submodule is never written to,
-which keeps it a clean checkout and keeps the release workflow's `rev-parse HEAD` cache
-key meaningful.
+directory. `bindings-sys/build.rs` stages a copy of the pinned tree, applies the enabled
+bundles' patches to the copy, and points cmake at the copy. The submodule is never
+written to, which keeps it a clean checkout.
 
 With no bundle enabled, `prepare_llama_src` returns the submodule path unchanged and
 nothing is staged: a stock build costs exactly what it always did.
 
-The bundle that exists is [`moe-driver/bundle/`](../moe/driver/bundle/README.md). Read it
-before touching llama.cpp — including for why a build that silently *fails* to patch is
-the failure mode all of this is designed around.
+No bundle exists today. The only one was the MoE driver's, and it went with the runtime
+MoE pager in the 3.0 removal. It lives on `main` at `src/moe/driver/bundle/`, and its
+README there is still the best account of why a build that silently fails to patch is
+the failure mode all of this is designed around. Read it before adding a bundle.
 
 Two of the fork's changes did not become bundles:
 
 - The **chat-template stubs** were dropped. They amputated
   `llama_chat_apply_template` and `llama_chat_builtin_templates` to enforce that
-  templating lives in the model profile — but dovata does its own templating in
+  templating lives in the model profile — but dovata did its own templating in
   `src/decode/prompt.rs` and never called either one. The fork was removing
   something unused and then patching the hole it made.
 - The fork's **deletion of upstream's `AGENTS.md`** was 190 of its 221 deleted lines and
@@ -82,25 +85,25 @@ under `OUT_DIR`, that quoted include kept finding the *unpatched* submodule next
 while `-I` pointed at the patched copy, and bindgen saw two of every ggml header.
 
 They now use `<llama.h>` and resolve through the include path, which `build.rs` already
-sets. Same fix as the counted paths in the bundle's CMake hunks, and the same lesson:
-depend on the include path, not on where the file happens to sit in a tree.
+sets. The MoE bundle made the same fix to the counted paths in its CMake hunks, and the
+lesson is the same: depend on the include path, not on where the file happens to sit in
+a tree.
 
 These crates used to be their own cargo workspace with a separate lockfile. They are now
-members of the one root workspace, so there is a single `Cargo.lock` and you can edit them
-in place without path-dependency games.
+members of the one root workspace, so you can edit them in place without
+path-dependency games.
 
 ## What is here
 
 | Directory | What it is |
 |---|---|
 | `bindings-sys/` | `llama-cpp-sys-2` — raw bindgen bindings, the C++ wrapper shims, and `llama.cpp/`, the stock upstream submodule. Building this compiles llama.cpp from source. |
-| `bindings/` | `llama-cpp-2` — the safe(-ish) Rust wrapper over the sys crate: model, context, batch, sampling, tokens, GGUF, grammar. |
 | `bundle-kit/` | **Ours.** Reads the capability bundles for `bindings-sys/build.rs`. A crate rather than more build-script code, so the rules can be tested. See its [README](bundle-kit/README.md). |
 
-The expert-offload driver used to be here as `moe-driver/`. It moved to
-[`src/moe/driver/`](../moe/driver/README.md) with the capability that owns it — it is
-not part of the substrate, it is one capability's native code that happens to be
-compiled into llama.cpp.
+Two neighbours are gone. `bindings/` held `llama-cpp-2`, the safe Rust wrapper over the
+sys crate, and only the runtime engine used it. The expert-offload driver used to be here
+as `moe-driver/` and later moved to `src/moe/driver/` with the capability that owned it.
+Both went with the 3.0 runtime removal and live on `main`.
 
 ### Why the submodule sits inside `bindings-sys/`
 
@@ -113,10 +116,10 @@ it without counting.
 
 ## Who uses it
 
-Only `src/dispatch/` — and only on Linux, where the daemon declares
-`llama-cpp-2` and `llama-cpp-sys-2` as target-specific dependencies. Nothing else in the
-repo links it. `tools/scripts/quantize-model.py` depends on the
-pinned commit rather than on the code.
+Nothing links it today. It used to be linked by `src/dispatch/` on Linux, and that went
+with the 3.0 runtime removal. Both crates stay workspace members, so `cargo test` still
+runs `bundle-kit`'s tests. `tools/scripts/quantize-model.py` depends on the pinned commit
+rather than on the code.
 
 ## Building
 
@@ -127,17 +130,16 @@ Linux operation. It needs the nested submodule checked out, plus cmake and clang
 git submodule update --init --recursive
 ```
 
-On macOS, build the pure crates by name (`-p dovata`, `-p ovata-infer-protocol`, …) and
-leave these alone. Forgetting the submodule gives you a build that fails against an empty
-directory, which is what the `submodules: recursive` line in the release workflow guards
-against.
+On macOS, build `dovata` by name with `-p dovata` and leave these alone. Forgetting the
+submodule gives you a build that fails against an empty directory.
 
 ---
 
 # 🦙 [llama-cpp-rs][readme] &emsp; [![Docs]][docs.rs] [![Latest Version]][crates.io] [![Lisence]][crates.io]
 
 *Upstream README, retained for reference. The clone instructions below refer to the
-upstream repository, not this vendored copy.*
+upstream repository, not this vendored copy, and the `llama-cpp-2` crate it describes is
+not in this tree.*
 
 [Docs]: https://img.shields.io/docsrs/llama-cpp-2.svg
 
