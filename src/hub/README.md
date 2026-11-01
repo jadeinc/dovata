@@ -213,5 +213,5 @@ cargo test -p dovata --lib -- --ignored fetches_a_small_public_gguf
 ## Who uses it
 
 Nothing inside dovata calls `fetch`. Its callers are the Jade compiler and, once it is
-written, the `dovata-plan` command. They hand the parts to `load::Model::from_parts`,
+written, the `dovata plan` command. They hand the parts to `load::Model::from_parts`,
 and they call `quantize::quantize` themselves when the type they want is not offered.

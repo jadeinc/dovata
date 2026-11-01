@@ -20,6 +20,9 @@ pub mod layout;
 /// Places every tensor of a model in memory on one target machine.
 pub mod plan;
 
+/// Reads the current machine's memory capacity, its GPUs and their use.
+pub mod hw;
+
 /// Ranks each MoE layer's experts by how often they are used.
 #[cfg(feature = "moe")]
 pub mod moe;
@@ -27,7 +30,7 @@ pub mod moe;
 #[cfg(test)]
 mod capabilities {
     //! That each feature-gated capability is reachable under default features: the
-    //! `moe` module, and the native and network halves of `quantize` and `hub`.
+    //! `moe` module, and the halves of `quantize`, `hub` and `hw` that reach outside dovata.
     //!
     //! A `#[cfg(feature = "…")]` with a mis-typed feature name compiles fine and
     //! silently drops the module. These name each feature once more, so a typo in
@@ -69,5 +72,12 @@ mod capabilities {
         };
         let err = fetch(&src, Want::Unquantized, &FetchOptions::default()).unwrap_err();
         assert!(matches!(err, FetchError::BadSource(_)), "{err:?}");
+    }
+
+    #[test]
+    #[cfg(all(feature = "hw", any(target_os = "macos", target_os = "linux")))]
+    fn hw_probe_half_is_present() {
+        // With the feature, the machine reads; without it, it is NotBuilt.
+        assert!(crate::hw::machine().is_ok_and(|m| m.memory_bytes > 0));
     }
 }

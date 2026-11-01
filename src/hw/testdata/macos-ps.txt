@@ -1,0 +1,5 @@
+    1  21056 /sbin/launchd
+  339  29584 /usr/libexec/logd
+ 4211 812336 /Applications/Visual Studio Code.app/Contents/MacOS/Code Helper (Renderer)
+ 5120 2411520 /Users/dev/models/qwen-chat
+ 5121  10240 /Users/dev/models/qwen-chat

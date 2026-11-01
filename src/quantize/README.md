@@ -247,7 +247,7 @@ cargo test -p dovata --lib --no-default-features quantize
 ## Who uses it
 
 Nothing inside dovata calls `quantize`, by design. Its callers are the Jade compiler
-and, once it is written, the `dovata-plan` command. The plan is for that command to
+and, once it is written, the `dovata plan` command. The plan is for that command to
 quantize only when a user asks for a type the Hub repo does not offer: it fetches the
 unquantized model with `hub::fetch`, then passes it here with `default_output` as the
 destination. The planned `refback` crate will use `crate::gguf::write` the way

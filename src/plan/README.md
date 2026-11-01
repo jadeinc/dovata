@@ -93,7 +93,7 @@ error. Three things guard against that.
 
 ## Files
 
-- `target.rs` — `Target`, the machine as the Jade compiler or `dovata-plan` describes
+- `target.rs` — `Target`, the machine as the Jade compiler or `dovata plan` describes
   it; dovata does not probe hardware, since the compiler may build on a laptop for a GPU
   box, so a plan is only as right as what it was told. Also `ExecSite` and `RegionKind`.
 - `window.rs` — splitting a mapped file into page-aligned windows no larger than one GPU
@@ -112,5 +112,5 @@ into that list, and puts the ops into the plan, follows once the layout format i
 
 ## Who uses it
 
-The `dovata-plan` CLI and the Jade compiler call it. `refback`, the test-only reference
+The `dovata plan` CLI and the Jade compiler call it. `refback`, the test-only reference
 backend, will set up the regions for real and check every entry against the GGUF bytes.
