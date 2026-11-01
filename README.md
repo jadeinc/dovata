@@ -1,7 +1,7 @@
 # dovata: the JADE OS model memory and inference layout planner
 
-A Rust library the Jade compiler uses at build time. dovata reads a model's GGUF file and
-a layout file describing its compute graph, decides where every tensor lives on the
+A Rust library the Jade compiler uses at build time. dovata reads a model's GGUF file
+and a layout file describing its compute graph, decides where every tensor lives on the
 target machine, and quantizes the weights with existing open-source tools. It hands the
 compiler that placement as data: for each tensor, a memory region and a byte offset into
 it. The compiler generates the GPU code from that. dovata never runs a model.
@@ -21,8 +21,7 @@ protocol and no C ABI.
 
 ## Where the rewrite stands
 
-The runtime has been removed. What is left are the parts of 2.x that were already about
-memory and the model file:
+The runtime has been removed. dovata now has these parts:
 
 | | |
 |---|---|
@@ -31,17 +30,16 @@ memory and the model file:
 | [`src/layout/`](src/layout/README.md) | layouts: each architecture's compute graph as data in ggml's op names, and the binder that resolves one against a model. A built-in layout is one supported architecture. |
 | [`src/hub/`](src/hub/README.md) | getting a model: a local path, or one GGUF from the Hugging Face Hub, all parts of a split one. Never quantizes; the code default is the unquantized file. |
 | [`src/quantize/`](src/quantize/README.md) | quantizing by running llama.cpp's `llama-quantize` program, only when a program such as the Jade compiler asks |
-| [`src/plan/`](src/plan/README.md) | the planner: every tensor's region and offset on one target, checked and hashed |
+| [`src/plan/`](src/plan/README.md) | the planner: binds a layout, gives every tensor a region and offset on one target, checked and hashed, and carries the step's ops for the compiler |
 | [`src/moe/`](src/moe/README.md) | MoE expert ranking: which experts each layer uses most |
 | [`src/chat/`](src/chat/README.md) | `dovata-chat`, the optional tokenizer and chat-template package for Jade users. Its own crate; dovata never depends on it. |
 | [`src/machine/`](src/machine/README.md) | the current machine: its memory, page size, GPUs and their limits, and how memory is used right now |
-| [`src/cli/`](src/cli/README.md) | `dovata`, the command line; today its `machine` commands report the machine's memory and GPUs |
+| [`src/cli/`](src/cli/README.md) | `dovata`, the command line: `dovata machine` reports this machine, and `dovata plan` plans a model, downloading or quantizing it first when asked |
 
-Still to come: the remaining built-in layouts, the step that feeds a bound layout to
-the planner, a `dovata plan` command, and a small reference backend. The reference backend is for
-testing only. It places the tensors for real and runs one simple call over each, to
-prove the weights land where the plan says on split memory: VRAM and host RAM together,
-more than one GPU, or Apple's unified memory.
+Still to come: built-in layouts for more architectures; `refback`, a test-only backend
+that sets up a plan's memory for real and checks every tensor against the model file;
+placing part of a model in host memory when it does not fit in VRAM, which waits on a
+design; the hybrid architectures with recurrent state, such as Qwen3.6; and CI.
 
 ## Why each capability sits where it does
 
@@ -101,6 +99,9 @@ cargo run --bin gguf-inspect -- /path/to/model.gguf
 # This machine's memory and GPUs, and their use
 cargo run --bin dovata -- machine info
 cargo run --bin dovata -- machine watch
+
+# Plan a model for this machine
+cargo run --bin dovata -- plan /path/to/model.gguf
 ```
 
 The repo is pure Rust: nothing builds C or C++ code, so `cargo build --workspace` needs

@@ -9,8 +9,10 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::arena;
+use super::graph::Step;
 use super::target::{ExecSite, RegionKind, Target};
 use super::window;
+use crate::layout::LayoutError;
 use crate::load::{Model, PartIdentity};
 
 /// The version of the plan's JSON form. Bumped on any change the compiler must notice.
@@ -61,6 +63,9 @@ pub enum Role {
         of: String,
         /// Where the view starts, in bytes from the start of `of`.
         byte_offset: u64,
+        /// Byte strides of its four dims, ggml's `nb`. A view may be non-contiguous,
+        /// such as a permuted one.
+        nb: [u64; 4],
     },
 }
 
@@ -189,7 +194,7 @@ pub struct Totals {
 
 /// Purpose: This struct holds the plan: every tensor's region and byte offset on one
 /// target machine.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Plan {
     /// [`SCHEMA_VERSION`].
     pub schema_version: u32,
@@ -207,14 +212,20 @@ pub struct Plan {
     pub totals: Totals,
     /// Things the Jade compiler should know about the plan that are not errors.
     pub notes: Vec<String>,
+    /// The forward step's ops, when the plan was made from a layout by
+    /// [`super::plan`]. `None` from [`place`], which is given tensors without ops.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<Step>,
     /// SHA-256 over everything above, in lowercase hex. Two plans with the same hash
     /// give the compiler the same constants.
     pub table_hash: String,
 }
 
 /// Purpose: This enum lists the errors the planner can return.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PlanError {
+    /// The layout could not be bound to the model.
+    Layout(LayoutError),
     /// The model does not fit in the memory the target has.
     DoesNotFit { need: u64, have: u64, what: &'static str },
     /// On CUDA, the model does not fit in VRAM. Placing part of it in host memory is
@@ -242,6 +253,7 @@ impl fmt::Display for PlanError {
     /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            PlanError::Layout(e) => write!(f, "{e}"),
             PlanError::DoesNotFit { need, have, what } => {
                 write!(f, "the model needs {} of {what} and the target has {}", gib(*need), gib(*have))
             }
@@ -446,7 +458,7 @@ pub fn place(model: &Model, others: &[PlanTensor], target: &Target) -> Result<Pl
         let before = pending.len();
         let mut still = Vec::new();
         for t in pending {
-            let Role::View { of, byte_offset } = &t.role else { unreachable!("filtered to views") };
+            let Role::View { of, byte_offset, .. } = &t.role else { unreachable!("filtered to views") };
             match entries.iter().find(|e| &e.tensor == of) {
                 Some(base) => {
                     let e = AddressEntry {
@@ -529,10 +541,10 @@ pub fn place(model: &Model, others: &[PlanTensor], target: &Target) -> Result<Pl
         entries,
         totals,
         notes,
+        step: None,
         table_hash: String::new(),
     };
-    plan.table_hash = plan.compute_hash();
-    plan.check(model).map_err(PlanError::Invariant)?;
+    plan.seal(model)?;
     Ok(plan)
 }
 
@@ -607,6 +619,17 @@ impl Plan {
     /// Outputs: the JSON text.
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("a plan always serializes")
+    }
+
+    /// Purpose: This function sets the plan's `table_hash` and checks its invariants.
+    ///
+    /// Inputs:
+    /// - `model`: the model the plan was made from.
+    ///
+    /// Outputs: `Ok(())`, or [`PlanError::Invariant`] naming the first broken invariant.
+    pub(super) fn seal(&mut self, model: &Model) -> Result<(), PlanError> {
+        self.table_hash = self.compute_hash();
+        self.check(model).map_err(PlanError::Invariant)
     }
 
     /// Purpose: This function computes the SHA-256 of the plan with its `table_hash`
@@ -686,6 +709,13 @@ impl Plan {
                 }
             }
         }
+        if let Some(step) = &self.step {
+            for op in &step.ops {
+                if let Some(n) = op.inputs.iter().chain(&op.outputs).find(|n| self.entry(n).is_none()) {
+                    return Err(format!("a {} op names {n}, which has no entry", op.op));
+                }
+            }
+        }
         if self.table_hash != self.compute_hash() {
             return Err("table_hash does not match the table".into());
         }
@@ -761,7 +791,7 @@ mod tests {
             t("x0", Role::Scratch, 1024, 1, 2),
             t("x1", Role::Scratch, 1024, 3, 4),
             t("logits", Role::Output, 512, 4, 5),
-            PlanTensor { name: "x0_view".into(), role: Role::View { of: "x0".into(), byte_offset: 256 }, dims: vec![64], ggml_type: 0, bytes: 256, first: 2, last: 2 },
+            PlanTensor { name: "x0_view".into(), role: Role::View { of: "x0".into(), byte_offset: 256, nb: [4, 256, 256, 256] }, dims: vec![64], ggml_type: 0, bytes: 256, first: 2, last: 2 },
         ]
     }
 
@@ -877,7 +907,7 @@ mod tests {
     #[test]
     fn a_view_of_nothing_is_refused() {
         let m = model(1, 64);
-        let bad = [PlanTensor { name: "v".into(), role: Role::View { of: "missing".into(), byte_offset: 0 }, dims: vec![1], ggml_type: 0, bytes: 4, first: 0, last: 0 }];
+        let bad = [PlanTensor { name: "v".into(), role: Role::View { of: "missing".into(), byte_offset: 0, nb: [4, 4, 4, 4] }, dims: vec![1], ggml_type: 0, bytes: 4, first: 0, last: 0 }];
         assert!(matches!(place(&m, &bad, &Target::cpu(1 << 30)).unwrap_err(), PlanError::BadView { .. }));
     }
 }

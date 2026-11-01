@@ -40,6 +40,11 @@ pub enum Error {
 /// Outputs: the windows, and the window index of each tensor, or an error when one tensor
 /// is larger than `limit`.
 pub fn windows(spans: &[Span], limit: u64, page: u64) -> Result<(Vec<Window>, Vec<usize>), Error> {
+    // A Metal no-copy buffer takes a length in whole pages, so the program rounds each
+    // window up to the end of its last page, as ggml's Metal backend does. A limit of
+    // whole pages keeps that rounded length within the GPU's buffer limit.
+    let page_size = page.max(1);
+    let limit = if limit == u64::MAX { limit } else { limit / page_size * page_size };
     let mut order: Vec<usize> = (0..spans.len()).collect();
     order.sort_by_key(|&i| (spans[i].file_offset, i));
 
@@ -99,6 +104,16 @@ mod tests {
             assert!(w.bytes <= 1_000_000);
             assert_eq!(w.file_start % PAGE, 0);
         }
+    }
+
+    #[test]
+    fn a_window_rounded_up_to_whole_pages_stays_within_the_limit() {
+        // A limit that is not whole pages, as a GPU could report.
+        let limit = 10 * PAGE + 123;
+        let spans: Vec<Span> = (0..40).map(|i| span(PAGE + i * 70_001, 70_001)).collect();
+        let (ws, _) = windows(&spans, limit, PAGE).unwrap();
+        assert!(ws.len() > 1);
+        assert!(ws.iter().all(|w| w.bytes.div_ceil(PAGE) * PAGE <= limit), "{ws:?}");
     }
 
     #[test]

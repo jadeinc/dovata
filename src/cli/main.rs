@@ -1,369 +1,82 @@
 //! Author: Joe Ricks
 //! File: src/cli/main.rs
-//! Description: The `dovata` command line, whose `machine` commands report the current
-//! machine's memory and GPUs.
+//! Description: The `dovata` command line: `dovata machine` reports this machine, and
+//! `dovata plan` places a model's tensors in memory.
 
-use std::io::{IsTerminal, Write};
+mod machine;
+mod plan;
+
+use std::io::Write;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
 
-use dovata::machine::{self, Gpu, Machine, Pressure, Usage};
-
+/// The help text for `dovata` with no command.
 const HELP: &str = "\
-usage: dovata machine <command> [options]
-
-Report this machine's memory and GPUs.
+usage: dovata <command> ...
 
 commands:
-  info              memory capacity, page size, and GPU memory limits
-  usage             memory in use right now
-  watch             memory in use, refreshed in place until Ctrl-C
-  target            the memory and limits the planner will use on this machine
-
-options:
-  --json            print JSON instead of text (info, usage, target)
-  --process NAME    also show the memory of running programs named NAME (usage, watch)
-  --every SECONDS   seconds between refreshes, default 1 (watch)
-  --cpu             describe the CPU even when a GPU is present (target)
+  machine   report this machine's memory and GPUs; see `dovata machine help`
+  plan      place a model's tensors in memory for one machine; see `dovata plan --help`
 ";
 
-/// Purpose: This enum lists the commands `dovata` can run, with their options.
-#[derive(Debug, Clone, PartialEq)]
-enum Cmd {
-    /// Print the help text.
-    Help,
-    /// `dovata machine info`.
-    Info { json: bool },
-    /// `dovata machine usage`.
-    Usage { json: bool, process: Option<String> },
-    /// `dovata machine watch`.
-    Watch { every: Duration, process: Option<String> },
-    /// `dovata machine target`.
-    Target { json: bool, cpu: bool },
+/// Purpose: This enum lists the ways a `dovata` command can fail.
+pub(crate) enum Fail {
+    /// The command line is wrong or incomplete. The program exits with 2.
+    Usage(String),
+    /// The command could not do its work. The program exits with 1.
+    Run(String),
 }
 
 /// Purpose: This function runs the `dovata` command line.
 ///
 /// Inputs: none; it reads the command-line arguments.
 ///
-/// Outputs: success, 1 when reading the machine fails, or 2 for a bad command line.
+/// Outputs: success, 1 when a command fails, or 2 for a bad command line.
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let cmd = match parse(&args) {
-        Ok(cmd) => cmd,
-        Err(msg) => {
-            eprintln!("dovata: {msg}\n\n{HELP}");
-            return ExitCode::from(2);
+    let result = match args.first().map(String::as_str) {
+        None | Some("help" | "--help" | "-h") => {
+            out(HELP);
+            Ok(())
         }
+        Some("machine") => machine::main(&args[1..]),
+        Some("plan") => plan::main(&args[1..]),
+        Some(other) => Err(Fail::Usage(format!("unknown command {other:?}\n\n{HELP}"))),
     };
-    match run(cmd) {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(msg) => {
+        Err(Fail::Usage(msg)) => {
+            eprintln!("dovata: {msg}");
+            ExitCode::from(2)
+        }
+        Err(Fail::Run(msg)) => {
             eprintln!("dovata: {msg}");
             ExitCode::FAILURE
         }
     }
 }
 
-/// Purpose: This function reads the command-line arguments into a command.
+/// Purpose: This function writes text to standard output, and stops quietly when the
+/// output has been closed, as when it is piped into `head`.
 ///
 /// Inputs:
-/// - `args`: the arguments after the program name, such as `["machine", "usage", "--json"]`.
+/// - `text`: the text.
 ///
-/// Outputs: the [`Cmd`], or a message saying what is wrong with the arguments.
-fn parse(args: &[String]) -> Result<Cmd, String> {
-    let words: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (command, rest) = match words.as_slice() {
-        [] | ["help" | "--help" | "-h", ..] | ["machine"] | ["machine", "help" | "--help" | "-h", ..] => return Ok(Cmd::Help),
-        ["machine", command, rest @ ..] => (*command, rest),
-        [other, ..] => return Err(format!("unknown command {other:?}; the commands are under `dovata machine`")),
-    };
-    let (mut json, mut cpu, mut process, mut every) = (false, false, None, Duration::from_secs(1));
-    let mut i = 0;
-    while i < rest.len() {
-        let value = |i: usize| rest.get(i + 1).copied().ok_or_else(|| format!("{} needs a value", rest[i]));
-        match rest[i] {
-            "--json" => json = true,
-            "--cpu" => cpu = true,
-            "--process" => {
-                process = Some(value(i)?.to_owned());
-                i += 1;
-            }
-            "--every" => {
-                let v = value(i)?;
-                let secs: f64 = v.parse().map_err(|_| format!("--every takes a number of seconds, not {v:?}"))?;
-                if !(0.1..=3600.0).contains(&secs) {
-                    return Err(format!("--every must be between 0.1 and 3600 seconds, not {v}"));
-                }
-                every = Duration::from_secs_f64(secs);
-                i += 1;
-            }
-            "--help" | "-h" => return Ok(Cmd::Help),
-            other => return Err(format!("unknown option {other:?}")),
-        }
-        i += 1;
-    }
-    let allowed: &[&str] = match command {
-        "info" => &["--json"],
-        "usage" => &["--json", "--process"],
-        "watch" => &["--process", "--every"],
-        "target" => &["--json", "--cpu"],
-        other => return Err(format!("unknown command `machine {other}`")),
-    };
-    if let Some(bad) = rest.iter().find(|w| w.starts_with("--") && !allowed.contains(w)) {
-        return Err(format!("`machine {command}` does not take {bad}"));
-    }
-    Ok(match command {
-        "info" => Cmd::Info { json },
-        "usage" => Cmd::Usage { json, process },
-        "watch" => Cmd::Watch { every, process },
-        _ => Cmd::Target { json, cpu },
-    })
-}
-
-/// Purpose: This function carries out one command and prints its result.
-///
-/// Inputs:
-/// - `cmd`: the command to run.
-///
-/// Outputs: `Ok(())`, or the message to print when reading the machine fails.
-fn run(cmd: Cmd) -> Result<(), String> {
-    match cmd {
-        Cmd::Help => print!("{HELP}"),
-        Cmd::Info { json: as_json } => {
-            let m = machine::current().map_err(|e| e.to_string())?;
-            if as_json {
-                println!("{}", json(&m));
-            } else {
-                print!("{}", info_text(&m));
-            }
-        }
-        Cmd::Usage { json: as_json, process } => {
-            let u = machine::usage(process.as_deref()).map_err(|e| e.to_string())?;
-            if as_json {
-                println!("{}", json(&u));
-            } else {
-                print!("{}", usage_text(&u, process.as_deref()));
-            }
-        }
-        Cmd::Watch { every, process } => watch(every, process.as_deref())?,
-        Cmd::Target { json: as_json, cpu } => {
-            let target = machine::current().map_err(|e| e.to_string())?.target(cpu);
-            if as_json {
-                println!("{}", json(&target));
-            } else {
-                print!("{}", target_block(&target));
-            }
-        }
-    }
-    Ok(())
+/// Outputs: none.
+pub(crate) fn out(text: &str) {
+    // Rust ignores SIGPIPE, so a closed pipe shows up here as a write error. The reader
+    // has all it wanted, so there is nothing to report.
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(text.as_bytes()).and_then(|()| stdout.flush());
 }
 
 /// Purpose: This function writes a value as indented JSON.
 ///
 /// Inputs:
-/// - `v`: a machine, a usage reading or a planner target.
+/// - `v`: a machine, a usage reading, a planner target or a plan.
 ///
 /// Outputs: the JSON text.
-fn json<T: serde::Serialize>(v: &T) -> String {
+pub(crate) fn json<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_string_pretty(v).expect("machine and plan types always serialize")
-}
-
-/// Purpose: This function shows memory in use, refreshed in place, until the program is
-/// stopped or its output is closed.
-///
-/// Inputs:
-/// - `every`: the time between refreshes.
-/// - `process`: a program name whose running copies to show.
-///
-/// Outputs: `Ok(())` once its output is closed, as when piped into `head`, or the message
-/// to print when reading the machine fails.
-fn watch(every: Duration, process: Option<&str>) -> Result<(), String> {
-    let m = machine::current().map_err(|e| e.to_string())?;
-    let terminal = std::io::stdout().is_terminal();
-    let start = Instant::now();
-    loop {
-        let u = machine::usage(process).map_err(|e| e.to_string())?;
-        let text = if terminal {
-            // Move to the top left and clear the screen, so each reading replaces the last.
-            format!(
-                "\x1b[H\x1b[2Jdovata machine watch: {}, every {} s. Press Ctrl-C to stop.\n\n{}",
-                m.chip.as_deref().unwrap_or(&m.os),
-                every.as_secs_f64(),
-                usage_text(&u, process)
-            )
-        } else {
-            format!("{:>8.1}s  {}\n", start.elapsed().as_secs_f64(), usage_line(&u))
-        };
-        let mut out = std::io::stdout().lock();
-        // Rust ignores SIGPIPE, so a closed pipe shows up here as a write error.
-        if out.write_all(text.as_bytes()).and_then(|()| out.flush()).is_err() {
-            return Ok(());
-        }
-        drop(out);
-        std::thread::sleep(every);
-    }
-}
-
-/// Purpose: This function formats a machine's capacity for `dovata machine info`.
-///
-/// Inputs:
-/// - `m`: the machine.
-///
-/// Outputs: the text, one item per line.
-fn info_text(m: &Machine) -> String {
-    let mut s = format!("{}, {}\n", m.chip.as_deref().unwrap_or("unknown processor"), m.os);
-    s += &format!("  memory      {}, {} pages\n", size(m.memory_bytes), size(m.page_bytes));
-    if let Some(metal) = m.metal {
-        s += &format!(
-            "  Metal GPU   {} working set, {} largest buffer, {}\n",
-            size(metal.working_set_bytes),
-            size(metal.max_buffer_bytes),
-            if metal.unified { "unified memory" } else { "its own memory" }
-        );
-    }
-    for g in &m.nvidia {
-        s += &format!("  NVIDIA {:<4} {}, {}\n", g.index, g.name, size(g.memory_total_bytes));
-    }
-    let target = m.target(false);
-    s += &format!("  planner     {}\n", target_text(&target));
-    s
-}
-
-/// Purpose: This function describes the planner's target in one phrase.
-///
-/// Inputs:
-/// - `t`: the target.
-///
-/// Outputs: the phrase, such as `apple target, 17.8 GiB, buffers up to 13.3 GiB`.
-fn target_text(t: &dovata::plan::Target) -> String {
-    use dovata::plan::Target;
-    match t {
-        Target::Apple { unified_bytes, max_buffer_bytes, .. } => {
-            format!("apple target, {}, buffers up to {}", size(*unified_bytes), size(*max_buffer_bytes))
-        }
-        Target::Cuda { vram_bytes } => format!("cuda target, {} of VRAM on GPU 0", size(*vram_bytes)),
-        Target::Cpu { ram_bytes, .. } => format!("cpu target, {}", size(*ram_bytes)),
-    }
-}
-
-/// Purpose: This function formats the planner's target for `dovata machine target`.
-///
-/// Inputs:
-/// - `t`: the target.
-///
-/// Outputs: the text, the kind of target first and then one limit per line.
-fn target_block(t: &dovata::plan::Target) -> String {
-    use dovata::plan::Target;
-    match t {
-        Target::Apple { unified_bytes, max_buffer_bytes, page_bytes } => format!(
-            "apple target\n  memory          {} the plan may use\n  largest buffer  {}\n  page size       {}\n",
-            size(*unified_bytes),
-            size(*max_buffer_bytes),
-            size(*page_bytes)
-        ),
-        Target::Cuda { vram_bytes } => {
-            format!("cuda target, GPU 0\n  memory          {} of VRAM the plan may use\n", size(*vram_bytes))
-        }
-        Target::Cpu { ram_bytes, page_bytes } => format!(
-            "cpu target\n  memory          {} the plan may use\n  page size       {}\n",
-            size(*ram_bytes),
-            size(*page_bytes)
-        ),
-    }
-}
-
-/// Purpose: This function formats current memory use for `dovata machine usage` and `watch`.
-///
-/// Inputs:
-/// - `u`: the reading.
-/// - `process`: the program name that was asked about, if any.
-///
-/// Outputs: the text, one item per line.
-fn usage_text(u: &Usage, process: Option<&str>) -> String {
-    let m = &u.memory;
-    let mut s = format!(
-        "  memory     {} used of {}, {} available\n",
-        size(m.used_bytes),
-        size(m.total_bytes),
-        size(m.available_bytes)
-    );
-    let parts: Vec<String> = [("immovable", m.immovable_bytes), ("compressed", m.compressed_bytes), ("cached", m.cached_bytes)]
-        .into_iter()
-        .filter_map(|(label, v)| Some(format!("{label} {}", size(v?))))
-        .collect();
-    if !parts.is_empty() {
-        s += &format!("             {}\n", parts.join(", "));
-    }
-    s += &format!("  swap       {} used of {}\n", size(m.swap_used_bytes), size(m.swap_total_bytes));
-    if let Some(p) = m.pressure {
-        s += &format!("  pressure   {}\n", pressure_text(p));
-    }
-    for g in &u.nvidia {
-        s += &format!("  NVIDIA {:<3} {}\n", g.index, gpu_text(g));
-    }
-    if let Some(name) = process {
-        if u.processes.is_empty() {
-            s += &format!("  process    no running program named {name}\n");
-        }
-        for p in &u.processes {
-            s += &format!("  process    {} {}, {} resident\n", p.pid, p.command, size(p.rss_bytes));
-        }
-    }
-    s
-}
-
-/// Purpose: This function formats current memory use as one line, for `watch` when its
-/// output goes to a file or a pipe.
-///
-/// Inputs:
-/// - `u`: the reading.
-///
-/// Outputs: the line.
-fn usage_line(u: &Usage) -> String {
-    let m = &u.memory;
-    let mut s = format!("used {} of {}, swap {}", size(m.used_bytes), size(m.total_bytes), size(m.swap_used_bytes));
-    if let Some(p) = m.pressure {
-        s += &format!(", pressure {}", pressure_text(p));
-    }
-    for g in &u.nvidia {
-        s += &format!(" | GPU {} {}", g.index, gpu_text(g));
-    }
-    for p in &u.processes {
-        s += &format!(" | pid {} {}", p.pid, size(p.rss_bytes));
-    }
-    s
-}
-
-/// Purpose: This function formats one NVIDIA GPU's memory, load, temperature and clocks.
-///
-/// Inputs:
-/// - `g`: the GPU.
-///
-/// Outputs: the text; values `nvidia-smi` could not read are left out.
-fn gpu_text(g: &Gpu) -> String {
-    let mut parts = vec![match g.memory_used_bytes {
-        Some(used) => format!("{} used of {}", size(used), size(g.memory_total_bytes)),
-        None => format!("{} total", size(g.memory_total_bytes)),
-    }];
-    parts.extend(g.load_percent.map(|v| format!("load {v}%")));
-    parts.extend(g.temperature_c.map(|v| format!("{v} C")));
-    parts.extend(g.sm_clock_mhz.map(|v| format!("{v} MHz shader")));
-    parts.extend(g.memory_clock_mhz.map(|v| format!("{v} MHz memory")));
-    parts.join(", ")
-}
-
-/// Purpose: This function formats a memory pressure reading.
-///
-/// Inputs:
-/// - `p`: the reading.
-///
-/// Outputs: text such as `55% free` or `1.2% of the last 10 s stalled`.
-fn pressure_text(p: Pressure) -> String {
-    match p {
-        Pressure::FreePercent(v) => format!("{v}% free"),
-        Pressure::StallPercent(v) => format!("{v:.1}% of the last 10 s stalled waiting for memory"),
-    }
 }
 
 /// Purpose: This function formats a byte count in binary units.
@@ -372,7 +85,7 @@ fn pressure_text(p: Pressure) -> String {
 /// - `bytes`: the count.
 ///
 /// Outputs: text such as `24.0 GiB`, `512.0 MiB` or `16 KiB`.
-fn size(bytes: u64) -> String {
+pub(crate) fn size(bytes: u64) -> String {
     const KIB: u64 = 1 << 10;
     const MIB: u64 = 1 << 20;
     const GIB: u64 = 1 << 30;
@@ -384,38 +97,55 @@ fn size(bytes: u64) -> String {
     }
 }
 
+/// Purpose: This function reads a byte count written with a binary unit, such as `64G`.
+///
+/// Inputs:
+/// - `s`: the text: a number, then optionally `K`, `M`, `G` or `T`, each followed by
+///   nothing, `B` or `iB`. Every unit is a power of 1024, so `1G` is 1,073,741,824
+///   bytes.
+///
+/// Outputs: the byte count, or a message saying what is wrong with `s`.
+pub(crate) fn parse_size(s: &str) -> Result<u64, String> {
+    let bad = || format!("{s:?} is not a size; write one such as 64G, 512M or 16K");
+    let t = s.trim();
+    let digits = t.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(t.len());
+    let (number, unit) = t.split_at(digits);
+    let shift = match unit.to_ascii_uppercase().as_str() {
+        "" | "B" => 0,
+        "K" | "KB" | "KIB" => 10,
+        "M" | "MB" | "MIB" => 20,
+        "G" | "GB" | "GIB" => 30,
+        "T" | "TB" | "TIB" => 40,
+        _ => return Err(bad()),
+    };
+    let value: f64 = number.parse().map_err(|_| bad())?;
+    let bytes = value * (1u64 << shift) as f64;
+    if !bytes.is_finite() || bytes < 1.0 || bytes > u64::MAX as f64 || bytes.fract() != 0.0 {
+        return Err(bad());
+    }
+    Ok(bytes as u64)
+}
+
+/// Purpose: This function describes the planner's target in one phrase.
+///
+/// Inputs:
+/// - `t`: the target.
+///
+/// Outputs: the phrase, such as `apple target, 17.8 GiB, buffers up to 13.3 GiB`.
+pub(crate) fn target_text(t: &dovata::plan::Target) -> String {
+    use dovata::plan::Target;
+    match t {
+        Target::Apple { unified_bytes, max_buffer_bytes, .. } => {
+            format!("apple target, {}, buffers up to {}", size(*unified_bytes), size(*max_buffer_bytes))
+        }
+        Target::Cuda { vram_bytes } => format!("cuda target, {} of VRAM on GPU 0", size(*vram_bytes)),
+        Target::Cpu { ram_bytes, .. } => format!("cpu target, {}", size(*ram_bytes)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Purpose: This function reads a command line written as one string.
-    ///
-    /// Inputs:
-    /// - `line`: the arguments, separated by spaces.
-    ///
-    /// Outputs: what [`parse`] returns for them.
-    fn p(line: &str) -> Result<Cmd, String> {
-        parse(&line.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
-    }
-
-    #[test]
-    fn commands_and_options_parse() {
-        assert_eq!(p(""), Ok(Cmd::Help));
-        assert_eq!(p("machine"), Ok(Cmd::Help));
-        assert_eq!(p("machine info"), Ok(Cmd::Info { json: false }));
-        assert_eq!(p("machine info --json"), Ok(Cmd::Info { json: true }));
-        assert_eq!(p("machine usage --process qwen-chat"), Ok(Cmd::Usage { json: false, process: Some("qwen-chat".into()) }));
-        assert_eq!(p("machine watch --every 0.5"), Ok(Cmd::Watch { every: Duration::from_millis(500), process: None }));
-        assert_eq!(p("machine target --cpu"), Ok(Cmd::Target { json: false, cpu: true }));
-        assert_eq!(p("machine target --json"), Ok(Cmd::Target { json: true, cpu: false }));
-    }
-
-    #[test]
-    fn bad_command_lines_are_refused() {
-        for bad in ["plan", "machine nope", "machine info --cpu", "machine usage --process", "machine watch --every soon", "machine watch --every 0", "machine info --verbose"] {
-            assert!(p(bad).is_err(), "{bad:?} should be refused");
-        }
-    }
 
     #[test]
     fn sizes_use_binary_units() {
@@ -426,28 +156,14 @@ mod tests {
     }
 
     #[test]
-    fn target_text_shows_units() {
-        let apple = dovata::plan::Target::Apple { unified_bytes: 19_069_665_280, max_buffer_bytes: 14_302_248_960, page_bytes: 16384 };
-        assert_eq!(
-            target_block(&apple),
-            "apple target\n  memory          17.8 GiB the plan may use\n  largest buffer  13.3 GiB\n  page size       16 KiB\n"
-        );
-        let cuda = dovata::plan::Target::Cuda { vram_bytes: 80 << 30 };
-        assert!(target_block(&cuda).contains("80.0 GiB of VRAM"));
-    }
-
-    #[test]
-    fn usage_text_shows_every_reading() {
-        let u = Usage {
-            memory: machine::parse_vm_stat(include_str!("../machine/testdata/macos-vm_stat.txt"), 24 << 30).unwrap(),
-            nvidia: machine::parse_nvidia_smi(include_str!("../machine/testdata/nvidia-smi.csv")).unwrap(),
-            processes: machine::parse_ps(include_str!("../machine/testdata/macos-ps.txt"), "qwen-chat"),
-        };
-        let text = usage_text(&u, Some("qwen-chat"));
-        assert!(text.contains("used of 24.0 GiB") && text.contains("immovable") && text.contains("compressed"), "{text}");
-        assert!(text.contains("NVIDIA 0") && text.contains("load 97%, 71 C"), "{text}");
-        assert!(text.contains("process    5120 /Users/dev/models/qwen-chat, 2.3 GiB resident"), "{text}");
-        let none = Usage { processes: vec![], ..u };
-        assert!(usage_text(&none, Some("absent")).contains("no running program named absent"));
+    fn sizes_parse_with_binary_units() {
+        assert_eq!(parse_size("64G"), Ok(64 << 30));
+        assert_eq!(parse_size("64GiB"), Ok(64 << 30));
+        assert_eq!(parse_size("16k"), Ok(16384));
+        assert_eq!(parse_size("1.5G"), Ok(3 << 29));
+        assert_eq!(parse_size("4096"), Ok(4096));
+        for bad in ["", "G", "64X", "-1G", "0", "0.3"] {
+            assert!(parse_size(bad).is_err(), "{bad:?} should be refused");
+        }
     }
 }

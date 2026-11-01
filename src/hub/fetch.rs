@@ -8,28 +8,32 @@ use std::path::{Path, PathBuf};
 use hf_hub::api::sync::{ApiBuilder, ApiError};
 use hf_hub::{Cache, Repo, RepoType};
 
-use super::{fetched, is_repo_id, select, select_file, FetchError, FetchOptions, Fetched, Want};
+use super::{fetched, is_repo_id, levels, select, select_file, FetchError, FetchOptions, Fetched, Level, Want};
 use crate::load::Model;
 
-/// Purpose: This function downloads one model of a Hub repo.
+/// Purpose: This struct holds a Hub client for one repo, its cache directory, and the
+/// repo's file list at one commit.
+struct Listing {
+    /// The hf-hub client.
+    api: hf_hub::api::sync::Api,
+    /// The hf-hub cache directory.
+    cache: PathBuf,
+    /// The commit the revision resolved to.
+    sha: String,
+    /// Every file path in the repo at that commit.
+    names: Vec<String>,
+}
+
+/// Purpose: This function connects to the Hub and lists a repo's files at one revision.
 ///
 /// Inputs:
 /// - `endpoint`: the Hub server, taken from the link.
 /// - `repo`: the repo id.
-/// - `revision`: the branch, tag or commit, if any.
-/// - `file`: the named file or directory, if any.
-/// - `want`: which model to take when no file is named.
+/// - `revision`: the branch, tag or commit, if any; `main` when `None`.
 /// - `opts`: the cache directory and the access token.
 ///
-/// Outputs: the model's file paths and commit, or an error.
-pub(super) fn from_hub(
-    endpoint: &str,
-    repo: &str,
-    revision: Option<&str>,
-    file: Option<&str>,
-    want: Want,
-    opts: &FetchOptions,
-) -> Result<Fetched, FetchError> {
+/// Outputs: the [`Listing`], or an error.
+fn list(endpoint: &str, repo: &str, revision: Option<&str>, opts: &FetchOptions) -> Result<Listing, FetchError> {
     if !is_repo_id(repo) {
         return Err(FetchError::BadSource(format!("{repo:?} is not a Hub repo id; one looks like org/repo")));
     }
@@ -51,15 +55,51 @@ pub(super) fn from_hub(
         .repo(Repo::with_revision(repo.to_owned(), RepoType::Model, rev.to_owned()))
         .info()
         .map_err(|e| hub_error(repo, &format!("cannot list revision {rev}"), &e))?;
-    let names: Vec<String> = info.siblings.into_iter().map(|s| s.rfilename).collect();
+    let names = info.siblings.into_iter().map(|s| s.rfilename).collect();
+    Ok(Listing { api, cache, sha: info.sha, names })
+}
+
+/// Purpose: This function lists the models a Hub repo offers, without downloading any.
+///
+/// Inputs:
+/// - `endpoint`: the Hub server, taken from the link.
+/// - `repo`: the repo id.
+/// - `revision`: the branch, tag or commit, if any.
+/// - `opts`: the cache directory and the access token.
+///
+/// Outputs: one [`Level`] per model, most precise first, or an error.
+pub(super) fn offered(endpoint: &str, repo: &str, revision: Option<&str>, opts: &FetchOptions) -> Result<Vec<Level>, FetchError> {
+    Ok(levels(&list(endpoint, repo, revision, opts)?.names))
+}
+
+/// Purpose: This function downloads one model of a Hub repo.
+///
+/// Inputs:
+/// - `endpoint`: the Hub server, taken from the link.
+/// - `repo`: the repo id.
+/// - `revision`: the branch, tag or commit, if any.
+/// - `file`: the named file or directory, if any.
+/// - `want`: which model to take when no file is named.
+/// - `opts`: the cache directory and the access token.
+///
+/// Outputs: the model's file paths and commit, or an error.
+pub(super) fn from_hub(
+    endpoint: &str,
+    repo: &str,
+    revision: Option<&str>,
+    file: Option<&str>,
+    want: Want,
+    opts: &FetchOptions,
+) -> Result<Fetched, FetchError> {
+    let Listing { api, cache, sha, names } = list(endpoint, repo, revision, opts)?;
     let level = match file {
         Some(f) => select_file(&names, f),
         None => select(&names, want),
     }
     .map_err(|error| FetchError::Select { repo: repo.to_owned(), error })?;
 
-    let pinned = api.repo(Repo::with_revision(repo.to_owned(), RepoType::Model, info.sha.clone()));
-    let snapshot = cache.join(Repo::model(repo.to_owned()).folder_name()).join("snapshots").join(&info.sha);
+    let pinned = api.repo(Repo::with_revision(repo.to_owned(), RepoType::Model, sha.clone()));
+    let snapshot = cache.join(Repo::model(repo.to_owned()).folder_name()).join("snapshots").join(&sha);
     let mut parts = Vec::with_capacity(level.files.len());
     for f in &level.files {
         let cached = snapshot.join(f);
@@ -77,7 +117,7 @@ pub(super) fn from_hub(
             return Err(FetchError::Mismatch { file: level.files[0].clone(), named, declared });
         }
     }
-    Ok(fetched(&model, Some(repo.to_owned()), Some(info.sha)))
+    Ok(fetched(&model, Some(repo.to_owned()), Some(sha)))
 }
 
 /// Purpose: This function reads an environment variable, treating an empty one as unset.

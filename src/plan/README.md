@@ -1,10 +1,21 @@
 # plan/ — where every tensor lives
 
-The planner takes a model, the tensors a layout says one step needs, and a target
+The planner takes a model, its layout, the size of one forward step, and a target
 machine, and gives back an address table: every tensor's region and byte offset. The
 Jade compiler bakes those offsets into the program as constants. At startup the program
 sets up each region once, then addresses every tensor as its region's base plus a
 constant.
+
+```rust
+let model = dovata::load::Model::open(path)?;
+let layout = dovata::layout::for_model(&model, None)?;
+let step = BindOptions { n_ctx: 32768, n_tokens: 512, n_outputs: 1, kv_k: KvType::Q8_0, kv_v: KvType::Q8_0 };
+let plan = dovata::plan::plan(&model, &layout, &step, &Target::apple(unified, max_buffer))?;
+```
+
+The plan also carries the step itself: every op in run order, its inputs and outputs
+named as in the address table, and its parameters. The compiler generates one kernel per
+op from that list and finds each tensor it names in the table.
 
 ## Why region and offset
 
@@ -34,7 +45,10 @@ makes its windows as fixed-stride views that overlap by the largest tensor. `win
 packs greedily instead: a window grows tensor by tensor until the next one would not
 fit, and the next window starts at the page holding that tensor. Every tensor gets
 exactly one window, and windows overlap by at most a page. Each window starts on a page
-boundary, so the program can hand `base + file_start` to Metal without copying.
+boundary, so the program can hand `base + file_start` to Metal without copying. Metal
+also wants the length in whole pages, so the program rounds each window up to the end
+of its last page, and the planner keeps windows within the buffer limit rounded down to
+whole pages, so the rounded length still fits.
 
 On CUDA everything is copied into VRAM once at startup. A model that does not fit is
 refused. Placing part of it in host memory, including paging MoE experts, is deferred
@@ -71,9 +85,17 @@ covers every vector width a kernel loads. Host memory uses 64 bytes, one cache
 line. A mapped window has no alignment of its own; its entries sit at the GGUF's file
 offsets, which are aligned to the file's `general.alignment`.
 
-`place` takes the layout's non-weight tensors as a list, each with the range of ops it
-is alive for. The weights come from the model itself, so every GGUF tensor gets a weight
-entry whether or not the layout names it.
+`plan` binds the layout, then works out each tensor's lifetime from op order: a tensor
+is alive from the first op that touches its memory to the last. Reading or writing a
+view counts as touching the tensor it views. Inputs are alive from the start of the
+step, since the program writes them before it runs, and outputs to the end of it, since
+the program reads them after. `place` then takes the non-weight tensors as a list, each
+with its range of ops. The weights come from the model itself, so every GGUF tensor
+gets a weight entry whether or not the layout names it.
+
+A view's entry carries its byte strides, ggml's `nb`, besides the tensor it views and
+its byte offset. Views such as a permuted K are not contiguous, and a kernel needs the
+strides to read one.
 
 ## Trusting the table
 
@@ -102,15 +124,19 @@ error. Three things guard against that.
   for it. Deterministic: ties break by first use, then by name.
 - `address.rs` — `place`, which builds the regions and entries for a target and checks
   the result, and the `Plan` types that serialize to the JSON the compiler reads.
+- `graph.rs` — `plan` and `plan_graph`, which turn a bound layout into the list `place`
+  takes, with each tensor's lifetime, and put the step's ops into the plan as `Step`.
 - `mod.rs` — re-exports.
 
-## Status
+`a_real_header_plans_on_every_target` in `graph.rs` plans a real model when
+`DOVATA_TEST_HEADER` names a GGUF file or its first tens of megabytes:
 
-`place` takes a neutral list of non-weight tensors. The step that turns a bound layout
-into that list, and puts the ops into the plan, follows once the layout format in
-[`src/layout/`](../layout/README.md) is reviewed.
+```sh
+DOVATA_TEST_HEADER=model.head.gguf cargo test -p dovata --lib a_real_header -- --nocapture
+```
 
 ## Who uses it
 
-The `dovata plan` CLI and the Jade compiler call it. `refback`, the test-only reference
-backend, will set up the regions for real and check every entry against the GGUF bytes.
+The `dovata plan` command and the Jade compiler call it. `refback`, the test-only
+reference backend in [`src/refback/`](../refback/README.md), sets up the regions for
+real and checks every entry against the GGUF bytes.

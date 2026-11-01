@@ -40,8 +40,9 @@ names the feature.
 
 - `mod.rs` holds everything but the download. `ModelSource` and its `parse`, `Want`,
   `Level`, `levels` to group a file list into models, `select` and `select_file` to
-  choose one, the `FetchOptions`, `Fetched` and error types, and `fetch` itself, which
-  handles a local path and hands a Hub source to `fetch.rs`.
+  choose one, the `FetchOptions`, `Fetched` and error types, `fetch` itself, which
+  handles a local path and hands a Hub source to `fetch.rs`, and `offered`, which lists
+  a repo's models without downloading any, so a caller can ask which one to fetch.
 - `fetch.rs` is the network edge, built only with the `hub` feature. It lists the repo
   with hf-hub 0.4.3's blocking client over `ureq`, downloads every part of the chosen
   model at one commit, and checks the result. It also works out the cache directory and
@@ -212,6 +213,7 @@ cargo test -p dovata --lib -- --ignored fetches_a_small_public_gguf
 
 ## Who uses it
 
-Nothing inside dovata calls `fetch`. Its callers are the Jade compiler and, once it is
-written, the `dovata plan` command. They hand the parts to `load::Model::from_parts`,
+Nothing inside dovata's library calls `fetch`. Its callers are the Jade compiler and
+the `dovata plan` command, which calls `offered` first and stops to ask for `--quant`
+when a repo offers several models. They hand the parts to `load::Model::from_parts`,
 and they call `quantize::quantize` themselves when the type they want is not offered.

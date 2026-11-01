@@ -667,6 +667,31 @@ pub fn fetch(source: &ModelSource, want: Want, opts: &FetchOptions) -> Result<Fe
     }
 }
 
+/// Purpose: This function lists the models a Hub repo offers, without downloading any.
+///
+/// Inputs:
+/// - `source`: a Hub repo, with no file named.
+/// - `opts`: the cache directory and the access token.
+///
+/// Outputs: one [`Level`] per model, most precise first, or an error. A local path or a
+/// link that names a file is one model, so it is refused as [`FetchError::BadSource`].
+pub fn offered(source: &ModelSource, opts: &FetchOptions) -> Result<Vec<Level>, FetchError> {
+    match source {
+        ModelSource::Hub { endpoint, repo, revision, file: None } => {
+            #[cfg(feature = "hub")]
+            {
+                fetch::offered(endpoint, repo, revision.as_deref(), opts)
+            }
+            #[cfg(not(feature = "hub"))]
+            {
+                let _ = (endpoint, repo, revision, opts);
+                Err(FetchError::NotBuilt { source: source.to_string() })
+            }
+        }
+        _ => Err(FetchError::BadSource(format!("{source} names one model; only a Hub repo offers several"))),
+    }
+}
+
 /// Purpose: This function gets a local model file and the other parts of a split model.
 ///
 /// Inputs:
