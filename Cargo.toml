@@ -85,6 +85,10 @@ members = [
     # `dovata-chat`: the optional tokenizer and chat-template package for Jade users.
     # Its own crate so dovata never depends on a tokenizer; see its README.
     "src/chat",
+    # `refback`: the test-only reference backend. It sets up a plan's memory for real
+    # and checks every tensor against the model file, so it needs unsafe code and
+    # Apple's Metal framework, neither of which belongs in dovata. Never published.
+    "src/refback",
 ]
 resolver = "2"
 

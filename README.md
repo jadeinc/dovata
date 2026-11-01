@@ -35,11 +35,11 @@ The runtime has been removed. dovata now has these parts:
 | [`src/chat/`](src/chat/README.md) | `dovata-chat`, the optional tokenizer and chat-template package for Jade users. Its own crate; dovata never depends on it. |
 | [`src/machine/`](src/machine/README.md) | the current machine: its memory, page size, GPUs and their limits, and how memory is used right now |
 | [`src/cli/`](src/cli/README.md) | `dovata`, the command line: `dovata machine` reports this machine, and `dovata plan` plans a model, downloading or quantizing it first when asked |
+| [`src/refback/`](src/refback/README.md) | `refback`, the test-only reference backend: sets up a plan's memory for real and checks every tensor against the model file. Its own crate, never published. |
 
-Still to come: built-in layouts for more architectures; `refback`, a test-only backend
-that sets up a plan's memory for real and checks every tensor against the model file;
-placing part of a model in host memory when it does not fit in VRAM, which waits on a
-design; the hybrid architectures with recurrent state, such as Qwen3.6; and CI.
+Still to come: CUDA in `refback`, which needs an NVIDIA machine to test on; placing
+part of a model in host memory when it does not fit in VRAM, which waits on a design;
+the hybrid architectures with recurrent state, such as Qwen3.6; and CI.
 
 ## Why each capability sits where it does
 
@@ -76,6 +76,9 @@ invites one question about each directory: why is it here, and not inside a neig
   feature.
 - `cli/` is the one place that prints for a person. The library returns values, and the
   `dovata` program formats them.
+- `refback/` is a separate crate because it is the one part that runs real memory: it
+  maps files, allocates buffers and talks to Metal, which takes unsafe code and Apple's
+  framework. Neither belongs in a library the compiler links.
 
 Outside `src/`:
 
@@ -102,6 +105,10 @@ cargo run --bin dovata -- machine watch
 
 # Plan a model for this machine
 cargo run --bin dovata -- plan /path/to/model.gguf
+
+# Check a plan on real memory: the CPU, then Metal on a Mac
+cargo test -p refback
+cargo test -p refback --features metal
 ```
 
 The repo is pure Rust: nothing builds C or C++ code, so `cargo build --workspace` needs
