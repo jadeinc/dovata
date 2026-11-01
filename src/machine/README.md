@@ -1,18 +1,18 @@
-# hw: the current machine's memory and GPUs
+# machine: the current machine's memory and GPUs
 
 This capability reads the machine dovata is running on: how much memory it has, its page
 size, its GPUs and their memory limits, and how all of that memory is being used right
-now. `hw::machine()` returns the capacity as a `Machine`, and `hw::usage(process)`
-returns a snapshot of use as a `Usage`. The `dovata hw` commands in
-[`src/cli/`](../cli/README.md) print both.
+now. `machine::current()` returns the capacity as a `Machine`, and
+`machine::usage(process)` returns a snapshot of use as a `Usage`. The `dovata machine`
+commands in [`src/cli/`](../cli/README.md) print both.
 
 ## Why it exists
 
 Most questions about running a model are memory questions: whether the weights fit,
 whether the KV cache fits at a given context length, and whether the system starts
-compressing or swapping while a program runs. `hw` answers them for the machine at hand.
-It replaces `jade-gpu-mon`, a 2.x terminal dashboard that only worked on NVIDIA through
-NVML and lived outside the workspace.
+compressing or swapping while a program runs. `machine` answers them for the machine at
+hand. It replaces `jade-gpu-mon`, a 2.x terminal dashboard that only worked on NVIDIA
+through NVML and lived outside the workspace.
 
 It is separate from the planner on purpose. The planner never reads hardware, because
 the Jade compiler may build on a laptop for a different machine; it takes a
@@ -44,11 +44,12 @@ location between distributions, so they are found on `PATH`.
 
 ### What "used" means
 
-On macOS, used memory is app memory plus wired plus compressed. App memory is
-`vm_stat`'s anonymous pages less its purgeable pages. File-backed pages are reported
-separately as cached, since the system drops them when it needs room. On Linux, used is
-`MemTotal` less `MemAvailable`, the kernel's own estimate of what a new program could
-get. On both, available is total less used.
+On macOS, used memory is app memory plus immovable plus compressed. App memory is
+`vm_stat`'s anonymous pages less its purgeable pages. Immovable memory is what `vm_stat`
+calls wired: memory the system cannot move, compress or swap out. File-backed pages are
+reported separately as cached, since the system drops them when it needs room. On Linux,
+used is `MemTotal` less `MemAvailable`, the kernel's own estimate of what a new program
+could get. On both, available is total less used.
 
 ### Pressure
 
@@ -80,18 +81,19 @@ there but cannot be read.
 ### What it does not show
 
 An Apple GPU's load, clocks and temperature come only from `powermetrics`, which needs
-`sudo`, so `hw` does not report them. A Mac reports no NVIDIA GPU, and a Mac Mini cannot
-check the NVIDIA path on real hardware; its parsing is tested on sample output instead.
+`sudo`, so `machine` does not report them. A Mac reports no NVIDIA GPU, and a Mac Mini
+cannot check the NVIDIA path on real hardware; its parsing is tested on sample output
+instead.
 
 ## Files
 
 - `mod.rs` holds the types, `Machine`, `MetalLimits`, `Gpu`, `Usage`, `MemoryUse`,
-  `Pressure`, `ProcessUse` and `HwError`, and the pure parsers, one per tool. They build
-  and test on any machine. With the `hw` feature off, it also holds the `machine()` and
-  `usage()` that return `NotBuilt`.
-- `probe.rs` is the edge, built only with the `hw` feature. It runs the tools for the
-  current system and passes their output to the parsers.
-- `metal.rs` reads Metal's limits. It is built only on macOS with the `hw` feature.
+  `Pressure`, `ProcessUse` and `MachineError`, and the pure parsers, one per tool. They
+  build and test on any machine. With the `machine` feature off, it also holds the
+  `current()` and `usage()` that return `NotBuilt`.
+- `probe.rs` is the edge, built only with the `machine` feature. It runs the tools for
+  the current system and passes their output to the parsers.
+- `metal.rs` reads Metal's limits. It is built only on macOS with the `machine` feature.
 - `testdata/` holds the tool output the parser tests read. The macOS files were saved
   from a Mac Mini with an M4 on 2026-10-31. `macos-ps.txt` is in the real `ps` format
   with made-up processes. The Linux and `nvidia-smi` files are written by hand in the
@@ -101,13 +103,13 @@ check the NVIDIA path on real hardware; its parsing is tested on sample output i
 
 ```sh
 # The parsers, and on macOS or Linux two tests that read this machine for real
-cargo test -p dovata --lib hw
+cargo test -p dovata --lib machine
 
-# Without the feature: machine() and usage() return NotBuilt
-cargo test -p dovata --lib --no-default-features hw
+# Without the feature: current() and usage() return NotBuilt
+cargo test -p dovata --lib --no-default-features machine
 ```
 
 ## Who uses it
 
-The `dovata hw` commands. The Jade compiler can call `hw::machine()` and
+The `dovata machine` commands. The Jade compiler can call `machine::current()` and
 `Machine::target` to plan for the machine it is building on.

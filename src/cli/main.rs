@@ -1,16 +1,16 @@
 //! Author: Joe Ricks
 //! File: src/cli/main.rs
-//! Description: The `dovata` command line, whose `hw` commands report the current
+//! Description: The `dovata` command line, whose `machine` commands report the current
 //! machine's memory and GPUs.
 
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use dovata::hw::{self, Gpu, Machine, Pressure, Usage};
+use dovata::machine::{self, Gpu, Machine, Pressure, Usage};
 
 const HELP: &str = "\
-usage: dovata hw <command> [options]
+usage: dovata machine <command> [options]
 
 Report this machine's memory and GPUs.
 
@@ -18,10 +18,10 @@ commands:
   info              memory capacity, page size, and GPU memory limits
   usage             memory in use right now
   watch             memory in use, refreshed in place until Ctrl-C
-  target            this machine as the planner's target, as JSON
+  target            the memory and limits the planner will use on this machine
 
 options:
-  --json            print JSON instead of text (info, usage)
+  --json            print JSON instead of text (info, usage, target)
   --process NAME    also show the memory of running programs named NAME (usage, watch)
   --every SECONDS   seconds between refreshes, default 1 (watch)
   --cpu             describe the CPU even when a GPU is present (target)
@@ -32,14 +32,14 @@ options:
 enum Cmd {
     /// Print the help text.
     Help,
-    /// `dovata hw info`.
+    /// `dovata machine info`.
     Info { json: bool },
-    /// `dovata hw usage`.
+    /// `dovata machine usage`.
     Usage { json: bool, process: Option<String> },
-    /// `dovata hw watch`.
+    /// `dovata machine watch`.
     Watch { every: Duration, process: Option<String> },
-    /// `dovata hw target`.
-    Target { cpu: bool },
+    /// `dovata machine target`.
+    Target { json: bool, cpu: bool },
 }
 
 /// Purpose: This function runs the `dovata` command line.
@@ -68,15 +68,15 @@ fn main() -> ExitCode {
 /// Purpose: This function reads the command-line arguments into a command.
 ///
 /// Inputs:
-/// - `args`: the arguments after the program name, such as `["hw", "usage", "--json"]`.
+/// - `args`: the arguments after the program name, such as `["machine", "usage", "--json"]`.
 ///
 /// Outputs: the [`Cmd`], or a message saying what is wrong with the arguments.
 fn parse(args: &[String]) -> Result<Cmd, String> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let (command, rest) = match words.as_slice() {
-        [] | ["help" | "--help" | "-h", ..] | ["hw"] | ["hw", "help" | "--help" | "-h", ..] => return Ok(Cmd::Help),
-        ["hw", command, rest @ ..] => (*command, rest),
-        [other, ..] => return Err(format!("unknown command {other:?}; the commands are under `dovata hw`")),
+        [] | ["help" | "--help" | "-h", ..] | ["machine"] | ["machine", "help" | "--help" | "-h", ..] => return Ok(Cmd::Help),
+        ["machine", command, rest @ ..] => (*command, rest),
+        [other, ..] => return Err(format!("unknown command {other:?}; the commands are under `dovata machine`")),
     };
     let (mut json, mut cpu, mut process, mut every) = (false, false, None, Duration::from_secs(1));
     let mut i = 0;
@@ -107,17 +107,17 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
         "info" => &["--json"],
         "usage" => &["--json", "--process"],
         "watch" => &["--process", "--every"],
-        "target" => &["--cpu"],
-        other => return Err(format!("unknown command `hw {other}`")),
+        "target" => &["--json", "--cpu"],
+        other => return Err(format!("unknown command `machine {other}`")),
     };
     if let Some(bad) = rest.iter().find(|w| w.starts_with("--") && !allowed.contains(w)) {
-        return Err(format!("`hw {command}` does not take {bad}"));
+        return Err(format!("`machine {command}` does not take {bad}"));
     }
     Ok(match command {
         "info" => Cmd::Info { json },
         "usage" => Cmd::Usage { json, process },
         "watch" => Cmd::Watch { every, process },
-        _ => Cmd::Target { cpu },
+        _ => Cmd::Target { json, cpu },
     })
 }
 
@@ -131,7 +131,7 @@ fn run(cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::Help => print!("{HELP}"),
         Cmd::Info { json: as_json } => {
-            let m = hw::machine().map_err(|e| e.to_string())?;
+            let m = machine::current().map_err(|e| e.to_string())?;
             if as_json {
                 println!("{}", json(&m));
             } else {
@@ -139,7 +139,7 @@ fn run(cmd: Cmd) -> Result<(), String> {
             }
         }
         Cmd::Usage { json: as_json, process } => {
-            let u = hw::usage(process.as_deref()).map_err(|e| e.to_string())?;
+            let u = machine::usage(process.as_deref()).map_err(|e| e.to_string())?;
             if as_json {
                 println!("{}", json(&u));
             } else {
@@ -147,9 +147,13 @@ fn run(cmd: Cmd) -> Result<(), String> {
             }
         }
         Cmd::Watch { every, process } => watch(every, process.as_deref())?,
-        Cmd::Target { cpu } => {
-            let m = hw::machine().map_err(|e| e.to_string())?;
-            println!("{}", json(&m.target(cpu)));
+        Cmd::Target { json: as_json, cpu } => {
+            let target = machine::current().map_err(|e| e.to_string())?.target(cpu);
+            if as_json {
+                println!("{}", json(&target));
+            } else {
+                print!("{}", target_block(&target));
+            }
         }
     }
     Ok(())
@@ -162,7 +166,7 @@ fn run(cmd: Cmd) -> Result<(), String> {
 ///
 /// Outputs: the JSON text.
 fn json<T: serde::Serialize>(v: &T) -> String {
-    serde_json::to_string_pretty(v).expect("hw and plan types always serialize")
+    serde_json::to_string_pretty(v).expect("machine and plan types always serialize")
 }
 
 /// Purpose: This function shows memory in use, refreshed in place, until the program is
@@ -175,16 +179,16 @@ fn json<T: serde::Serialize>(v: &T) -> String {
 /// Outputs: `Ok(())` once its output is closed, as when piped into `head`, or the message
 /// to print when reading the machine fails.
 fn watch(every: Duration, process: Option<&str>) -> Result<(), String> {
-    let machine = hw::machine().map_err(|e| e.to_string())?;
+    let m = machine::current().map_err(|e| e.to_string())?;
     let terminal = std::io::stdout().is_terminal();
     let start = Instant::now();
     loop {
-        let u = hw::usage(process).map_err(|e| e.to_string())?;
+        let u = machine::usage(process).map_err(|e| e.to_string())?;
         let text = if terminal {
             // Move to the top left and clear the screen, so each reading replaces the last.
             format!(
-                "\x1b[H\x1b[2Jdovata hw watch: {}, every {} s. Press Ctrl-C to stop.\n\n{}",
-                machine.chip.as_deref().unwrap_or(&machine.os),
+                "\x1b[H\x1b[2Jdovata machine watch: {}, every {} s. Press Ctrl-C to stop.\n\n{}",
+                m.chip.as_deref().unwrap_or(&m.os),
                 every.as_secs_f64(),
                 usage_text(&u, process)
             )
@@ -201,7 +205,7 @@ fn watch(every: Duration, process: Option<&str>) -> Result<(), String> {
     }
 }
 
-/// Purpose: This function formats a machine's capacity for `dovata hw info`.
+/// Purpose: This function formats a machine's capacity for `dovata machine info`.
 ///
 /// Inputs:
 /// - `m`: the machine.
@@ -243,7 +247,33 @@ fn target_text(t: &dovata::plan::Target) -> String {
     }
 }
 
-/// Purpose: This function formats current memory use for `dovata hw usage` and `watch`.
+/// Purpose: This function formats the planner's target for `dovata machine target`.
+///
+/// Inputs:
+/// - `t`: the target.
+///
+/// Outputs: the text, the kind of target first and then one limit per line.
+fn target_block(t: &dovata::plan::Target) -> String {
+    use dovata::plan::Target;
+    match t {
+        Target::Apple { unified_bytes, max_buffer_bytes, page_bytes } => format!(
+            "apple target\n  memory          {} the plan may use\n  largest buffer  {}\n  page size       {}\n",
+            size(*unified_bytes),
+            size(*max_buffer_bytes),
+            size(*page_bytes)
+        ),
+        Target::Cuda { vram_bytes } => {
+            format!("cuda target, GPU 0\n  memory          {} of VRAM the plan may use\n", size(*vram_bytes))
+        }
+        Target::Cpu { ram_bytes, page_bytes } => format!(
+            "cpu target\n  memory          {} the plan may use\n  page size       {}\n",
+            size(*ram_bytes),
+            size(*page_bytes)
+        ),
+    }
+}
+
+/// Purpose: This function formats current memory use for `dovata machine usage` and `watch`.
 ///
 /// Inputs:
 /// - `u`: the reading.
@@ -258,7 +288,7 @@ fn usage_text(u: &Usage, process: Option<&str>) -> String {
         size(m.total_bytes),
         size(m.available_bytes)
     );
-    let parts: Vec<String> = [("wired", m.wired_bytes), ("compressed", m.compressed_bytes), ("cached", m.cached_bytes)]
+    let parts: Vec<String> = [("immovable", m.immovable_bytes), ("compressed", m.compressed_bytes), ("cached", m.cached_bytes)]
         .into_iter()
         .filter_map(|(label, v)| Some(format!("{label} {}", size(v?))))
         .collect();
@@ -371,17 +401,18 @@ mod tests {
     #[test]
     fn commands_and_options_parse() {
         assert_eq!(p(""), Ok(Cmd::Help));
-        assert_eq!(p("hw"), Ok(Cmd::Help));
-        assert_eq!(p("hw info"), Ok(Cmd::Info { json: false }));
-        assert_eq!(p("hw info --json"), Ok(Cmd::Info { json: true }));
-        assert_eq!(p("hw usage --process qwen-chat"), Ok(Cmd::Usage { json: false, process: Some("qwen-chat".into()) }));
-        assert_eq!(p("hw watch --every 0.5"), Ok(Cmd::Watch { every: Duration::from_millis(500), process: None }));
-        assert_eq!(p("hw target --cpu"), Ok(Cmd::Target { cpu: true }));
+        assert_eq!(p("machine"), Ok(Cmd::Help));
+        assert_eq!(p("machine info"), Ok(Cmd::Info { json: false }));
+        assert_eq!(p("machine info --json"), Ok(Cmd::Info { json: true }));
+        assert_eq!(p("machine usage --process qwen-chat"), Ok(Cmd::Usage { json: false, process: Some("qwen-chat".into()) }));
+        assert_eq!(p("machine watch --every 0.5"), Ok(Cmd::Watch { every: Duration::from_millis(500), process: None }));
+        assert_eq!(p("machine target --cpu"), Ok(Cmd::Target { json: false, cpu: true }));
+        assert_eq!(p("machine target --json"), Ok(Cmd::Target { json: true, cpu: false }));
     }
 
     #[test]
     fn bad_command_lines_are_refused() {
-        for bad in ["plan", "hw nope", "hw info --cpu", "hw usage --process", "hw watch --every soon", "hw watch --every 0", "hw info --verbose"] {
+        for bad in ["plan", "machine nope", "machine info --cpu", "machine usage --process", "machine watch --every soon", "machine watch --every 0", "machine info --verbose"] {
             assert!(p(bad).is_err(), "{bad:?} should be refused");
         }
     }
@@ -395,14 +426,25 @@ mod tests {
     }
 
     #[test]
+    fn target_text_shows_units() {
+        let apple = dovata::plan::Target::Apple { unified_bytes: 19_069_665_280, max_buffer_bytes: 14_302_248_960, page_bytes: 16384 };
+        assert_eq!(
+            target_block(&apple),
+            "apple target\n  memory          17.8 GiB the plan may use\n  largest buffer  13.3 GiB\n  page size       16 KiB\n"
+        );
+        let cuda = dovata::plan::Target::Cuda { vram_bytes: 80 << 30 };
+        assert!(target_block(&cuda).contains("80.0 GiB of VRAM"));
+    }
+
+    #[test]
     fn usage_text_shows_every_reading() {
         let u = Usage {
-            memory: hw::parse_vm_stat(include_str!("../hw/testdata/macos-vm_stat.txt"), 24 << 30).unwrap(),
-            nvidia: hw::parse_nvidia_smi(include_str!("../hw/testdata/nvidia-smi.csv")).unwrap(),
-            processes: hw::parse_ps(include_str!("../hw/testdata/macos-ps.txt"), "qwen-chat"),
+            memory: machine::parse_vm_stat(include_str!("../machine/testdata/macos-vm_stat.txt"), 24 << 30).unwrap(),
+            nvidia: machine::parse_nvidia_smi(include_str!("../machine/testdata/nvidia-smi.csv")).unwrap(),
+            processes: machine::parse_ps(include_str!("../machine/testdata/macos-ps.txt"), "qwen-chat"),
         };
         let text = usage_text(&u, Some("qwen-chat"));
-        assert!(text.contains("used of 24.0 GiB") && text.contains("wired") && text.contains("compressed"), "{text}");
+        assert!(text.contains("used of 24.0 GiB") && text.contains("immovable") && text.contains("compressed"), "{text}");
         assert!(text.contains("NVIDIA 0") && text.contains("load 97%, 71 C"), "{text}");
         assert!(text.contains("process    5120 /Users/dev/models/qwen-chat, 2.3 GiB resident"), "{text}");
         let none = Usage { processes: vec![], ..u };

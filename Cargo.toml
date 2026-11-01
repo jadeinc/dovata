@@ -23,12 +23,13 @@ crate-type = ["rlib"]
 name = "gguf-inspect"
 path = "src/gguf/main.rs"
 
-# `dovata`, the command line. Today it holds the `hw` commands, which report the current
-# machine's memory and GPUs. `doc = false` because the library has the same name.
+# `dovata`, the command line. Today it holds the `machine` commands, which report the
+# current machine's memory and GPUs. `doc = false` because the library has the same
+# name.
 [[bin]]
 name = "dovata"
 path = "src/cli/main.rs"
-required-features = ["hw"]
+required-features = ["machine"]
 doc = false
 
 # ── Capabilities ──────────────────────────────────────────────────────────────
@@ -36,7 +37,7 @@ doc = false
 # Every capability is on by default, so a plain `cargo build` is the whole library.
 # The features exist to make each capability's boundary explicit and checkable: if a
 # capability can't be switched off, its edges aren't real.
-default = ["moe", "quantize", "hub", "hw"]
+default = ["moe", "quantize", "hub", "machine"]
 
 # MoE expert ranking: the `expert_order` loader that says which experts are hot. The
 # planner will use it to decide which experts stay resident in VRAM.
@@ -51,10 +52,10 @@ quantize = []
 # source is refused with an error naming this feature; local paths still work.
 hub = ["dep:hf-hub"]
 
-# Reading the current machine's memory and GPUs, for the `dovata hw` commands. It runs
-# the system's own tools, and on macOS reads Metal's limits through objc2-metal. Off,
-# `hw::machine` and `hw::usage` return an error naming this feature.
-hw = ["dep:objc2-metal"]
+# Reading the current machine's memory and GPUs, for the `dovata machine` commands. It
+# runs the system's own tools, and on macOS reads Metal's limits through objc2-metal.
+# Off, `machine::current` and `machine::usage` return an error naming this feature.
+machine = ["dep:objc2-metal"]
 
 [dependencies]
 serde_json = { version = "1", features = ["std"] }

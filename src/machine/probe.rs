@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/hw/probe.rs
+//! File: src/machine/probe.rs
 //! Description: Reads the current machine's memory and GPUs by running its system tools.
 
 use std::path::PathBuf;
@@ -7,7 +7,7 @@ use std::process::Command;
 
 use super::{
     parse_memory_pressure, parse_meminfo, parse_nvidia_smi, parse_ps, parse_psi, parse_swapusage, parse_vm_stat, Gpu,
-    HwError, Machine, MetalLimits, Usage, NVIDIA_QUERY,
+    MachineError, Machine, MetalLimits, Usage, NVIDIA_QUERY,
 };
 
 /// Purpose: This function reads what the current machine has: its memory, page size and
@@ -15,9 +15,9 @@ use super::{
 ///
 /// Inputs: none.
 ///
-/// Outputs: the [`Machine`], or a [`HwError`] when a system tool fails or the operating
+/// Outputs: the [`Machine`], or a [`MachineError`] when a system tool fails or the operating
 /// system is not macOS or Linux.
-pub fn machine() -> Result<Machine, HwError> {
+pub fn current() -> Result<Machine, MachineError> {
     if cfg!(target_os = "macos") {
         Ok(Machine {
             os: format!("macOS {}", run("/usr/bin/sw_vers", &["-productVersion"])?.trim()),
@@ -42,7 +42,7 @@ pub fn machine() -> Result<Machine, HwError> {
             nvidia: nvidia_gpus()?,
         })
     } else {
-        Err(HwError::Unsupported(std::env::consts::OS.to_owned()))
+        Err(MachineError::Unsupported(std::env::consts::OS.to_owned()))
     }
 }
 
@@ -52,9 +52,9 @@ pub fn machine() -> Result<Machine, HwError> {
 /// Inputs:
 /// - `process`: a program name, such as `qwen-chat`, whose running copies to report on.
 ///
-/// Outputs: the [`Usage`], or a [`HwError`] when a system tool fails or the operating
+/// Outputs: the [`Usage`], or a [`MachineError`] when a system tool fails or the operating
 /// system is not macOS or Linux.
-pub fn usage(process: Option<&str>) -> Result<Usage, HwError> {
+pub fn usage(process: Option<&str>) -> Result<Usage, MachineError> {
     let memory = if cfg!(target_os = "macos") {
         let mut m = parse_vm_stat(&run("/usr/bin/vm_stat", &[])?, sysctl_number("hw.memsize")?)?;
         (m.swap_total_bytes, m.swap_used_bytes) = parse_swapusage(&run("/usr/sbin/sysctl", &["-n", "vm.swapusage"])?)?;
@@ -65,7 +65,7 @@ pub fn usage(process: Option<&str>) -> Result<Usage, HwError> {
         m.pressure = read("/proc/pressure/memory").ok().and_then(|t| parse_psi(&t));
         m
     } else {
-        return Err(HwError::Unsupported(std::env::consts::OS.to_owned()));
+        return Err(MachineError::Unsupported(std::env::consts::OS.to_owned()));
     };
     let processes = match process {
         Some(name) => {
@@ -82,8 +82,8 @@ pub fn usage(process: Option<&str>) -> Result<Usage, HwError> {
 /// Inputs: none.
 ///
 /// Outputs: one [`Gpu`] per GPU; none when `nvidia-smi` is not on `PATH`; or a
-/// [`HwError`] when it is installed but fails, as it does when the driver is not loaded.
-fn nvidia_gpus() -> Result<Vec<Gpu>, HwError> {
+/// [`MachineError`] when it is installed but fails, as it does when the driver is not loaded.
+fn nvidia_gpus() -> Result<Vec<Gpu>, MachineError> {
     let Some(program) = find_on_path("nvidia-smi") else {
         return Ok(Vec::new());
     };
@@ -116,8 +116,8 @@ fn metal_limits() -> Option<MetalLimits> {
 /// Inputs:
 /// - `name`: the value's name, such as `hw.memsize`.
 ///
-/// Outputs: the number, or a [`HwError`].
-fn sysctl_number(name: &str) -> Result<u64, HwError> {
+/// Outputs: the number, or a [`MachineError`].
+fn sysctl_number(name: &str) -> Result<u64, MachineError> {
     let text = run("/usr/sbin/sysctl", &["-n", name])?;
     text.trim().parse().map_err(|_| parse_error(&format!("sysctl {name}"), &text))
 }
@@ -128,10 +128,10 @@ fn sysctl_number(name: &str) -> Result<u64, HwError> {
 /// - `program`: the tool's path, or its name to find on `PATH`.
 /// - `args`: its arguments.
 ///
-/// Outputs: its standard output, or a [`HwError::Command`] when it cannot start or exits
+/// Outputs: its standard output, or a [`MachineError::Command`] when it cannot start or exits
 /// with an error.
-fn run(program: &str, args: &[&str]) -> Result<String, HwError> {
-    let fail = |detail: String| HwError::Command { program: program.to_owned(), detail };
+fn run(program: &str, args: &[&str]) -> Result<String, MachineError> {
+    let fail = |detail: String| MachineError::Command { program: program.to_owned(), detail };
     let out = Command::new(program).args(args).output().map_err(|e| fail(format!("cannot start it: {e}")))?;
     if !out.status.success() {
         return Err(fail(format!("{}: {}", out.status, String::from_utf8_lossy(&out.stderr).trim())));
@@ -144,9 +144,9 @@ fn run(program: &str, args: &[&str]) -> Result<String, HwError> {
 /// Inputs:
 /// - `path`: the file's path.
 ///
-/// Outputs: its contents, or a [`HwError::Command`] naming the file.
-fn read(path: &str) -> Result<String, HwError> {
-    std::fs::read_to_string(path).map_err(|e| HwError::Command { program: path.to_owned(), detail: e.to_string() })
+/// Outputs: its contents, or a [`MachineError::Command`] naming the file.
+fn read(path: &str) -> Result<String, MachineError> {
+    std::fs::read_to_string(path).map_err(|e| MachineError::Command { program: path.to_owned(), detail: e.to_string() })
 }
 
 /// Purpose: This function finds a program on `PATH`.
@@ -165,9 +165,9 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
 /// - `what`: the tool and value, such as `sysctl hw.memsize`.
 /// - `text`: what it printed.
 ///
-/// Outputs: the [`HwError::Parse`].
-fn parse_error(what: &str, text: &str) -> HwError {
-    HwError::Parse { what: what.to_owned(), detail: format!("expected a number, found {:?}", text.trim()) }
+/// Outputs: the [`MachineError::Parse`].
+fn parse_error(what: &str, text: &str) -> MachineError {
+    MachineError::Parse { what: what.to_owned(), detail: format!("expected a number, found {:?}", text.trim()) }
 }
 
 #[cfg(test)]
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn this_machine_reads() {
-        let m = machine().unwrap();
+        let m = current().unwrap();
         assert!(m.memory_bytes > 1 << 30, "{m:?}");
         assert!(m.page_bytes.is_power_of_two(), "{m:?}");
         if let Some(metal) = m.metal {

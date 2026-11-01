@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/hw/mod.rs
+//! File: src/machine/mod.rs
 //! Description: Describes the current machine's memory and GPUs, and reads the output of
 //! the system tools that report them.
 
@@ -9,34 +9,34 @@ use serde::Serialize;
 
 use crate::plan::Target;
 
-#[cfg(feature = "hw")]
+#[cfg(feature = "machine")]
 mod probe;
-#[cfg(all(feature = "hw", target_os = "macos"))]
+#[cfg(all(feature = "machine", target_os = "macos"))]
 mod metal;
 
-#[cfg(feature = "hw")]
-pub use probe::{machine, usage};
+#[cfg(feature = "machine")]
+pub use probe::{current, usage};
 
-/// Purpose: This function returns `NotBuilt` in a build without the `hw` feature.
+/// Purpose: This function returns `NotBuilt` in a build without the `machine` feature.
 ///
 /// Inputs: none.
 ///
-/// Outputs: always [`HwError::NotBuilt`].
-#[cfg(not(feature = "hw"))]
-pub fn machine() -> Result<Machine, HwError> {
-    Err(HwError::NotBuilt)
+/// Outputs: always [`MachineError::NotBuilt`].
+#[cfg(not(feature = "machine"))]
+pub fn current() -> Result<Machine, MachineError> {
+    Err(MachineError::NotBuilt)
 }
 
-/// Purpose: This function returns `NotBuilt` in a build without the `hw` feature.
+/// Purpose: This function returns `NotBuilt` in a build without the `machine` feature.
 ///
 /// Inputs:
 /// - `process`: a program name to report on; unused.
 ///
-/// Outputs: always [`HwError::NotBuilt`].
-#[cfg(not(feature = "hw"))]
-pub fn usage(process: Option<&str>) -> Result<Usage, HwError> {
+/// Outputs: always [`MachineError::NotBuilt`].
+#[cfg(not(feature = "machine"))]
+pub fn usage(process: Option<&str>) -> Result<Usage, MachineError> {
     let _ = process;
-    Err(HwError::NotBuilt)
+    Err(MachineError::NotBuilt)
 }
 
 /// Purpose: This struct holds what the current machine has: its memory, its page size and
@@ -110,12 +110,13 @@ pub struct MemoryUse {
     /// Physical memory, in bytes.
     pub total_bytes: u64,
     /// Memory programs hold and the system cannot hand out, in bytes. On macOS this is
-    /// app memory plus wired plus compressed; on Linux it is total less `MemAvailable`.
+    /// app memory plus immovable plus compressed; on Linux it is total less `MemAvailable`.
     pub used_bytes: u64,
     /// Memory a program could still get, total less used, in bytes.
     pub available_bytes: u64,
-    /// Memory locked in place for the system, in bytes. macOS only.
-    pub wired_bytes: Option<u64>,
+    /// Memory the system cannot move, compress or swap out, which `vm_stat` calls wired,
+    /// in bytes. macOS only.
+    pub immovable_bytes: Option<u64>,
     /// Memory the system's compressor holds, in bytes. macOS reports it; Linux reports it
     /// when zswap is on.
     pub compressed_bytes: Option<u64>,
@@ -154,8 +155,8 @@ pub struct ProcessUse {
 
 /// Purpose: This enum lists the errors reading the machine can return.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HwError {
-    /// This build of dovata cannot read the machine: the `hw` feature is off.
+pub enum MachineError {
+    /// This build of dovata cannot read the machine: the `machine` feature is off.
     NotBuilt,
     /// dovata does not know how to read this operating system.
     Unsupported(String),
@@ -165,7 +166,7 @@ pub enum HwError {
     Parse { what: String, detail: String },
 }
 
-impl fmt::Display for HwError {
+impl fmt::Display for MachineError {
     /// Purpose: This function formats errors from reading the machine.
     ///
     /// Inputs:
@@ -174,18 +175,18 @@ impl fmt::Display for HwError {
     /// Outputs: `Ok(())`, or an error if writing fails.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HwError::NotBuilt => write!(
+            MachineError::NotBuilt => write!(
                 f,
-                "this build of dovata cannot read the machine: it was compiled without the `hw` cargo feature"
+                "this build of dovata cannot read the machine: it was compiled without the `machine` cargo feature"
             ),
-            HwError::Unsupported(os) => write!(f, "dovata reads memory on macOS and Linux, not on {os}"),
-            HwError::Command { program, detail } => write!(f, "{program} failed: {detail}"),
-            HwError::Parse { what, detail } => write!(f, "cannot read {what}: {detail}"),
+            MachineError::Unsupported(os) => write!(f, "dovata reads memory on macOS and Linux, not on {os}"),
+            MachineError::Command { program, detail } => write!(f, "{program} failed: {detail}"),
+            MachineError::Parse { what, detail } => write!(f, "cannot read {what}: {detail}"),
         }
     }
 }
 
-impl std::error::Error for HwError {}
+impl std::error::Error for MachineError {}
 
 impl Machine {
     /// Purpose: This function describes this machine as a target for the planner.
@@ -219,9 +220,9 @@ impl Machine {
 /// - `text`: what `vm_stat` printed.
 /// - `total_bytes`: physical memory, from `sysctl hw.memsize`.
 ///
-/// Outputs: the snapshot without swap or pressure, or a [`HwError::Parse`].
-pub fn parse_vm_stat(text: &str, total_bytes: u64) -> Result<MemoryUse, HwError> {
-    let fail = |detail: &str| HwError::Parse { what: "vm_stat output".into(), detail: detail.into() };
+/// Outputs: the snapshot without swap or pressure, or a [`MachineError::Parse`].
+pub fn parse_vm_stat(text: &str, total_bytes: u64) -> Result<MemoryUse, MachineError> {
+    let fail = |detail: &str| MachineError::Parse { what: "vm_stat output".into(), detail: detail.into() };
     let page: u64 = text
         .lines()
         .next()
@@ -229,21 +230,21 @@ pub fn parse_vm_stat(text: &str, total_bytes: u64) -> Result<MemoryUse, HwError>
         .and_then(|r| r.split_whitespace().next())
         .and_then(|n| n.parse().ok())
         .ok_or_else(|| fail("no page size on its first line"))?;
-    let pages = |label: &str| -> Result<u64, HwError> {
+    let pages = |label: &str| -> Result<u64, MachineError> {
         text.lines()
             .find_map(|l| l.strip_prefix(label)?.strip_prefix(':'))
             .and_then(|v| v.trim().trim_end_matches('.').parse().ok())
             .ok_or_else(|| fail(&format!("no \"{label}\" line")))
     };
     let app = pages("Anonymous pages")?.saturating_sub(pages("Pages purgeable")?);
-    let wired = pages("Pages wired down")? * page;
+    let immovable = pages("Pages wired down")? * page;
     let compressed = pages("Pages occupied by compressor")? * page;
-    let used = (app * page + wired + compressed).min(total_bytes);
+    let used = (app * page + immovable + compressed).min(total_bytes);
     Ok(MemoryUse {
         total_bytes,
         used_bytes: used,
         available_bytes: total_bytes - used,
-        wired_bytes: Some(wired),
+        immovable_bytes: Some(immovable),
         compressed_bytes: Some(compressed),
         cached_bytes: Some(pages("File-backed pages")? * page),
         swap_total_bytes: 0,
@@ -257,8 +258,8 @@ pub fn parse_vm_stat(text: &str, total_bytes: u64) -> Result<MemoryUse, HwError>
 /// Inputs:
 /// - `text`: the output, such as `total = 2048.00M  used = 512.50M  free = 1535.50M`.
 ///
-/// Outputs: total and used swap in bytes, or a [`HwError::Parse`].
-pub fn parse_swapusage(text: &str) -> Result<(u64, u64), HwError> {
+/// Outputs: total and used swap in bytes, or a [`MachineError::Parse`].
+pub fn parse_swapusage(text: &str) -> Result<(u64, u64), MachineError> {
     let field = |name: &str| -> Option<u64> {
         let rest = text.split(&format!("{name} = ")).nth(1)?;
         let value = rest.split_whitespace().next()?;
@@ -275,7 +276,7 @@ pub fn parse_swapusage(text: &str) -> Result<(u64, u64), HwError> {
     };
     match (field("total"), field("used")) {
         (Some(total), Some(used)) => Ok((total, used)),
-        _ => Err(HwError::Parse { what: "vm.swapusage".into(), detail: format!("unexpected text {:?}", text.trim()) }),
+        _ => Err(MachineError::Parse { what: "vm.swapusage".into(), detail: format!("unexpected text {:?}", text.trim()) }),
     }
 }
 
@@ -296,15 +297,15 @@ pub fn parse_memory_pressure(text: &str) -> Option<Pressure> {
 /// Inputs:
 /// - `text`: the file's contents.
 ///
-/// Outputs: the snapshot without pressure, or a [`HwError::Parse`].
-pub fn parse_meminfo(text: &str) -> Result<MemoryUse, HwError> {
+/// Outputs: the snapshot without pressure, or a [`MachineError::Parse`].
+pub fn parse_meminfo(text: &str) -> Result<MemoryUse, MachineError> {
     let kib = |key: &str| -> Option<u64> {
         let line = text.lines().find(|l| l.split(':').next() == Some(key))?;
         let value: u64 = line.split(':').nth(1)?.split_whitespace().next()?.parse().ok()?;
         Some(value * 1024)
     };
     let need = |key: &str| {
-        kib(key).ok_or_else(|| HwError::Parse { what: "/proc/meminfo".into(), detail: format!("no {key} line") })
+        kib(key).ok_or_else(|| MachineError::Parse { what: "/proc/meminfo".into(), detail: format!("no {key} line") })
     };
     let total = need("MemTotal")?;
     let available = need("MemAvailable")?.min(total);
@@ -314,7 +315,7 @@ pub fn parse_meminfo(text: &str) -> Result<MemoryUse, HwError> {
         total_bytes: total,
         used_bytes: total - available,
         available_bytes: available,
-        wired_bytes: None,
+        immovable_bytes: None,
         compressed_bytes: kib("Zswap").filter(|z| *z > 0),
         cached_bytes: kib("Cached"),
         swap_total_bytes: swap_total,
@@ -344,14 +345,14 @@ pub const NVIDIA_QUERY: &str =
 /// Inputs:
 /// - `text`: the output of `nvidia-smi --query-gpu=<NVIDIA_QUERY> --format=csv,noheader,nounits`.
 ///
-/// Outputs: one [`Gpu`] per line, or a [`HwError::Parse`].
-pub fn parse_nvidia_smi(text: &str) -> Result<Vec<Gpu>, HwError> {
+/// Outputs: one [`Gpu`] per line, or a [`MachineError::Parse`].
+pub fn parse_nvidia_smi(text: &str) -> Result<Vec<Gpu>, MachineError> {
     let fields = NVIDIA_QUERY.split(',').count();
     let mut gpus = Vec::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let cols: Vec<&str> = line.split(',').map(str::trim).collect();
         if cols.len() != fields {
-            return Err(HwError::Parse {
+            return Err(MachineError::Parse {
                 what: "nvidia-smi output".into(),
                 detail: format!("expected {fields} fields, found {}: {line:?}", cols.len()),
             });
@@ -361,7 +362,7 @@ pub fn parse_nvidia_smi(text: &str) -> Result<Vec<Gpu>, HwError> {
         let mib = |i: usize| number(i).map(|v| v * 1024 * 1024);
         let small = |i: usize| number(i).and_then(|v| u32::try_from(v).ok());
         gpus.push(Gpu {
-            index: small(0).ok_or_else(|| HwError::Parse { what: "nvidia-smi output".into(), detail: format!("bad index in {line:?}") })?,
+            index: small(0).ok_or_else(|| MachineError::Parse { what: "nvidia-smi output".into(), detail: format!("bad index in {line:?}") })?,
             name: cols[1].to_owned(),
             memory_total_bytes: mib(2).unwrap_or(0),
             memory_used_bytes: mib(3),
@@ -406,7 +407,7 @@ mod tests {
     const GIB: u64 = 1 << 30;
 
     #[test]
-    fn vm_stat_gives_used_wired_and_compressed() {
+    fn vm_stat_gives_used_immovable_and_compressed() {
         let text = include_str!("testdata/macos-vm_stat.txt");
         let m = parse_vm_stat(text, 24 * GIB).unwrap();
         let page = 16384;
@@ -417,7 +418,7 @@ mod tests {
         let expect = (app + field("Pages wired down") + field("Pages occupied by compressor")) * page;
         assert_eq!(m.used_bytes, expect.min(24 * GIB));
         assert_eq!(m.used_bytes + m.available_bytes, m.total_bytes);
-        assert_eq!(m.wired_bytes, Some(field("Pages wired down") * page));
+        assert_eq!(m.immovable_bytes, Some(field("Pages wired down") * page));
         assert_eq!(m.cached_bytes, Some(field("File-backed pages") * page));
         assert!(parse_vm_stat("Mach Virtual Memory Statistics:\n", GIB).is_err(), "no page size");
     }
@@ -508,10 +509,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "hw"))]
+    #[cfg(not(feature = "machine"))]
     fn reading_the_machine_is_refused_without_feature() {
-        assert_eq!(machine(), Err(HwError::NotBuilt));
-        assert_eq!(usage(None).unwrap_err(), HwError::NotBuilt);
-        assert!(HwError::NotBuilt.to_string().contains("`hw` cargo feature"));
+        assert_eq!(current(), Err(MachineError::NotBuilt));
+        assert_eq!(usage(None).unwrap_err(), MachineError::NotBuilt);
+        assert!(MachineError::NotBuilt.to_string().contains("`machine` cargo feature"));
     }
 }

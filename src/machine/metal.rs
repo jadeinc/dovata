@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/hw/metal.rs
+//! File: src/machine/metal.rs
 //! Description: Reads the Mac GPU's memory limits from Apple's Metal framework.
 
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice};

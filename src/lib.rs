@@ -21,7 +21,7 @@ pub mod layout;
 pub mod plan;
 
 /// Reads the current machine's memory capacity, its GPUs and their use.
-pub mod hw;
+pub mod machine;
 
 /// Ranks each MoE layer's experts by how often they are used.
 #[cfg(feature = "moe")]
@@ -30,7 +30,7 @@ pub mod moe;
 #[cfg(test)]
 mod capabilities {
     //! That each feature-gated capability is reachable under default features: the
-    //! `moe` module, and the halves of `quantize`, `hub` and `hw` that reach outside dovata.
+    //! `moe` module, and the halves of `quantize`, `hub` and `machine` that reach outside dovata.
     //!
     //! A `#[cfg(feature = "…")]` with a mis-typed feature name compiles fine and
     //! silently drops the module. These name each feature once more, so a typo in
@@ -75,9 +75,9 @@ mod capabilities {
     }
 
     #[test]
-    #[cfg(all(feature = "hw", any(target_os = "macos", target_os = "linux")))]
-    fn hw_probe_half_is_present() {
+    #[cfg(all(feature = "machine", any(target_os = "macos", target_os = "linux")))]
+    fn machine_probe_half_is_present() {
         // With the feature, the machine reads; without it, it is NotBuilt.
-        assert!(crate::hw::machine().is_ok_and(|m| m.memory_bytes > 0));
+        assert!(crate::machine::current().is_ok_and(|m| m.memory_bytes > 0));
     }
 }
