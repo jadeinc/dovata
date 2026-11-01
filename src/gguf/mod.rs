@@ -847,6 +847,7 @@ pub fn ggml_type_name(t: u32) -> &'static str {
         39 => "MXFP4",
         40 => "NVFP4",
         41 => "Q1_0",
+        42 => "Q2_0",
         _ => "type ?",
     }
 }
@@ -893,6 +894,7 @@ pub fn ggml_type_layout(t: u32) -> Option<(u64, u64)> {
         39 => (32, 17),   // MXFP4
         40 => (64, 36),   // NVFP4
         41 => (128, 18),  // Q1_0
+        42 => (64, 18),   // Q2_0
         _ => return None,
     })
 }

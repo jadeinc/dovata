@@ -71,6 +71,7 @@ pub enum Ftype {
     MXFP4_MOE = 38,
     NVFP4 = 39,
     Q1_0 = 40,
+    Q2_0 = 41,
 }
 
 impl Ftype {
@@ -82,13 +83,14 @@ impl Ftype {
     /// Q4_0 at 17.38 GB, Q4_K_S at 17.46, Q4_K_M at 18.56 and Q4_1 at 19.19. F16 and
     /// BF16 have the same bits; BF16 ranks higher because most weights are trained in
     /// BF16, so a BF16 file holds them exactly and an F16 one may not.
-    pub const ALL: [Ftype; 35] = [
+    pub const ALL: [Ftype; 36] = [
         Ftype::Q1_0,
         Ftype::IQ1_S,
         Ftype::TQ1_0,
         Ftype::IQ1_M,
         Ftype::IQ2_XXS,
         Ftype::TQ2_0,
+        Ftype::Q2_0,
         Ftype::IQ2_XS,
         Ftype::IQ2_S,
         Ftype::IQ2_M,
@@ -163,6 +165,7 @@ impl Ftype {
             Ftype::MXFP4_MOE => "MXFP4_MOE",
             Ftype::NVFP4 => "NVFP4",
             Ftype::Q1_0 => "Q1_0",
+            Ftype::Q2_0 => "Q2_0",
         }
     }
 

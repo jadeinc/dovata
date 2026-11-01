@@ -391,7 +391,7 @@ mod tests {
             let mut tensors: Vec<_> = m.tensors().collect();
             tensors.sort_by_key(|t| t.file_offset);
             for (i, t) in tensors.iter().enumerate() {
-                let bytes = t.info.bytes().unwrap_or_else(|| panic!("{f}: dovata has no size for {}", ggml_type_name(t.info.kind)));
+                let bytes = t.info.bytes().unwrap_or_else(|| panic!("{f}: dovata has no size for ggml type {}", t.info.kind));
                 let padded_end = data + (t.file_offset - data + bytes).div_ceil(align) * align;
                 let next = tensors.get(i + 1).map_or(file_len, |n| n.file_offset);
                 assert_eq!(padded_end, next, "{f}: {} is {}, and dovata's size for it is wrong", t.info.name, ggml_type_name(t.info.kind));
