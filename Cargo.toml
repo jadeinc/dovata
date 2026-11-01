@@ -34,10 +34,10 @@ default = ["moe", "quantize", "hub"]
 # planner will use it to decide which experts stay resident in VRAM.
 moe = []
 
-# Quantizing a GGUF with llama.cpp's own `llama_model_quantize`, through the bindgen'd
-# sys crate. The heavy one: it compiles llama.cpp, so it needs cmake and the submodule.
+# Quantizing a GGUF by running llama.cpp's `llama-quantize` program, which must be
+# installed on the machine and on PATH. Nothing of llama.cpp is compiled or linked.
 # Off, `quantize::quantize` returns an error naming this feature.
-quantize = ["dep:llama-cpp-sys-2"]
+quantize = []
 
 # Fetching a GGUF from the Hugging Face Hub into the shared hf-hub cache. Off, a Hub
 # source is refused with an error naming this feature; local paths still work.
@@ -52,10 +52,6 @@ toml = "0.8"
 # file other than the one its offsets were computed for. Pure Rust.
 sha2 = "0.10"
 
-# Only `default-features = false`: the sys crate's default `common` feature builds
-# llama.cpp's `common/` library, which quantization does not use.
-llama-cpp-sys-2 = { path = "src/llama/bindings-sys", default-features = false, optional = true }
-
 # 0.4 rather than 1.x: the 0.4 line has a blocking client over `ureq`, so the Jade
 # compiler's build does not pull in tokio. 1.x is async-first and its blocking
 # feature wraps a tokio runtime.
@@ -67,14 +63,6 @@ hf-hub = { version = "0.4.3", default-features = false, features = ["ureq"], opt
 # capabilities as plain modules of this crate, and the directories under it that are
 # separate crates are members below, each for a reason stated where it sits.
 members = [
-    # The bindgen'd llama.cpp C API over the stock upstream submodule. Nothing links it
-    # today; it stays for quantization, since `llama_model_quantize` is already
-    # reachable through it, and as the reference for how ggml lays out tensors. Heavy:
-    # building it needs the nested llama.cpp submodule plus cmake.
-    "src/llama/bindings-sys",
-    # A build-dependency of the sys crate, and a member so `cargo test` runs its tests.
-    # Build scripts are not testable, which is the whole reason it is not one.
-    "src/llama/bundle-kit",
     # `dovata-chat`: the optional tokenizer and chat-template package for Jade users.
     # Its own crate so dovata never depends on a tokenizer; see its README.
     "src/chat",
@@ -86,16 +74,3 @@ edition = "2021"
 authors = ["JADE OS Contributors"]
 license = "MIT"
 
-# Shared build deps for the llama sys crate, which opts in via `{ workspace = true }`.
-[workspace.dependencies]
-bindgen = "0.72.1"
-cc = "1.2.61"
-
-# Only the src/llama crates opt into these via `[lints] workspace = true`; the
-# dovata crate itself doesn't reference workspace lints, so it is unaffected.
-[workspace.lints.rust]
-missing_docs = { level = "warn" }
-missing_debug_implementations = { level = "warn" }
-
-[workspace.lints.clippy]
-pedantic = { level = "warn" }

@@ -355,6 +355,8 @@ pub struct QuantReport {
 pub enum QuantError {
     /// This build of dovata has no quantizer: the `quantize` feature is off.
     NotBuilt,
+    /// llama.cpp's `llama-quantize` program is not on `PATH`.
+    NotInstalled,
     /// The input is already quantized and [`QuantSpec::allow_requantize`] is off.
     Requantize { input: PathBuf, from: Option<Ftype>, to: Ftype },
     /// The input already is the requested type.
@@ -384,7 +386,13 @@ impl fmt::Display for QuantError {
             QuantError::NotBuilt => write!(
                 f,
                 "this build of dovata cannot quantize: it was compiled without the `quantize` cargo feature. \
-                 Enable it to link llama.cpp's quantizer"
+                 Enable it to run llama.cpp's llama-quantize"
+            ),
+            QuantError::NotInstalled => write!(
+                f,
+                "dovata quantizes by running llama.cpp's llama-quantize program, and it is not on PATH. \
+                 Install llama.cpp: `brew install llama.cpp` on macOS, or a release build from \
+                 https://github.com/ggml-org/llama.cpp/releases on Linux"
             ),
             QuantError::Requantize { input, from, to } => {
                 let from = from.map_or_else(|| "quantized tensors".to_owned(), |t| t.name().to_owned());
@@ -623,144 +631,6 @@ mod tests {
     use crate::gguf::write::Writer;
     use crate::gguf::Value;
 
-    /// Purpose: This function reads one source file from the vendored llama.cpp
-    /// submodule.
-    ///
-    /// Inputs:
-    /// - `rel`: the file's path inside the llama.cpp tree.
-    ///
-    /// Outputs: the file's text; panics when the submodule is not checked out.
-    pub(crate) fn llama_cpp_file(rel: &str) -> String {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/llama/bindings-sys/llama.cpp").join(rel);
-        std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!("cannot read {}: {e}. Check out the llama.cpp submodule to run this test", path.display())
-        })
-    }
-
-    /// Purpose: This function cuts one block of lines out of a C or C++ source file.
-    ///
-    /// Inputs:
-    /// - `src`: the source text.
-    /// - `start`: text on the block's first line.
-    /// - `end`: text the line after the block starts with.
-    ///
-    /// Outputs: the block's lines; panics when `start` is not found.
-    fn block<'a>(src: &'a str, start: &str, end: &str) -> Vec<&'a str> {
-        let mut lines = src.lines().skip_while(|l| !l.contains(start));
-        let first = lines.next().unwrap_or_else(|| panic!("{start} not found"));
-        std::iter::once(first).chain(lines.take_while(|l| !l.trim_start().starts_with(end))).collect()
-    }
-
-    /// Purpose: This function reads every entry of the `llama_ftype` enum from the
-    /// vendored `include/llama.h`.
-    ///
-    /// Inputs: none.
-    ///
-    /// Outputs: each entry's name and number.
-    fn llama_h_ftypes() -> Vec<(String, u32)> {
-        let src = llama_cpp_file("include/llama.h");
-        block(&src, "enum llama_ftype {", "};")
-            .into_iter()
-            .map(|l| l.split("//").next().unwrap_or("").trim())
-            .filter_map(|l| {
-                let (name, value) = l.trim_end_matches(',').split_once('=')?;
-                Some((name.trim().to_owned(), value.trim().parse().ok()?))
-            })
-            .filter(|(name, _)| name.starts_with("LLAMA_FTYPE_"))
-            .collect()
-    }
-
-    /// Purpose: This function returns the C enum name llama.cpp gives a file type.
-    ///
-    /// Inputs:
-    /// - `f`: the file type.
-    ///
-    /// Outputs: a name such as `LLAMA_FTYPE_MOSTLY_Q4_K_M`.
-    fn c_name(f: Ftype) -> String {
-        match f {
-            Ftype::F32 => "LLAMA_FTYPE_ALL_F32".to_owned(),
-            other => format!("LLAMA_FTYPE_MOSTLY_{}", other.name()),
-        }
-    }
-
-    #[test]
-    fn ftype_table_matches_llama_h() {
-        let entries = llama_h_ftypes();
-        assert!(entries.len() > 30, "parsed only {} entries; the parser is broken", entries.len());
-        for f in Ftype::ALL {
-            let found = entries.iter().find(|(n, _)| *n == c_name(f));
-            assert_eq!(found.map(|e| e.1), Some(f.value()), "{} in llama.h", c_name(f));
-        }
-        // And the other way: a type upstream adds must be added here too, or a file of
-        // that type would have no Ftype.
-        for (name, value) in &entries {
-            if name == "LLAMA_FTYPE_GUESSED" {
-                continue;
-            }
-            assert!(Ftype::from_file_type(*value).is_some(), "{name} = {value} is missing from Ftype");
-        }
-        let mut values: Vec<u32> = Ftype::ALL.iter().map(|f| f.value()).collect();
-        values.sort_unstable();
-        values.dedup();
-        assert_eq!(values.len(), Ftype::ALL.len(), "Ftype::ALL lists a type twice");
-    }
-
-    #[test]
-    fn ftype_names_match_llama_quantize() {
-        // QUANT_OPTIONS in tools/quantize/quantize.cpp: { "Q4_K_M", LLAMA_FTYPE_MOSTLY_Q4_K_M, ... }.
-        let src = llama_cpp_file("tools/quantize/quantize.cpp");
-        let options: Vec<(String, String)> = block(&src, "QUANT_OPTIONS = {", "};")
-            .into_iter()
-            .filter_map(|l| {
-                let l = l.trim().strip_prefix("{ \"")?;
-                let (name, rest) = l.split_once('"')?;
-                let c = rest.trim_start_matches([',', ' ']).split(',').next()?.trim();
-                Some((name.to_owned(), c.to_owned()))
-            })
-            .collect();
-        assert!(options.len() > 30, "parsed only {} options", options.len());
-        for f in Ftype::ALL {
-            let offered = options.iter().any(|(n, c)| n == f.name() && *c == c_name(f));
-            assert_eq!(offered, f.is_target(), "{} in llama-quantize's QUANT_OPTIONS", f.name());
-        }
-        // Every name llama-quantize takes parses, aliases included; COPY is not a type.
-        for (name, c) in options.iter().filter(|(n, _)| n != "COPY") {
-            let f = Ftype::parse(name).unwrap_or_else(|e| panic!("{e}"));
-            assert_eq!(c_name(f), *c, "{name}");
-        }
-    }
-
-    #[test]
-    fn targets_and_imatrix_needs_match_llama_quant() {
-        let src = llama_cpp_file("src/llama-quant.cpp");
-        // llama_ftype_get_default_type: runs of `case LLAMA_FTYPE_X:` ending in `return GGML_TYPE_Y;`.
-        let mut default_type = Vec::new();
-        let mut pending = Vec::new();
-        for line in block(&src, "ggml_type llama_ftype_get_default_type", "default:") {
-            for word in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
-                if word.starts_with("LLAMA_FTYPE_") {
-                    pending.push(word.to_owned());
-                } else if let Some(t) = word.strip_prefix("GGML_TYPE_") {
-                    default_type.extend(pending.drain(..).map(|f| (f, t.to_owned())));
-                }
-            }
-        }
-        // tensor_requires_imatrix: the GGML types listed before its first `return true;`.
-        let needs: Vec<String> = block(&src, "static bool tensor_requires_imatrix", "return true;")
-            .into_iter()
-            .filter_map(|l| l.trim().strip_prefix("case GGML_TYPE_")?.strip_suffix(':').map(str::to_owned))
-            .collect();
-        assert!(needs.len() >= 5, "parsed {needs:?}");
-        assert!(src.contains("return ftype == LLAMA_FTYPE_MOSTLY_Q2_K_S;"), "the Q2_K_S rule moved");
-
-        for f in Ftype::ALL {
-            let t = default_type.iter().find(|(c, _)| *c == c_name(f)).map(|(_, t)| t.as_str());
-            assert_eq!(t.is_some(), f.is_target(), "{f}: llama_ftype_get_default_type");
-            let imatrix = f == Ftype::Q2_K_S || t.is_some_and(|t| needs.iter().any(|n| n == t));
-            assert_eq!(imatrix, f.needs_imatrix(), "{f}: needs_imatrix");
-        }
-    }
-
     #[test]
     fn ftype_names_parse() {
         assert_eq!(Ftype::parse("Q4_K_M"), Ok(Ftype::Q4_K_M));
@@ -791,6 +661,10 @@ mod tests {
         for f in Ftype::ALL {
             assert_eq!(Ftype::from_file_type(f.value()), Some(f));
         }
+        let mut values: Vec<u32> = Ftype::ALL.iter().map(|f| f.value()).collect();
+        values.sort_unstable();
+        values.dedup();
+        assert_eq!(values.len(), Ftype::ALL.len(), "Ftype::ALL lists a type twice");
     }
 
     #[test]

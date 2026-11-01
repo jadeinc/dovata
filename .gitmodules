@@ -1,3 +1,0 @@
-[submodule "src/llama/bindings-sys/llama.cpp"]
-	path = src/llama/bindings-sys/llama.cpp
-	url = https://github.com/ggml-org/llama.cpp.git

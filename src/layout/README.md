@@ -40,6 +40,7 @@ not know yet.
 | `ops.rs` | The ops a layout may use: their ggml enum, their params, and the shape rule ported from each op's constructor in `ggml.c`. |
 | `bind.rs` | `Layout::bind`, and the bound types the planner reads: `BoundGraph`, `BoundOp`, `BoundTensor`, `TensorKind`. |
 | `builtin/*.layout.toml` | The built-in layouts: `llama`, `qwen3`, `qwen3moe`. |
+| `ggml-ops.txt` | ggml's graph node types, copied from `ggml.h`, which every layout op is checked against. |
 | `testutil.rs`, `tests.rs` | Synthetic GGUF headers for each architecture, and the tests that bind them. |
 
 ## Who uses it
@@ -317,7 +318,7 @@ such as `n_embd`, `n_embd_k_gqa` and `n_rot`; the `llama_hparams` fields, such a
 passes to `ggml_rope_ext`, such as `freq_base`, `ext_factor` and `n_ctx_orig`. A layout
 line then reads the way the C++ call it came from reads.
 
-`symbols.rs` reads each symbol the way llama.cpp reads it at the pinned commit: the same
+`symbols.rs` reads each symbol the way llama.cpp reads it at commit 52b3df0: the same
 key, the same default when the key is absent, and per layer where llama.cpp keeps a
 per-layer array through `get_key_or_arr`. A few details follow llama.cpp closely.
 
@@ -343,8 +344,9 @@ per-layer array through `get_key_or_arr`. A few details follow llama.cpp closely
 An op name is a ggml graph node type: its `ggml_op` enum value in lower case
 (`GGML_OP_MUL_MAT` is `mul_mat`), or for `GGML_OP_UNARY` and `GGML_OP_GLU` nodes, the
 sub-op (`GGML_UNARY_OP_SILU` is `silu`). That makes each name exactly one kind of node
-the compiler must generate a kernel for, and `every_op_name_exists_in_ggml_h` checks
-each against the vendored `ggml.h`. API function names would not do: `ggml_rope`,
+the compiler must generate a kernel for, and `every_op_name_exists_in_ggml` checks
+each against `ggml-ops.txt`, a copy of the three enums in ggml's `ggml.h` taken at
+llama.cpp commit 52b3df0023659b142ce29f75c7a82cf437769c33. API function names would not do: `ggml_rope`,
 `ggml_rope_ext` and `ggml_rope_ext_inplace` build the same node, `ggml_argsort_top_k`
 builds two (`argsort` and `view`), and `ggml_cast` builds a `cpy`. `ggml_view_1d` to
 `ggml_view_4d` likewise all build a `view`. A layout written in function names would
@@ -682,9 +684,12 @@ command.
 
 ## Adding a layout
 
-1. Find the architecture's files in the pinned llama.cpp: `src/models/<arch>.cpp` for
-   `load_arch_hparams`, `load_arch_tensors` and the graph, and the `build_*` helpers it
-   calls in `src/llama-graph.cpp`.
+1. Find the architecture's files in a checkout of llama.cpp, from
+   https://github.com/ggml-org/llama.cpp, and record its commit in the layout's header
+   comment: `src/models/<arch>.cpp` for `load_arch_hparams`, `load_arch_tensors` and
+   the graph, and the `build_*` helpers it calls in `src/llama-graph.cpp`. The built-in
+   layouts were translated at commit 52b3df0023659b142ce29f75c7a82cf437769c33. A new op
+   name also goes into `ggml-ops.txt`, copied from that release's `ggml.h`.
 2. Write `weights` from `load_arch_tensors`: one line per `create_tensor`, with
    `optional` for `TENSOR_NOT_REQUIRED`, `fallback` for `TENSOR_DUPLICATED`, and `when`
    for the `if` around it. List in `unused` anything it creates that the graph never

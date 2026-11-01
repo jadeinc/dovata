@@ -84,26 +84,26 @@ fn check_invariants(g: &BoundGraph) {
 }
 
 #[test]
-fn every_op_name_exists_in_ggml_h() {
+fn every_op_name_exists_in_ggml() {
     // The enums, not the API functions: a layout op is one graph node type, and ggml's
     // node types are the `ggml_op` values, with unary and glu nodes named by their
-    // sub-op. See the docs in ops.rs for why function names would not do.
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/llama/bindings-sys/llama.cpp/ggml/include/ggml.h");
-    let header = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!("cannot read {}: {e}. Check out the llama.cpp submodule: git submodule update --init src/llama/bindings-sys/llama.cpp", path.display())
-    });
-    let enum_values = |name: &str, prefix: &str| -> BTreeSet<String> {
-        let start = header.find(&format!("enum {name} {{")).unwrap_or_else(|| panic!("ggml.h has no enum {name}"));
-        let body = &header[start..start + header[start..].find("};").expect("the enum ends")];
-        body.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .filter_map(|w| w.strip_prefix(prefix))
-            .filter(|w| *w != "COUNT")
+    // sub-op. See the docs in ops.rs for why function names would not do. The names
+    // come from ggml-ops.txt, a copy of the three enums in ggml.h.
+    let list = include_str!("ggml-ops.txt");
+    let enum_values = |name: &str| -> BTreeSet<String> {
+        let header = format!("[{name}]");
+        list.lines()
+            .map(str::trim)
+            .skip_while(|l| *l != header)
+            .skip(1)
+            .take_while(|l| !l.starts_with('['))
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .map(str::to_owned)
             .collect()
     };
-    let op = enum_values("ggml_op", "GGML_OP_");
-    let unary = enum_values("ggml_unary_op", "GGML_UNARY_OP_");
-    let glu = enum_values("ggml_glu_op", "GGML_GLU_OP_");
+    let op = enum_values("ggml_op");
+    let unary = enum_values("ggml_unary_op");
+    let glu = enum_values("ggml_glu_op");
     assert!(op.contains("MUL_MAT") && op.contains("UNARY") && op.contains("GLU"), "the parse found the enum");
     assert!(unary.contains("SILU") && glu.contains("SWIGLU"));
 
@@ -115,7 +115,7 @@ fn every_op_name_exists_in_ggml_h() {
             ops::Ggml::Unary(v) => (&unary, v),
             ops::Ggml::Glu(v) => (&glu, v),
         };
-        assert!(set.contains(value), "layout op {name} names {value}, which ggml.h does not have");
+        assert!(set.contains(value), "layout op {name} names {value}, which ggml does not have");
         assert_eq!(name.to_ascii_uppercase(), value, "a layout op is its ggml enum value in lower case");
     }
     // A unary or glu name must not also be a plain op, or one layout name would mean two nodes.

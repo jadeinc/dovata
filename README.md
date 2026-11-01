@@ -30,11 +30,10 @@ memory and the model file:
 | [`src/load/`](src/load/README.md) | preflight, which refuses a file that cannot be planned; `Model`, which treats a split GGUF as one model; the model's shape and KV cost |
 | [`src/layout/`](src/layout/README.md) | layouts: each architecture's compute graph as data in ggml's op names, and the binder that resolves one against a model. A built-in layout is one supported architecture. |
 | [`src/hub/`](src/hub/README.md) | getting a model: a local path, or one GGUF from the Hugging Face Hub, all parts of a split one. Never quantizes; the code default is the unquantized file. |
-| [`src/quantize/`](src/quantize/README.md) | quantizing with llama.cpp's own `llama_model_quantize`, only when the caller asks |
+| [`src/quantize/`](src/quantize/README.md) | quantizing by running llama.cpp's `llama-quantize` program, only when a program such as the Jade compiler asks |
 | [`src/plan/`](src/plan/README.md) | the planner: every tensor's region and offset on one target, checked and hashed |
 | [`src/moe/`](src/moe/README.md) | MoE expert ranking: which experts each layer uses most |
 | [`src/chat/`](src/chat/README.md) | `dovata-chat`, the optional tokenizer and chat-template package for Jade users. Its own crate; dovata never depends on it. |
-| [`src/llama/`](src/llama/README.md) | the bindgen'd llama.cpp C API over the stock upstream submodule, kept for quantization and as the reference for ggml's tensor formats |
 | [`src/jade-gpu-mon/`](src/jade-gpu-mon/README.md) | a terminal dashboard for VRAM and bandwidth on the GPU box |
 
 Still to come: the remaining built-in layouts, the step that feeds a bound layout to
@@ -61,8 +60,9 @@ invites one question about each directory: why is it here, and not inside a neig
   the download itself is behind the `hub` feature.
 - `quantize/` is never called implicitly. Fetching and planning never quantize, so a
   program that wants a smaller model, such as the Jade compiler, calls it directly. The
-  quant-type table always builds; the call into llama.cpp is behind the `quantize`
-  feature.
+  quant-type table always builds; running `llama-quantize` is behind the `quantize`
+  feature. llama.cpp is not in this repo: `llama-quantize` must be installed on the
+  machine, and it is the only part of llama.cpp dovata uses.
 - `layout/` is separate from the planner because a layout is the contract with the Jade
   compiler's kernels, and the planner only decides where its tensors live. Each built-in
   layout is one architecture dovata supports.
@@ -80,21 +80,19 @@ Outside `src/`:
 ## Building and testing
 
 ```sh
-# The library. Runs anywhere; no model, no GPU, no llama.cpp.
+# The library. Runs anywhere; no model and no GPU. The quantize tests also run
+# llama.cpp's llama-quantize, and skip when it is not installed: brew install llama.cpp
 cargo test -p dovata
 
 # With every capability compiled out, the check that the boundaries are real
 cargo test -p dovata --lib --no-default-features
 
-# The bundle machinery under the llama.cpp bindings
-cargo test -p bundle-kit
-
 # Look at a model file
 cargo run --bin gguf-inspect -- /path/to/model.gguf
 ```
 
-Build by package name with `-p`. `src/llama/bindings-sys` compiles llama.cpp from source,
-so `cargo build --workspace` needs the submodule checked out and cmake installed.
+The repo is pure Rust: nothing builds C or C++ code, so `cargo build --workspace` needs
+only a Rust toolchain.
 
 There is no CI on the 3.0 branch yet. The 2.x workflows released and published the
 runtime, and went with it.

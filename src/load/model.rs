@@ -519,4 +519,28 @@ mod tests {
         assert_eq!(split_paths(Path::new("/m/model.gguf"), 3), None);
         assert_eq!(split_paths(Path::new("/m/x-00001-of-00004.gguf"), 3), None, "count must match the header");
     }
+
+    /// Check dovata's ggml type sizes against a real model, when one is given. Set
+    /// `DOVATA_TEST_HEADER` to a GGUF file, or the first tens of megabytes of one, as
+    /// long as its tensor index is complete. The tensor data need not be there: each
+    /// tensor's size, padded to the file's alignment, must end exactly where the next
+    /// tensor's data starts, which the index alone records.
+    #[test]
+    fn a_real_headers_tensors_sit_end_to_end() {
+        let Ok(path) = std::env::var("DOVATA_TEST_HEADER") else {
+            eprintln!("skipped: set DOVATA_TEST_HEADER to a GGUF header to check type sizes on a real model");
+            return;
+        };
+        let model = Model::open(Path::new(&path)).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let (align, data) = (model.meta().alignment, model.meta().data_offset.unwrap());
+        let mut tensors: Vec<_> = model.tensors().filter(|t| t.part == 0).collect();
+        tensors.sort_by_key(|t| t.file_offset);
+        for pair in tensors.windows(2) {
+            let (t, next) = (&pair[0], &pair[1]);
+            let bytes = t.info.bytes().unwrap_or_else(|| panic!("no size for {}", crate::gguf::ggml_type_name(t.info.kind)));
+            let padded_end = data + (t.file_offset - data + bytes).div_ceil(align) * align;
+            assert_eq!(padded_end, next.file_offset, "{} is {}", t.info.name, crate::gguf::ggml_type_name(t.info.kind));
+        }
+        assert!(tensors.len() > 100, "{path} has only {} tensors", tensors.len());
+    }
 }

@@ -76,4 +76,4 @@ dovata layout
   qwen3moe has a built-in layout, so dovata can plan this file.
 
 Nothing obviously missing. This is not a promise it loads — the only
-authoritative check is loading it with the pinned llama.cpp.
+authoritative check is loading it in llama.cpp.

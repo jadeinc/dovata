@@ -36,7 +36,7 @@ pub const KEY_SPLIT_COUNT: &str = "split.count";
 pub const KEY_SPLIT_TENSORS_COUNT: &str = "split.tensors.count";
 
 /// The alignment GGUF uses when `general.alignment` is absent: `GGUF_DEFAULT_ALIGNMENT`
-/// in the vendored `ggml/include/gguf.h`.
+/// in ggml's `ggml/include/gguf.h`.
 pub const DEFAULT_ALIGNMENT: u64 = 32;
 
 /// Purpose: This enum holds one parsed GGUF metadata value, one variant per GGUF type.

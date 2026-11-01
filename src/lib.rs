@@ -11,7 +11,7 @@ pub mod gguf;
 /// Gets a model's GGUF files from a local path or the Hugging Face Hub.
 pub mod hub;
 
-/// Quantizes a GGUF model with llama.cpp's own quantizer.
+/// Quantizes a GGUF model by running llama.cpp's `llama-quantize` program.
 pub mod quantize;
 
 /// Describes each supported architecture's compute graph as data, in ggml's op names.
@@ -46,8 +46,9 @@ mod capabilities {
     #[test]
     #[cfg(feature = "quantize")]
     fn quantize_native_half_is_present() {
-        // The pure half always builds; the feature adds the call into llama.cpp. With
-        // it, a missing input is a bad input. Without it, every call is NotBuilt.
+        // The pure half always builds; the feature adds running llama.cpp's
+        // llama-quantize. With it, a missing input is a bad input, found before the
+        // program is looked for. Without it, every call is NotBuilt.
         use crate::quantize::{quantize, Ftype, QuantError, QuantSpec};
         let path = std::path::Path::new("/nonexistent/model.gguf");
         let err = quantize(path, path, &QuantSpec::new(Ftype::Q8_0)).unwrap_err();

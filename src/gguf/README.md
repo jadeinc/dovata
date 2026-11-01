@@ -26,7 +26,7 @@ refuses it with a clear message instead of supporting it halfway.
 Each tensor's offset in the index counts from the start of the data section, not from
 the start of the file. The data section begins at the end of the index, rounded up to
 `general.alignment`, or to 32 bytes when that key is absent, the
-`GGUF_DEFAULT_ALIGNMENT` in the vendored `ggml/include/gguf.h`. gguf.cpp pads only when
+`GGUF_DEFAULT_ALIGNMENT` in ggml's `ggml/include/gguf.h`. gguf.cpp pads only when
 there are tensors, so a file with none is not padded. `Gguf::file_offset` adds the two
 offsets together, which is what a memory map needs.
 
@@ -85,7 +85,7 @@ None of this is transcribed from the loader source, and this crate does not carr
 of the arch table — that table moves upstream every few releases and a stale copy here
 would be a confident lie. `gguf-inspect` reports what the file claims and flags the keys
 that are known to be load-bearing. The authoritative check is still loading the model
-with the pinned llama.cpp.
+in llama.cpp.
 
 `Report` is a guide in the same way. The keys any one architecture demands live in
 llama.cpp's `llm_load_hparams` and change between releases. The report lists the core
@@ -94,7 +94,7 @@ An architecture can demand more than that core, and none demands less. A clean r
 means nothing obviously missing, never that the file is sure to load.
 
 Whether llama.cpp supports an architecture and whether dovata can plan it are separate
-questions. The pinned llama.cpp answers the first. The second is answered by whether a
+questions. llama.cpp answers the first. The second is answered by whether a
 built-in layout exists for the architecture, or a layout file is given to the planner.
 
 ## Files
@@ -121,12 +121,17 @@ built-in layout exists for the architecture, or a layout file is given to the pl
 ## The type table
 
 `ggml_type_layout` gives each `ggml_type`'s block: how many elements, how many bytes.
-The numbers were copied from `type_traits` in the vendored `ggml/src/ggml.c`, read
-through `ggml_get_type_traits`, not worked out from struct definitions. Plain types such
+The numbers were copied from `type_traits` in ggml's `ggml/src/ggml.c` at llama.cpp
+commit 52b3df0, read through `ggml_get_type_traits`, not worked out from struct
+definitions. Plain types such
 as F32 are blocks of one element. A size wrong by a byte per block moves every tensor after
-it, so with the `quantize` feature on, `type_table_matches_ggml` compares the table with
-ggml's own `ggml_type_size` and `ggml_blck_size`. It was also checked against a real file: on the Qwen3-Coder header above, the
-last tensor ends exactly at the file's size on the Hub, 18,556,689,568 bytes. A type
+it, so two tests check the table against files llama.cpp wrote.
+`type_sizes_match_what_llama_quantize_writes` in `src/quantize/exec.rs` quantizes a
+small model to each type with the installed `llama-quantize`, and
+`a_real_headers_tensors_sit_end_to_end` in `src/load/model.rs` reads a real model's
+tensor index; both require each tensor's padded size to end exactly where the next
+tensor starts. On the Qwen3-Coder header above, the last tensor also ends exactly at the
+file's size on the Hub, 18,556,689,568 bytes. A type
 newer than the table has no size, and a tensor of that type cannot be planned until the
 table is extended. Retired tags, such as 4, 5 and 31 to 33, have no size either.
 
@@ -149,7 +154,7 @@ check that each tensor landed where the plan says. A binary fixture checked into
 repo is something nobody can review. Writing it from a few lines of Rust keeps it
 readable and lets each test pick its own shapes.
 
-The bytes follow `gguf_write_out` in the vendored `ggml/src/gguf.cpp`, format version 3:
+The bytes follow `gguf_write_out` in ggml's `ggml/src/gguf.cpp`, format version 3:
 the header, the metadata, the tensor index, zero padding up to the alignment, and then
 each tensor's data, itself padded to the alignment. gguf.cpp's reader refuses a tensor
 whose offset is not the running total of the padded sizes before it, so `Writer` works

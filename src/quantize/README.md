@@ -1,8 +1,11 @@
 # quantize: a smaller GGUF, made by llama.cpp's own quantizer
 
 This capability turns a GGUF into a quantized copy, such as a BF16 model into Q4_K_M.
-It calls `llama_model_quantize` from the vendored llama.cpp, the same function the
-`llama-quantize` tool runs, so its output is byte for byte what that tool would write.
+It runs llama.cpp's `llama-quantize` program, so its output is exactly what that tool
+writes. llama.cpp is not part of this repo: the program must be installed on the
+machine and on `PATH`, from `brew install llama.cpp` on macOS or a release build from
+https://github.com/ggml-org/llama.cpp/releases on Linux. It is the only part of
+llama.cpp dovata uses.
 
 It only runs when a caller asks. Fetching a model never quantizes it, and planning
 never quantizes it either. A caller who wants a smaller model calls
@@ -21,12 +24,20 @@ type name could cost an hour and fill a disk. So nothing calls `quantize` except
 caller, and a repo that lacks the requested type is an error from `hub`, not a cue to
 quantize.
 
+*Run the program, do not link the library.* An earlier version linked llama.cpp's C
+API through a vendored copy of llama.cpp and a bindings crate, which made every build
+compile llama.cpp with cmake. It was replaced because llama.cpp does not keep its ABI
+stable: the `llama_model_quantize_params` struct changed 15 times in the history of
+`include/llama.h`, most recently in April 2026 in PR #20346, so declarations written for
+one release read the wrong bytes with another, with no error. The program's command
+line has stayed stable, and a mismatch there fails with a usage message instead of
+corrupting memory. dovata now has no C or C++ code and no `unsafe` block.
+
 *The pure half builds everywhere.* The type table, the checks, and the output naming
-rule have no native code, so they are tested on any machine. Only the call into
-llama.cpp needs the `quantize` cargo feature, which compiles llama.cpp through the sys
-crate. With the feature off, `quantize()` still exists and returns `NotBuilt`, so a
-program compiled without the feature gets an error that names the feature instead of a
-link failure.
+rule are tested on any machine. Running the program needs the `quantize` cargo feature.
+With the feature off, `quantize()` still exists and returns `NotBuilt`, so a program
+compiled without it gets an error that names the feature. With the feature on and no
+`llama-quantize` on `PATH`, it returns `NotInstalled`, which says how to install it.
 
 ## Files
 
@@ -36,17 +47,17 @@ link failure.
   what was made, and `QuantError` says why nothing was. `default_output` names an output
   when the caller has none. `prepare` runs every check that needs no llama.cpp. With the
   feature off, this file also holds the `quantize()` that returns `NotBuilt`.
-- `exec.rs` is the native edge, built only with the `quantize` feature. It opens the
-  input, runs `prepare`, makes the output directory, calls `llama_backend_init` once and
-  `llama_model_quantize` in dovata's only `unsafe` block, then opens the output again and
-  checks that its `general.file_type` is the type asked for. Its tests quantize a real
-  file and compare dovata's ggml type table with ggml's own; they add two more `unsafe`
-  blocks, to read ggml's type table and to load the fixture.
+- `exec.rs` is the edge that runs the program, built only with the `quantize` feature.
+  It opens the input, runs `prepare`, makes the output directory, finds
+  `llama-quantize` on `PATH`, builds its arguments and runs it, then opens the output
+  again and checks that its `general.file_type` is the type asked for. Its tests run the
+  real program on the fixture, and they skip, with a message, when it is not installed.
 - `fixture.rs` is test-only. It writes a tiny but complete `llama` model in F32 with
   `crate::gguf::write`: two layers, a 64-wide embedding, and a 32-token SentencePiece
-  vocabulary, with every shape `load_arch_tensors` in llama.cpp expects. A test loads it
-  in llama.cpp to prove that. It can also write the model as two split parts. See "The
-  fixture model" below.
+  vocabulary, with every shape `load_arch_tensors` in llama.cpp expects. A test loaded
+  it in llama.cpp to prove that until the library was unlinked; the quantize tests still
+  run it through llama.cpp's loader. It can also write the model as two split parts. See
+  "The fixture model" below.
 
 ## How a call goes
 
@@ -56,7 +67,8 @@ A call runs in four steps, and every refusal happens before llama.cpp starts.
    and its other parts are found by llama.cpp's `-00001-of-00003.gguf` rule.
 2. `prepare` checks the request against the model's header: the type, the input's
    current type, and where the output would go.
-3. llama.cpp gets only the first part's path. `llama_model_quantize` builds a
+3. `llama-quantize` gets only the first part's path. It calls `llama_model_quantize`,
+   which builds a
    `llama_model_loader` with an empty split list, and the loader, seeing
    `split.count > 1`, names the other parts with `llama_split_prefix` and
    `llama_split_path`: `<prefix>-%05d-of-%05d.gguf` next to the first. That is the same
@@ -71,27 +83,32 @@ llama.cpp writes each file's header last, so an output cut short by a crash or a
 disk has a zeroed header and never opens as a model. Before anything is written, the
 output paths are checked a second time on the resolved paths, because a symlinked
 directory can put an output inside the hub cache or make it another name for an input
-file. Paths reach llama.cpp as C strings; on Unix a path's raw bytes are passed as they
-are, so a file name that is not valid UTF-8 still works.
+file.
 
-`llama-quantize` calls `llama_backend_init` once before quantizing, so dovata does too,
-once per process. It initializes ggml's lookup tables and registers the compiled-in
-backends; quantizing runs on the CPU either way.
+The program is called as `llama-quantize [--allow-requantize] [--keep-split] <input>
+<output> <TYPE> [nthreads]`. Both paths are made absolute first. The reason is in
+`try_parse_ftype` in llama.cpp's `tools/quantize/quantize.cpp`: the program decides
+whether its second argument is the output or the type by trying to read it as a type,
+and that includes `std::stoi`, so an output named `7b-model.gguf` would be read as type
+7, Q8_0. An absolute path starts with `/` and never reads as a number. The thread count
+is passed only when `QuantSpec::nthread` is set; otherwise the program uses one thread
+per hardware thread.
 
-llama.cpp logs to stderr while it works, one line per tensor, as `llama-quantize` does.
-That log is left on, because a big model takes minutes and the log is the only sign of
-progress, and because when llama.cpp fails, the reason is in it. Turning it off would
-take a log callback, a second `unsafe` entry point, for a quieter build.
+llama.cpp logs one line per tensor while it works. dovata copies that log to its own
+standard error line by line as it arrives, because a big model takes minutes and the
+log is the only sign of progress. It also keeps the last 20 lines, and a failure's
+`QuantError::Llama` quotes them, so the reason is in the error itself.
 
 ## What a user will see when it refuses
 
 | Error | When | Message, in short |
 |---|---|---|
 | `NotBuilt` | the `quantize` feature is off | this build cannot quantize; enable the `quantize` cargo feature |
+| `NotInstalled` | `llama-quantize` is not on `PATH` | install llama.cpp, with `brew install llama.cpp` on macOS or a release build on Linux |
 | `AlreadyAt` | the input already is the requested type | `x.gguf` is already Q8_0; use the file as it is |
 | `Requantize` | the input holds quantized tensors and `allow_requantize` is off | already quantized; quantizing again loses quality; start from the unquantized file or set `allow_requantize` |
 | `BadInput` | the input does not open, the output is an input file, the output is in the hub cache, the type is NVFP4, or the type needs an importance matrix | says which, and what to do instead |
-| `Llama` | llama.cpp returned an error, or wrote a file with the wrong type | the reason is in llama.cpp's log on stderr |
+| `Llama` | `llama-quantize` failed, or wrote a file with the wrong type | the exit status and the last 20 lines of its log |
 
 *Already at the type is an error on purpose.* The alternatives are worse. Copying the
 input to the output is the 60 GB accident the check exists to stop. Returning success
@@ -107,7 +124,7 @@ split as ggml's `ggml_is_quantized`: F32, F16, BF16, F64 and the integer types a
 and every other type, known or not, counts as quantized, so an unknown type is never
 silently requantized.
 
-*Two kinds of type are refused up front.* NVFP4 files load in the pinned llama.cpp, but
+*Two kinds of type are refused up front.* NVFP4 files load in llama.cpp, but
 its quantizer cannot write one: `llama_ftype_get_default_type` has no case for it, so
 asking for one fails. The types whose default tensor type needs an importance matrix are
 IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ2_M, IQ3_XXS and Q2_K_S. llama.cpp refuses those
@@ -167,7 +184,8 @@ the part suffixes itself.
 
 llama.cpp's quantizer runs its real model loader, which reads the architecture's
 hyperparameters with exact GGUF types, so a fixture has to be a model llama.cpp would
-load, not only a well-formed GGUF. `fixture.rs` follows the pinned tree:
+load, not only a well-formed GGUF. `fixture.rs` follows llama.cpp at commit
+52b3df0023659b142ce29f75c7a82cf437769c33:
 
 - `load_hparams` in `src/llama-model.cpp` reads `context_length`, `embedding_length` and
   `block_count` as `u32`, and for `llama` refuses a `rope.dimension_count` that is not
@@ -192,29 +210,37 @@ id, so tests running at the same time never share files.
 
 ## How the tables stay right
 
-The `Ftype` table is checked against the pinned llama.cpp by tests that read its
-sources:
+The tables are checked against the real llama.cpp, through the installed program and
+through real files:
 
-- `ftype_table_matches_llama_h` parses the `llama_ftype` enum in `include/llama.h`. Every
-  `Ftype` must have its value there, and every value there must be an `Ftype`.
-- `ftype_names_match_llama_quantize` parses `QUANT_OPTIONS` in
-  `tools/quantize/quantize.cpp`, so every name is the one the tool takes.
-- `targets_and_imatrix_needs_match_llama_quant` parses `src/llama-quant.cpp`, so the list
-  of writable types and the list of types that need an importance matrix match it.
-- `type_table_matches_ggml`, with the feature on, asks ggml itself for each type's block
-  size, byte size, name and whether it is quantized, and compares them with
-  `crate::gguf`'s table.
+- `ftype_table_matches_llama_quantize_help` reads the type list `llama-quantize --help`
+  prints, each line a number and a name such as `15  or  Q4_K_M`. Every name it lists
+  must parse to the `Ftype` with that number, and an `Ftype` is listed exactly when
+  `is_target` says the program can write it.
+- `type_sizes_match_what_llama_quantize_writes` quantizes the fixture to every type that
+  needs no importance matrix and checks dovata's size for every tensor against where the
+  program put the next one: each tensor's data, padded to the file's alignment, must end
+  exactly where the next tensor starts. The fixture's rows are 64 and 128 wide, so this
+  covers the types with 32-wide blocks. Q1_0 is left out, since it needs rows a multiple
+  of 128 and llama.cpp has no fallback for it.
+- `a_real_headers_tensors_sit_end_to_end` in `src/load/model.rs` makes the same check on
+  a real model's tensor index when `DOVATA_TEST_HEADER` names one, which covers the
+  256-wide K-quant types. It passes on Qwen3-Coder-30B at Q4_K_M, Qwen3-0.6B at Q8_0 and
+  Llama-3.2-1B at Q4_K_M.
 
-The first three need the llama.cpp submodule checked out. Without it they fail and say
-so, because a drift check that passes when it cannot see its reference proves nothing.
+Two checks from the linked version have no replacement. The table of which types need an
+importance matrix was checked against `src/llama-quant.cpp`, and the non-writable types
+against `include/llama.h`; both passed at commit 52b3df0 and are now plain data. A
+newer llama.cpp that changes either shows up as a `QuantError::Llama` from the program.
 
 ## Testing
 
 ```sh
-# Everything, including a real quantization of the fixture
+# Everything. The tests that run llama-quantize skip, with a message, when it is not
+# on PATH, so install llama.cpp first for a full run.
 cargo test -p dovata --lib quantize
 
-# The pure half alone, as a build without llama.cpp sees it
+# The pure half alone, as a build without the quantize feature sees it
 cargo test -p dovata --lib --no-default-features quantize
 ```
 

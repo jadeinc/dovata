@@ -1,7 +1,7 @@
 # qwen3moe: the Qwen3 mixture-of-experts transformer, such as Qwen3-30B-A3B,
 # Qwen3-Coder-30B-A3B and Qwen3-235B-A22B.
 #
-# Translated from llama.cpp at the pinned commit (src/llama/bindings-sys/llama.cpp):
+# Translated from llama.cpp at commit 52b3df0023659b142ce29f75c7a82cf437769c33:
 #   src/models/qwen3moe.cpp   load_arch_tensors, and the graph in graph::graph
 #   src/llama-graph.cpp       build_inp_embd, build_norm, build_qkv, build_attn,
 #                             build_attn_mha, build_moe_ffn, build_lora_mm

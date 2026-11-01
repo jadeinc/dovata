@@ -149,7 +149,7 @@ fn print_report(path: &str, g: &Gguf, all: bool) {
     let blocking = report.blocking();
     if blocking.is_empty() {
         println!("\nNothing obviously missing. This is not a promise it loads — the only");
-        println!("authoritative check is loading it with the pinned llama.cpp.");
+        println!("authoritative check is loading it in llama.cpp.");
     } else {
         println!("\n{} required key(s) missing — this file will not load:", blocking.len());
         for c in blocking {
