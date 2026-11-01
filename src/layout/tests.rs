@@ -209,6 +209,155 @@ fn builtin_llama_moe_variant_binds() {
     assert_eq!(g.tensor(down).dims, vec![64, 2, 8], "[n_embd, n_expert_used, n_tokens]");
 }
 
+// ---- llama4 ----
+
+/// Purpose: This function returns a small llama4 shape with four layers, so the default
+/// period of 4 gives three chunked rope layers and one NoPE layer.
+///
+/// Inputs: none.
+///
+/// Outputs: the shape.
+fn llama4_shape() -> Shape {
+    Shape { n_layer: 4, ..SMALL }
+}
+
+/// Purpose: This function lists the layers whose ops read a tensor.
+///
+/// Inputs:
+/// - `g`: the bound graph.
+/// - `name`: the tensor's bound name.
+///
+/// Outputs: the layers, in order, each once; empty when the graph has no such tensor.
+fn layers_reading(g: &BoundGraph, name: &str) -> Vec<u32> {
+    let Some(id) = g.find(name) else { return Vec::new() };
+    let mut layers: Vec<u32> = g.ops.iter().filter(|o| o.inputs.contains(&id)).filter_map(|o| o.layer).collect();
+    layers.dedup();
+    layers
+}
+
+/// Purpose: This function finds the op that produces a tensor.
+///
+/// Inputs:
+/// - `g`: the bound graph.
+/// - `name`: the tensor's bound name.
+///
+/// Outputs: the op. It panics when no op produces the tensor.
+fn producer<'a>(g: &'a BoundGraph, name: &str) -> &'a BoundOp {
+    let id = g.find(name).unwrap_or_else(|| panic!("no tensor {name}"));
+    g.ops.iter().find(|o| o.outputs.contains(&id)).unwrap_or_else(|| panic!("no op produces {name}"))
+}
+
+#[test]
+fn builtin_llama4_binds_scout_like() {
+    // Scout: experts on every layer, the Q/K L2 norm, and rope frequency factors.
+    let mut h = testutil::llama4(&llama4_shape(), F16, 1, false);
+    h.tensor("rope_freqs.weight", &[32], F32);
+    let g = bind("llama4", &h, KvType::F16);
+    check_invariants(&g);
+    // Layers 0 to 2 rope and attend in chunks; layer 3 has no rope, scales Q by the
+    // temperature, and attends over the whole context.
+    let ropes: Vec<usize> = (0..4).map(|l| g.layer_ops(l).filter(|o| o.op == "rope").count()).collect();
+    assert_eq!(ropes, vec![2, 2, 2, 0]);
+    assert_eq!(layers_reading(&g, "inp_attn_scale"), vec![3]);
+    assert_eq!(layers_reading(&g, "attn_inp_kq_mask_swa"), vec![0, 1, 2]);
+    assert_eq!(layers_reading(&g, "attn_inp_kq_mask"), vec![3]);
+    assert_eq!(layers_reading(&g, "inp_k_idxs_swa"), vec![0, 1, 2]);
+    assert_eq!(layers_reading(&g, "inp_v_idxs"), vec![3]);
+    assert_eq!(layers_reading(&g, "rope_freqs.weight"), vec![0, 1, 2]);
+    let rope = ops_named(&g, "rope").next().unwrap();
+    assert_eq!(rope.params["mode"], Param::Int(0), "llama4 ropes NORM");
+    assert_eq!(rope.params["freq_base"], Param::Float(1_000_000.0), "no freq_base_swa, so the file's freq_base");
+    // The L2 norm is a weightless rms_norm on Q and K of each rope layer.
+    let norms: Vec<usize> = (0..4).map(|l| g.layer_ops(l).filter(|o| o.op == "rms_norm").count()).collect();
+    assert_eq!(norms, vec![4, 4, 4, 2]);
+    // Sigmoid routing that chooses on the raw logits.
+    assert_eq!(ops_named(&g, "mul_mat_id").count(), 3 * 4);
+    assert_eq!((ops_named(&g, "sigmoid").count(), ops_named(&g, "soft_max").count()), (4, 0));
+    assert_eq!(producer(&g, "ffn_moe_argsort-0").inputs[0], g.find("ffn_moe_logits-0").unwrap());
+    // The router weight scales each token's repeated row before the experts run.
+    let weighted = g.find("ffn_moe_weighted-0").unwrap();
+    assert_eq!(g.tensor(weighted).dims, vec![64, 2, 8], "[n_embd, n_expert_used, n_tokens]");
+    assert_eq!(producer(&g, "ffn_moe_weighted-0").inputs[0], g.find("repeated-0").unwrap());
+    assert_eq!(producer(&g, "ffn_moe_up-0").inputs[1], weighted);
+    // The experts' sum and the shared expert make the FFN output.
+    let merged = producer(&g, "ffn_out-0");
+    assert_eq!(merged.inputs[1], g.find("ffn_moe_shexp-0").unwrap());
+}
+
+#[test]
+fn llama4_interleaves_dense_and_expert_layers() {
+    // Maverick: 128 experts on every second layer, a dense FFN between, and no Q/K norm.
+    let s = Shape { n_expert: 128, ..llama4_shape() };
+    let g = bind("llama4", &testutil::llama4(&s, F16, 2, false), KvType::F16);
+    check_invariants(&g);
+    let experts: Vec<usize> = (0..4).map(|l| g.layer_ops(l).filter(|o| o.op == "mul_mat_id").count()).collect();
+    assert_eq!(experts, vec![0, 3, 0, 3]);
+    assert_eq!(layers_reading(&g, "blk.0.ffn_gate.weight"), vec![0]);
+    assert!(g.find("blk.1.ffn_gate.weight").is_none());
+    for l in 0..4 {
+        assert_eq!(g.layer_ops(l).filter(|o| o.op == "rms_norm").count(), 2, "layer {l} has only its two norms");
+    }
+    assert!(ops_named(&g, "rope").all(|o| o.inputs.len() == 2), "no rope_freqs in this file");
+}
+
+#[test]
+fn llama4_without_chunked_attention_has_one_cache() {
+    // attention.sliding_window = 0, as for MobileLLM: no chunked layers, so no SWA
+    // inputs, and n_no_rope_layer_step is n_layer, so only the last layer has no rope.
+    let s = Shape { n_layer: 6, ..SMALL };
+    let mut h = testutil::llama4(&s, F16, 1, false);
+    h.u32("attention.sliding_window", 0);
+    let g = bind("llama4", &h, KvType::F16);
+    check_invariants(&g);
+    assert!(g.find("attn_inp_kq_mask_swa").is_none() && g.find("inp_k_idxs_swa").is_none());
+    assert_eq!(layers_reading(&g, "attn_inp_kq_mask"), (0..6).collect::<Vec<_>>());
+    let ropes: Vec<usize> = (0..6).map(|l| g.layer_ops(l).filter(|o| o.op == "rope").count()).collect();
+    assert_eq!(ropes, vec![2, 2, 2, 2, 2, 0]);
+    // With the default pattern, the same six layers would be chunked except 3.
+    let g = bind("llama4", &testutil::llama4(&s, F16, 1, false), KvType::F16);
+    assert_eq!(layers_reading(&g, "attn_inp_kq_mask"), vec![3]);
+}
+
+#[test]
+fn llama4_chunking_and_rope_follow_their_own_patterns() {
+    // A sliding_window_pattern of 2 makes layers 0 and 2 chunked, while NoPE stays on
+    // every fourth layer. Chunked layers rope with freq_base_swa, the others with
+    // freq_base.
+    let mut h = testutil::llama4(&llama4_shape(), F16, 1, false);
+    h.u32("attention.sliding_window_pattern", 2).f32("rope.freq_base_swa", 250_000.0);
+    let g = bind("llama4", &h, KvType::F16);
+    check_invariants(&g);
+    assert_eq!(layers_reading(&g, "attn_inp_kq_mask_swa"), vec![0, 2]);
+    let bases: Vec<(u32, Param)> = ops_named(&g, "rope").map(|o| (o.layer.unwrap(), o.params["freq_base"].clone())).collect();
+    let want = |l: u32, b: f64| [(l, Param::Float(b)), (l, Param::Float(b))];
+    assert_eq!(bases, [want(0, 250_000.0), want(1, 1_000_000.0), want(2, 250_000.0)].concat());
+}
+
+#[test]
+fn llama4_rotates_each_cache_with_its_own_matrices() {
+    // A quantized cache rotates Q, K and V; each of the two caches has its own matrices.
+    // With a fused QKV weight, K on the NoPE layer is still a strided view of the QKV
+    // rows, so it is copied before its rotation, as V is on every layer.
+    let g = bind("llama4", &testutil::llama4(&llama4_shape(), F16, 1, true), KvType::Q8_0);
+    check_invariants(&g);
+    assert_eq!(layers_reading(&g, "attn_inp_k_rot_swa"), vec![0, 1, 2]);
+    assert_eq!(layers_reading(&g, "attn_inp_v_rot_swa"), vec![0, 1, 2]);
+    assert_eq!(layers_reading(&g, "attn_inp_k_rot"), vec![3]);
+    assert_eq!(layers_reading(&g, "attn_inp_v_rot"), vec![3]);
+    let conts: Vec<usize> = (0..4).map(|l| g.layer_ops(l).filter(|o| o.op == "cont").count()).collect();
+    assert_eq!(conts, vec![1, 1, 1, 2]);
+    let hadamard = g.ops.iter().filter(|o| o.params.get("hint") == Some(&Param::Int(1))).count();
+    assert_eq!(hadamard, 4 * 4, "Q, K, V and the attention output, in every layer");
+}
+
+#[test]
+fn llama4_symbols_are_refused_for_other_architectures() {
+    let src = TINY.replace(r#"out = "x"
+"#, "out = \"x\"\nwhen = \"is_swa\"\n");
+    let err = Layout::from_toml(&src).unwrap().bind(&tiny(), &opts(KvType::F16)).unwrap_err().to_string();
+    assert!(err.contains("read only for llama4"), "{err}");
+}
+
 #[test]
 fn llama_rope_reads_the_frequency_factors_when_present() {
     let mut h = testutil::llama(&SMALL, F16, false, false);
@@ -219,6 +368,111 @@ fn llama_rope_reads_the_frequency_factors_when_present() {
         assert_eq!(rope.inputs.len(), 3);
         assert_eq!(rope.inputs[2], freqs, "every layer shares the one tensor");
     }
+}
+
+/// A qwen2 or nemotron test shape: their Q is n_embd wide, so 2 heads of 64 make 128.
+const QWEN2_SHAPE: Shape = Shape { n_embd: 128, ..SMALL };
+
+#[test]
+fn builtin_qwen2_binds() {
+    let g = bind("qwen2", &testutil::qwen2(&QWEN2_SHAPE, F16, false), KvType::F16);
+    check_invariants(&g);
+    let rope = ops_named(&g, "rope").next().unwrap();
+    assert_eq!(rope.params["mode"], Param::Int(2), "qwen2 ropes NEOX");
+    assert_eq!(rope.inputs.len(), 2, "no frequency factors");
+    assert_eq!(g.tensor(rope.outputs[0]).dims, vec![64, 2, 8], "[head width, heads, tokens]");
+    // The Q, K and V biases add three ops to the layer's two residual adds.
+    assert_eq!(g.layer_ops(0).filter(|o| o.op == "add").count(), 3 + 2);
+    // No Q and K norms, unlike qwen3: two RMS norms a layer, and the output norm.
+    assert_eq!(ops_named(&g, "rms_norm").count(), 2 * 2 + 1);
+}
+
+#[test]
+fn qwen2_adds_the_output_bias_when_the_file_has_one() {
+    let mut h = testutil::qwen2(&QWEN2_SHAPE, F16, true);
+    h.tensor("output.bias", &[32], F32);
+    let g = bind("qwen2", &h, KvType::F16);
+    check_invariants(&g);
+    let (head, bias) = (&g.ops[g.ops.len() - 2], g.ops.last().unwrap());
+    assert_eq!(head.inputs[0], g.find("token_embd.weight").unwrap(), "tied: the LM head reads the embeddings");
+    assert_eq!((bias.op, bias.inputs[1]), ("add", g.find("output.bias").unwrap()));
+    assert_eq!(g.outputs, bias.outputs, "the logits are the biased result");
+}
+
+#[test]
+fn builtin_nemotron_binds() {
+    let g = bind("nemotron", &testutil::nemotron(&QWEN2_SHAPE, F16, false), KvType::F16);
+    check_invariants(&g);
+    // LayerNorm everywhere, with f_norm_eps: two a layer and the output norm.
+    assert_eq!(ops_named(&g, "rms_norm").count(), 0);
+    assert_eq!(ops_named(&g, "norm").count(), 2 * 2 + 1);
+    assert!(ops_named(&g, "norm").all(|o| o.params["eps"] == Param::Float(f64::from(1e-5f32))));
+    // Each norm is followed by its weight and its bias.
+    let ln: Vec<&str> = g.layer_ops(0).take(3).map(|o| o.op).collect();
+    assert_eq!(ln, ["norm", "mul", "add"]);
+    // Partial rotary: rope turns 32 of each head's 64 dims, while the attention scale is
+    // over the whole head.
+    let rope = ops_named(&g, "rope").next().unwrap();
+    assert_eq!((&rope.params["mode"], &rope.params["n_dims"]), (&Param::Int(2), &Param::Int(32)));
+    let fa = ops_named(&g, "flash_attn_ext").next().unwrap();
+    assert_eq!(fa.params["scale"], Param::Float(1.0 / 8.0));
+    // The FFN is up, relu, sqr, down, with no gate.
+    assert_eq!((ops_named(&g, "relu").count(), ops_named(&g, "sqr").count(), ops_named(&g, "swiglu").count()), (2, 2, 0));
+    let sqr = ops_named(&g, "sqr").next().unwrap();
+    assert_eq!(g.tensor(sqr.outputs[0]).dims, vec![96, 8]);
+}
+
+#[test]
+fn nemotron_requires_its_output_weight() {
+    // Unlike llama and qwen2, nemotron's LM head does not fall back to the embeddings.
+    let err = builtin("nemotron").unwrap().bind(&testutil::nemotron(&QWEN2_SHAPE, F16, true).model(), &opts(KvType::F16)).unwrap_err();
+    assert_eq!(err, LayoutError::MissingWeight { name: "output.weight".into() });
+}
+
+/// The deci test layers, as (n_head, n_head_kv, n_ff): self-attention, linear attention,
+/// attention-free, a dummy layer with neither attention nor FFN, and a last
+/// self-attention layer with its own KV head count and FFN width.
+const DECI_LAYERS: &[(u64, u64, u64)] = &[(2, 1, 96), (2, 0, 96), (0, 0, 96), (0, 0, 0), (2, 2, 64)];
+
+#[test]
+fn builtin_deci_binds_every_kind_of_layer() {
+    let g = bind("deci", &testutil::deci(&SMALL, F16, false, DECI_LAYERS), KvType::F16);
+    check_invariants(&g);
+    assert_eq!(g.n_layer, 5);
+    // A KV cache only where the layer has KV heads, each as wide as that layer's heads.
+    let kv: Vec<(&str, &[u64])> = g.tensors.iter().filter(|t| t.kind == TensorKind::Kv).map(|t| (t.name.as_str(), t.dims.as_slice())).collect();
+    assert_eq!(kv, [("cache_k_l0", &[64, 256][..]), ("cache_k_l4", &[128, 256]), ("cache_v_l0", &[64, 256]), ("cache_v_l4", &[128, 256])]);
+    let fa: Vec<Option<u32>> = ops_named(&g, "flash_attn_ext").map(|o| o.layer).collect();
+    assert_eq!(fa, [Some(0), Some(4)]);
+    // Linear attention: the norm and the output projection, the residual, then the FFN.
+    let ops = |l: u32| g.layer_ops(l).map(|o| o.op).collect::<Vec<_>>();
+    assert_eq!(ops(1), ["rms_norm", "mul", "mul_mat", "add", "rms_norm", "mul", "mul_mat", "mul_mat", "swiglu", "mul_mat", "add"]);
+    // Attention-free: straight to the FFN norm, which reads the layer's input.
+    assert_eq!(ops(2), ["rms_norm", "mul", "mul_mat", "mul_mat", "swiglu", "mul_mat", "add"]);
+    assert_eq!(g.layer_ops(2).next().unwrap().inputs[0], g.find("inpL-1").unwrap());
+    assert!(g.find("ffn_inp-2").is_none());
+    // The dummy layer has no ops, so the next layer reads layer 2's output.
+    assert!(ops(3).is_empty());
+    assert_eq!(g.layer_ops(4).next().unwrap().inputs[0], g.find("inpL-2").unwrap());
+    // Each layer's FFN is its own width; the last runs over the one output row.
+    assert_eq!(g.tensor(g.find("ffn_up-0").unwrap()).dims, vec![96, 8]);
+    assert_eq!(g.tensor(g.find("ffn_up-4").unwrap()).dims, vec![64]);
+    let rope = ops_named(&g, "rope").next().unwrap();
+    assert_eq!(rope.params["mode"], Param::Int(0), "deci ropes NORM");
+}
+
+#[test]
+fn deci_ropes_and_rotates_only_where_it_attends() {
+    let mut h = testutil::deci(&SMALL, F16, false, DECI_LAYERS);
+    h.tensor("rope_freqs.weight", &[32], F32);
+    let g = bind("deci", &h, KvType::Q8_0);
+    check_invariants(&g);
+    let freqs = g.find("rope_freqs.weight").unwrap();
+    let roped: BTreeSet<Option<u32>> = ops_named(&g, "rope").filter(|o| o.inputs.get(2) == Some(&freqs)).map(|o| o.layer).collect();
+    assert_eq!(roped, BTreeSet::from([Some(0), Some(4)]));
+    // Q, K and V before the write and the output after, in the two attending layers only.
+    let hadamard: Vec<Option<u32>> = g.ops.iter().filter(|o| o.params.get("hint") == Some(&Param::Int(1))).map(|o| o.layer).collect();
+    assert_eq!(hadamard, [Some(0); 4].into_iter().chain([Some(4); 4]).collect::<Vec<_>>());
 }
 
 #[test]
@@ -620,12 +874,266 @@ fn a_real_header_binds_its_builtin_layout() {
     );
     assert_eq!(weights, model.tensors().count());
     // The bound KV cache is exactly what ModelDims prices, which matches llama.cpp.
-    let dims = crate::load::ModelDims::from_gguf(model.meta()).unwrap();
-    assert_eq!(kv, dims.kv_bytes_per_token(opts.kv_k, opts.kv_v) * u64::from(opts.n_ctx));
+    // ModelDims reads one head count for every layer, so a file with per-layer head
+    // counts, such as deci's, is priced layer by layer instead. An MLA model keeps no V
+    // cache (llama_kv_cache's has_v is !is_mla), which ModelDims does not know, so its V
+    // half is left out of the price.
+    let expected = per_layer_kv_bytes(&model, &opts).unwrap_or_else(|| {
+        let mut dims = crate::load::ModelDims::from_gguf(model.meta()).unwrap();
+        if g.find("cache_v_l0").is_none() {
+            dims.value_length = Some(0);
+        }
+        dims.kv_bytes_per_token(opts.kv_k, opts.kv_v) * u64::from(opts.n_ctx)
+    });
+    assert_eq!(kv, expected);
     if model.architecture() == "qwen3moe" && g.n_layer == 48 {
         // Qwen3-Coder-30B-A3B: 579 tensors, and llama.cpp's own KV buffer is 864 MiB at
         // 32768 tokens of q4_0.
         assert_eq!(weights, 579);
         assert_eq!(kv, 864 * 1024 * 1024);
     }
+    if model.architecture() == "deci" && model.meta().name().is_some_and(|n| n.contains("51B")) {
+        // Llama-3.1-Nemotron-51B: 54 of its 80 layers attend, with 371 KV heads in all, so
+        // llama.cpp's KV buffer is 1669.5 MiB at 32768 tokens of q4_0.
+        assert_eq!(g.tensors.iter().filter(|t| t.kind == TensorKind::Kv).count(), 2 * 54);
+        assert_eq!(ops_named(&g, "flash_attn_ext").count(), 54);
+        assert_eq!(kv, 371 * 128 * 2 * 32768 * 18 / 32);
+    }
+    if model.architecture() == "llama4" && model.meta().u64("llama4.attention.sliding_window").is_none() {
+        // Llama 4 Scout and Maverick: three of every four layers attend in chunks, and
+        // every interleave_moe_layer_step-th layer (Scout 1, Maverick 2) has experts.
+        let reads = |name: &str| g.find(name).map_or(0, |id| g.ops.iter().filter(|o| o.inputs.contains(&id)).count());
+        assert_eq!(reads("attn_inp_kq_mask_swa"), g.n_layer as usize / 4 * 3);
+        let step = model.meta().u64("llama4.interleave_moe_layer_step").unwrap();
+        assert_eq!(ops_named(&g, "sigmoid").count() as u64, u64::from(g.n_layer) / step);
+    }
+}
+
+/// Purpose: This function prices a KV cache layer by layer from a header whose head
+/// counts are per-layer arrays.
+///
+/// Inputs:
+/// - `model`: the opened GGUF model.
+/// - `opts`: the bind options, for the cache length and types.
+///
+/// Outputs: the KV bytes, or `None` when the header gives one head count for every
+/// layer, which `ModelDims` prices.
+fn per_layer_kv_bytes(model: &crate::load::Model, opts: &BindOptions) -> Option<u64> {
+    use crate::gguf::Value;
+    use crate::load::dims::kv_elem_bytes_x32;
+    let meta = model.meta();
+    let key = |suffix: &str| format!("{}.{suffix}", model.architecture());
+    let is_array = |suffix: &str| matches!(meta.get(&key(suffix)), Some(Value::Array(_)));
+    if !is_array("attention.head_count") && !is_array("attention.head_count_kv") {
+        return None;
+    }
+    let at = |suffix: &str, layer: usize| match meta.get(&key(suffix))? {
+        Value::Array(items) => items.get(layer)?.as_u64(),
+        other => other.as_u64(),
+    };
+    let n_embd = meta.u64(&key("embedding_length"))?;
+    let heads = at("attention.head_count", 0).filter(|h| *h > 0)?;
+    let head_k = meta.u64(&key("attention.key_length")).unwrap_or(n_embd / heads);
+    let head_v = meta.u64(&key("attention.value_length")).unwrap_or(n_embd / heads);
+    // llama_kv_cache's constructor makes one K and one V cache of n_embd_k_gqa(il) by
+    // n_ctx per layer, zero wide where the layer has no KV heads.
+    let mut x32 = 0;
+    for layer in 0..usize::try_from(meta.u64(&key("block_count"))?).ok()? {
+        let kv = at("attention.head_count_kv", layer).or_else(|| at("attention.head_count", layer))?;
+        x32 += kv * (head_k * kv_elem_bytes_x32(opts.kv_k) + head_v * kv_elem_bytes_x32(opts.kv_v));
+    }
+    Some(x32 / 32 * u64::from(opts.n_ctx))
+}
+
+// ---- deepseek2 ----
+
+use super::testutil::{Deepseek2, DEEPSEEK_V3, DS2_EMBD, DS2_HEAD, DS2_KV_LORA, DS2_NOPE, DS2_ROT, DS2_V};
+
+/// Purpose: This function counts one layer's ops of one kind.
+///
+/// Inputs:
+/// - `g`: the bound graph.
+/// - `layer`: the layer index.
+/// - `op`: the op name.
+///
+/// Outputs: the count.
+fn layer_count(g: &BoundGraph, layer: u32, op: &str) -> usize {
+    g.layer_ops(layer).filter(|o| o.op == op).count()
+}
+
+/// Purpose: This function binds the built-in deepseek2 layout to a test header of one
+/// variant.
+///
+/// Inputs:
+/// - `v`: the deepseek2 variant.
+/// - `ty`: the type of the large weights.
+/// - `kv`: the KV cache type.
+///
+/// Outputs: the bound graph, checked for the facts every bound graph must have. It
+/// panics on an error.
+fn bind_deepseek2(v: &Deepseek2, ty: u32, kv: KvType) -> BoundGraph {
+    let g = bind("deepseek2", &testutil::deepseek2(v, ty), kv);
+    check_invariants(&g);
+    g
+}
+
+#[test]
+fn builtin_deepseek2_binds_dense_then_moe_layers() {
+    let g = bind_deepseek2(&DEEPSEEK_V3, F16, KvType::F16);
+    assert_eq!(g.n_layer, 3);
+    // Layer 0 is dense: one SwiGLU FFN and no experts.
+    assert_eq!(layer_count(&g, 0, "mul_mat_id"), 0);
+    assert_eq!(layer_count(&g, 0, "swiglu"), 1);
+    assert_eq!(layer_count(&g, 0, "sigmoid"), 0);
+    // The rest route to experts, gated by sigmoid with normalized weights, and add the
+    // shared experts' dense FFN.
+    for l in 1..3 {
+        assert_eq!(layer_count(&g, l, "mul_mat_id"), 3);
+        assert_eq!(layer_count(&g, l, "swiglu"), 2, "routed and shared experts");
+        assert_eq!(layer_count(&g, l, "sigmoid"), 1);
+        assert_eq!(layer_count(&g, l, "sum_rows"), 1, "expert_weights_norm");
+    }
+    assert_eq!(ops_named(&g, "scale").next().unwrap().params["s"], Param::Float(2.5), "expert_weights_scale");
+    // The selection bias steers the top-k, and the weights still come from the unbiased
+    // probabilities.
+    let sort = g.layer_ops(1).find(|o| o.op == "argsort").unwrap();
+    assert_eq!(sort.inputs[0], g.find("selection_probs-1").unwrap());
+    let weights = g.layer_ops(1).find(|o| o.op == "get_rows" && g.tensor(o.outputs[0]).name == "ffn_moe_weights-1").unwrap();
+    assert_eq!(g.storage(weights.inputs[0]), g.find("ffn_moe_probs-1").unwrap());
+    // The last layer runs its experts over the one output row.
+    assert_eq!(g.tensor(g.find("ffn_moe_topk-2").unwrap()).dims, vec![2]);
+    assert_eq!(g.tensor(g.outputs[0]).dims, vec![32]);
+}
+
+#[test]
+fn deepseek2_mla_keeps_one_k_cache_and_reads_v_from_it() {
+    let g = bind_deepseek2(&DEEPSEEK_V3, F16, KvType::Q8_0);
+    // One cache per layer, K only, with a row of kv_lora_rank + n_rot values per cell.
+    assert!(g.find("cache_v_l0").is_none() && g.find("inp_v_idxs").is_none());
+    let cache = g.find("cache_k_l1").unwrap();
+    assert_eq!(g.tensor(cache).dims, vec![DS2_KV_LORA + DS2_ROT, 256]);
+    // V is the first kv_lora_rank values of every K row, a view of the same cache.
+    let v = g.tensor(g.find("v-1").unwrap());
+    assert!(matches!(v.kind, TensorKind::View { of, byte_offset: 0, .. } if of == cache));
+    assert_eq!(v.dims, vec![DS2_KV_LORA, 1, 256]);
+    // Q is the absorbed part then the rope part, per head; K is one head of the same
+    // width, so attention is MQA.
+    assert_eq!(g.tensor(g.find("Qcur-1").unwrap()).dims, vec![DS2_KV_LORA + DS2_ROT, DS2_HEAD, 8]);
+    assert_eq!(g.tensor(g.find("Kcur-1").unwrap()).dims, vec![DS2_KV_LORA + DS2_ROT, 1, 8]);
+    assert_eq!(ops_named(&g, "concat").count(), 2 * 3);
+    // Attention gives kv_lora_rank values per head, and attn_v_b decompresses them to
+    // the V head width before the output projection.
+    assert_eq!(g.tensor(g.find("__fattn__-1").unwrap()).dims, vec![DS2_KV_LORA, DS2_HEAD, 8]);
+    assert_eq!(g.tensor(g.find("kqv_out-1").unwrap()).dims, vec![DS2_V * DS2_HEAD, 8]);
+    assert_eq!(g.tensor(g.find("attn_out-1").unwrap()).dims, vec![DS2_EMBD, 8]);
+    // The K-only path builds no Hadamard rotation, though this cache is quantized and its
+    // row divides by 64.
+    assert!(g.find("attn_inp_k_rot").is_none());
+    assert!(g.ops.iter().all(|o| o.params.get("hint") != Some(&Param::Int(1))));
+    // An f32 cache is cast for flash attention twice per layer: K, and V, which has the
+    // K cache's type.
+    let f32_cache = bind_deepseek2(&DEEPSEEK_V3, F16, KvType::F32);
+    assert_eq!(ops_named(&f32_cache, "cpy").count(), 2 * 3);
+}
+
+#[test]
+fn deepseek2_low_rank_q_is_optional() {
+    let pair = bind_deepseek2(&DEEPSEEK_V3, F16, KvType::F16);
+    let lite = bind_deepseek2(&Deepseek2 { n_layer: 26, q_lora_rank: 0, ..DEEPSEEK_V3 }, F16, KvType::F16);
+    let reads_q = |g: &BoundGraph| -> Vec<String> {
+        g.layer_ops(0).flat_map(|o| o.inputs.iter().map(|i| g.tensor(*i).name.clone())).filter(|n| n.contains(".attn_q")).collect()
+    };
+    assert_eq!(reads_q(&pair), ["blk.0.attn_q_a.weight", "blk.0.attn_q_a_norm.weight", "blk.0.attn_q_b.weight"]);
+    assert_eq!(reads_q(&lite), ["blk.0.attn_q.weight"]);
+    // Either way Q splits into the same non-rope and rope parts per head.
+    for g in [&pair, &lite] {
+        assert_eq!(g.tensor(g.find("q_pe-0").unwrap()).dims, vec![DS2_ROT, DS2_HEAD, 8]);
+        assert_eq!(g.tensor(g.find("q_nope-0").unwrap()).dims, vec![DS2_NOPE, DS2_HEAD, 8]);
+    }
+    // A model that is not a lite variant must state its rank, as llama.cpp requires.
+    let unstated = testutil::deepseek2(&Deepseek2 { q_lora_rank: 0, ..DEEPSEEK_V3 }, F16);
+    let err = builtin("deepseek2").unwrap().bind(&unstated.model(), &opts(KvType::F16)).unwrap_err();
+    assert!(err.to_string().contains("deepseek2.attention.q_lora_rank"), "{err}");
+}
+
+#[test]
+fn deepseek2_legacy_kv_b_file_takes_the_kv_path() {
+    // An older file, with attn_kv_b whole and no MLA head widths, in Q8_0.
+    let g = bind_deepseek2(&Deepseek2 { mla: false, ..DEEPSEEK_V3 }, Q8_0, KvType::Q8_0);
+    // An ordinary K and V cache, with n_head heads each.
+    assert_eq!(g.tensor(g.find("cache_k_l0").unwrap()).dims, vec![(DS2_NOPE + DS2_ROT) * DS2_HEAD, 256]);
+    assert_eq!(g.tensor(g.find("cache_v_l0").unwrap()).dims, vec![DS2_V * DS2_HEAD, 256]);
+    assert!(g.find("fattn_mla-0").is_none());
+    // K's one rope head is repeated to every head.
+    assert_eq!(ops_named(&g, "repeat").count(), 3);
+    assert_eq!(g.tensor(g.find("Kcur-0").unwrap()).dims, vec![DS2_NOPE + DS2_ROT, DS2_HEAD, 8]);
+    // This path rotates a quantized cache: K's head width of 64 divides by 64, and V's
+    // of 32 does not. Q and K are rotated in every layer.
+    assert!(g.find("attn_inp_k_rot").is_some() && g.find("attn_inp_v_rot").is_none());
+    assert_eq!(g.ops.iter().filter(|o| o.params.get("hint") == Some(&Param::Int(1))).count(), 2 * 3);
+}
+
+#[test]
+fn deepseek2_v2_files_default_to_softmax() {
+    // A DeepSeek V2 file: no gating key, no bias, no normalization, a scale of 1.
+    let v2 = Deepseek2 { gating: None, probs_bias: false, weights_norm: false, weights_scale: 1.0, ..DEEPSEEK_V3 };
+    let g = bind_deepseek2(&v2, F16, KvType::F16);
+    assert_eq!((ops_named(&g, "soft_max").count(), ops_named(&g, "sigmoid").count()), (2, 0));
+    // Without the bias, the top-k reads the probabilities themselves, and the weights go
+    // to the experts as they are.
+    let sort = g.layer_ops(1).find(|o| o.op == "argsort").unwrap();
+    assert_eq!(sort.inputs[0], g.find("ffn_moe_probs-1").unwrap());
+    assert_eq!((ops_named(&g, "sum_rows").count(), ops_named(&g, "scale").count()), (0, 0));
+}
+
+#[test]
+fn deepseek2_expert_groups_mask_the_unchosen_groups() {
+    for bias in [true, false] {
+        let g = bind_deepseek2(&Deepseek2 { n_expert_groups: 4, probs_bias: bias, ..DEEPSEEK_V3 }, F16, KvType::F16);
+        assert_eq!(ops_named(&g, "fill").count(), 2, "one per MoE layer");
+        assert_eq!(ops_named(&g, "fill").next().unwrap().params["c"], Param::Float(f64::NEG_INFINITY));
+        // [experts per group, groups, tokens], and the chosen groups: [groups used, tokens].
+        assert_eq!(g.tensor(g.find("selection_groups-1").unwrap()).dims, vec![2, 4, 8]);
+        assert_eq!(g.tensor(g.find("expert_groups-1#1").unwrap()).dims, vec![2, 8]);
+        // The groups are scored from the biased probabilities when there are any.
+        let grouped = g.layer_ops(1).find(|o| o.op == "reshape" && g.tensor(o.outputs[0]).name == "selection_groups-1").unwrap();
+        let source = if bias { "selection_probs-1" } else { "ffn_moe_probs-1" };
+        assert_eq!(grouped.inputs[0], g.find(source).unwrap());
+        // The top-k over experts reads the masked scores.
+        let sort = g.layer_ops(1).find(|o| o.op == "argsort" && g.tensor(o.outputs[0]).name == "ffn_moe_argsort-1").unwrap();
+        assert_eq!(g.storage(sort.inputs[0]), g.find("selection_masked-1").unwrap());
+    }
+}
+
+#[test]
+fn deepseek2_fused_gate_up_experts_split_by_views() {
+    let g = bind_deepseek2(&Deepseek2 { gate_up: true, ..DEEPSEEK_V3 }, F16, KvType::F16);
+    assert_eq!(layer_count(&g, 1, "mul_mat_id"), 2);
+    let fused = g.find("ffn_moe_gate_up-1").unwrap();
+    let up = g.tensor(g.find("ffn_moe_up-1").unwrap());
+    assert!(matches!(up.kind, TensorKind::View { of, byte_offset, .. } if of == fused && byte_offset == 32 * 4), "{:?}", up.kind);
+}
+
+#[test]
+fn deepseek2_yarn_scales_kq_and_mistral_scales_q_by_temperature() {
+    let g = bind_deepseek2(&Deepseek2 { temp_scale: 0.1, ..DEEPSEEK_V3 }, F16, KvType::F16);
+    // YaRN factor 40 with DeepSeek V3's yarn_log_multiplier: rope's attn_factor cancels
+    // the YaRN magnitude, and kq_scale applies mscale = 1 + 0.1 ln 40 twice instead.
+    let ln40 = 40f32.ln();
+    let float = |p: &Param| match p {
+        Param::Float(v) => *v,
+        other => panic!("{other:?}"),
+    };
+    let attn = float(&ops_named(&g, "rope").next().unwrap().params["attn_factor"]);
+    assert!((attn - f64::from(1.0 / (1.0 + 0.1 * ln40))).abs() < 1e-6, "{attn}");
+    let mscale = f64::from(1.0 + 0.1 * ln40);
+    let scale = float(&ops_named(&g, "flash_attn_ext").next().unwrap().params["scale"]);
+    #[allow(clippy::cast_precision_loss)]
+    let head = ((DS2_NOPE + DS2_ROT) as f64).sqrt();
+    assert!((scale - mscale * mscale / head).abs() < 1e-6, "{scale}");
+    // The temperature: one scale per token, multiplied into Q in every layer.
+    let temp = g.find("inp_attn_scale").unwrap();
+    assert_eq!(g.tensor(temp).dims, vec![1, 1, 8]);
+    assert_eq!(g.ops.iter().filter(|o| o.op == "mul" && o.inputs.contains(&temp)).count(), 3);
+    assert!(bind_deepseek2(&DEEPSEEK_V3, F16, KvType::F16).find("inp_attn_scale").is_none());
 }

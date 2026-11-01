@@ -51,6 +51,34 @@ pub const SYMBOLS: &[(&str, &str)] = &[
     ("attn_rot_v", "llama_kv_cache rotates V: V cache quantized and `n_embd_head_v % 64 == 0`"),
     ("n_attn_rot_k", "the K rotation's size: the largest power of two from 64 that divides n_embd_head_k"),
     ("n_attn_rot_v", "the V rotation's size: 64"),
+    // Interleaved experts, NoPE layers and chunked attention, added with llama4. The
+    // rules marked llama4 are llama4's load_arch_hparams; other architectures set them
+    // their own way, so those symbols refuse other architectures until a layout ports
+    // that architecture's rule.
+    ("n_moe_layer_step", "`<arch>.interleave_moe_layer_step`; required when used"),
+    ("n_no_rope_layer_step", "llama4: `n_layer` when `<arch>.attention.sliding_window` is 0, else 4, llama_hparams' default"),
+    ("n_swa", "llama4: 8192, which llama4 sets over the file's value; 0 when `<arch>.attention.sliding_window` is 0"),
+    ("is_swa", "per layer. llama4: `L % p < p - 1`, p = `<arch>.attention.sliding_window_pattern` (4 when absent); false when n_swa is 0"),
+    ("freq_base_swa", "llama4: `<arch>.rope.freq_base_swa`; `freq_base` when absent"),
+    ("freq_scale_swa", "llama4: 1 / `<arch>.rope.scaling.factor` (or `rope.scale_linear`); 1 when absent; not reset by scaling type none"),
+    ("n_ctx_swa", "the SWA cache's length: n_ctx, the size llama.cpp gives it with swa_full"),
+    ("n_kv_swa", "the SWA cache cells one step attends over; planned at its maximum, n_ctx_swa"),
+    // Hparams deepseek2's load_arch_hparams reads, for MLA attention, leading dense
+    // blocks and expert routing.
+    ("n_layer_dense_lead", "`<arch>.leading_dense_block_count`; 0 when absent"),
+    ("q_lora_rank", "`<arch>.attention.q_lora_rank`, required; 0 for deepseek2's lite variants, which never read it"),
+    ("kv_lora_rank", "`<arch>.attention.kv_lora_rank`; required when used"),
+    ("is_mla", "`<arch>.attention.key_length_mla` and `value_length_mla` are both set and not 0"),
+    ("n_embd_head_k_mla", "`<arch>.attention.key_length_mla` when `is_mla`, else `n_embd_head_k`"),
+    ("n_embd_head_v_mla", "`<arch>.attention.value_length_mla` when `is_mla`, else `n_embd_head_v`"),
+    ("n_expert_shared", "`<arch>.expert_shared_count`; required when used"),
+    ("n_expert_groups", "`<arch>.expert_group_count`; 0 when absent"),
+    ("n_group_used", "`<arch>.expert_group_used_count`; 0 when absent"),
+    ("expert_gating_func", "`<arch>.expert_gating_func`: 1 softmax, 2 sigmoid; deepseek2's default when absent or 0"),
+    ("expert_weights_norm", "`<arch>.expert_weights_norm`; false when absent"),
+    ("expert_weights_scale", "`<arch>.expert_weights_scale`; 0 when absent"),
+    ("f_attn_temp_scale", "`<arch>.attention.temperature_scale`; 0 when absent"),
+    ("mscale", "deepseek2.cpp's YaRN factor for kq_scale, from `attn_factor`, `freq_scale` and `<arch>.rope.scaling.yarn_log_multiplier`"),
 ];
 
 /// Purpose: This function tells whether a name is a layout symbol.
@@ -230,8 +258,18 @@ impl<'m> Hparams<'m> {
         let mut f = 1.0f32;
         if self.ext_factor() != 0.0 {
             let factor = 1.0 / self.freq_scale();
-            let mscale = if factor <= 1.0 { 1.0 } else { 0.1 * factor.ln() + 1.0 };
-            f = mscale;
+            let log_mul = self.rope_yarn_log_mul();
+            if log_mul != 0.0 {
+                // llama_context's rope_yarn_log_mul branch: get_mscale(factor, mscale)
+                // over get_mscale(factor, mscale_all_dims), where deepseek2 takes mscale
+                // to be mscale_all_dims unless that is 1.
+                let get_mscale = |scale: f32, m: f32| if scale <= 1.0 { 1.0 } else { 0.1 * m * scale.ln() + 1.0 };
+                let mscale = if self.arch == "deepseek2" && log_mul != 1.0 { log_mul } else { 1.0 };
+                f = get_mscale(factor, mscale) / get_mscale(factor, log_mul);
+            } else {
+                let mscale = if factor <= 1.0 { 1.0 } else { 0.1 * factor.ln() + 1.0 };
+                f = mscale;
+            }
             f *= 1.0 / (1.0 + 0.1 * factor.ln());
         }
         #[allow(clippy::cast_possible_truncation)]
@@ -249,6 +287,75 @@ impl<'m> Hparams<'m> {
     /// Outputs: `true` when the rotation applies.
     fn rot(&self, quantized: bool, head: i64) -> bool {
         quantized && head > 0 && head % 64 == 0
+    }
+
+    // ---- llama4: chunked attention and NoPE layers ----
+
+    /// Purpose: This function reads an integer GGUF key that must hold one value, as
+    /// llama.cpp's scalar `get_key` and `get_key_or_arr(kid, uint32_t &)` read it.
+    ///
+    /// Inputs:
+    /// - `suffix`: the key after the architecture name, such as `attention.sliding_window`.
+    ///
+    /// Outputs: the value, or `None` when the key is missing or is an array.
+    fn scalar_key(&self, suffix: &str) -> Option<i64> {
+        match self.meta.get(&self.key(suffix))? {
+            GValue::Array(_) => None,
+            other => i64::try_from(other.as_u64()?).ok(),
+        }
+    }
+
+    /// Purpose: This function refuses a symbol whose rule dovata has ported only from
+    /// llama4's load_arch_hparams.
+    ///
+    /// Inputs:
+    /// - `name`: the symbol.
+    ///
+    /// Outputs: `Ok(())` for a llama4 model, or an error naming what to port.
+    fn llama4_only(&self, name: &str) -> Result<(), String> {
+        if self.arch == "llama4" {
+            return Ok(());
+        }
+        Err(format!("`{name}` is read only for llama4 so far; port {}'s rule from its load_arch_hparams into symbols.rs", self.arch))
+    }
+
+    /// Purpose: This function tells whether a llama4 model uses chunked attention, which it
+    /// does unless the file sets `attention.sliding_window` to 0.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `true` for chunked attention, LLAMA_SWA_TYPE_CHUNKED in llama.cpp.
+    fn llama4_chunked(&self) -> bool {
+        self.scalar_key("attention.sliding_window") != Some(0)
+    }
+
+    /// Purpose: This function tells whether a llama4 layer uses chunked attention.
+    ///
+    /// Inputs:
+    /// - `layer`: the layer index, or `None` for layer 0.
+    ///
+    /// Outputs: `true` for a chunked layer.
+    fn llama4_is_swa(&self, layer: Option<u32>) -> bool {
+        if !self.llama4_chunked() {
+            return false;
+        }
+        // get_key_or_arr(SLIDING_WINDOW_PATTERN, swa_period, false) keeps 4 for an
+        // absent key or an array; set_swa_pattern(swa_period) then marks the layers.
+        let period = self.scalar_key("attention.sliding_window_pattern").unwrap_or(4);
+        let il = i64::from(layer.unwrap_or(0));
+        period == 0 || il % period < period - 1
+    }
+
+    /// Purpose: This function returns llama_hparams' rope_freq_scale_train, the scale
+    /// before llama_context resets it for scaling type none.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the scale.
+    fn rope_freq_scale_train(&self) -> f32 {
+        #[allow(clippy::cast_possible_truncation)]
+        let factor = self.float_key("rope.scaling.factor").or_else(|| self.float_key("rope.scale_linear")).unwrap_or(0.0) as f32;
+        if factor == 0.0 { 1.0 } else { 1.0 / factor }
     }
 
     /// Purpose: This function returns the value of one layout symbol.
@@ -329,7 +436,167 @@ impl<'m> Hparams<'m> {
                 int(n / 2)
             }
             "n_attn_rot_v" => int(if self.rot(self.opts.kv_v.is_quantized(), self.head_dim("attention.value_length")?) { 64 } else { 0 }),
+            // llama4: interleaved experts, NoPE layers and chunked attention.
+            "n_moe_layer_step" => int(
+                self.scalar_key("interleave_moe_layer_step").ok_or_else(|| format!("the model has no `{}`", self.key("interleave_moe_layer_step")))?,
+            ),
+            "n_no_rope_layer_step" => {
+                self.llama4_only(name)?;
+                int(if self.llama4_chunked() { 4 } else { i64::from(self.n_layer) })
+            }
+            "n_swa" => {
+                self.llama4_only(name)?;
+                int(if self.llama4_chunked() { 8192 } else { 0 })
+            }
+            "is_swa" => {
+                self.llama4_only(name)?;
+                flag(self.llama4_is_swa(layer))
+            }
+            "freq_base_swa" => {
+                self.llama4_only(name)?;
+                // rope_freq_base_train_swa: llama_hparams' 10000 unless the attention is
+                // chunked, when it starts at rope_freq_base_train.
+                if !self.llama4_chunked() {
+                    return float(10000.0);
+                }
+                float(self.float_key("rope.freq_base_swa").unwrap_or_else(|| self.float_key("rope.freq_base").unwrap_or(10000.0)))
+            }
+            "freq_scale_swa" => {
+                self.llama4_only(name)?;
+                // rope_freq_scale_train_swa: llama_hparams' 1 unless the attention is
+                // chunked, when it is rope_freq_scale_train.
+                float(if self.llama4_chunked() { f64::from(self.rope_freq_scale_train()) } else { 1.0 })
+            }
+            "n_ctx_swa" | "n_kv_swa" => int(i64::from(self.opts.n_ctx)),
+            // deepseek2's hparams; the helpers are in the impl block below.
+            "n_layer_dense_lead" => int(self.int_key("leading_dense_block_count", None).unwrap_or(0)),
+            "q_lora_rank" => int(self.q_lora_rank()?),
+            "kv_lora_rank" => int(self.required_int("attention.kv_lora_rank", None)?),
+            "is_mla" => flag(self.is_mla()),
+            // llama_hparams::n_embd_head_k_mla and _v_mla: the MLA widths, or the plain ones.
+            "n_embd_head_k_mla" if self.is_mla() => int(self.required_int("attention.key_length_mla", None)?),
+            "n_embd_head_k_mla" => int(self.head_dim("attention.key_length")?),
+            "n_embd_head_v_mla" if self.is_mla() => int(self.required_int("attention.value_length_mla", None)?),
+            "n_embd_head_v_mla" => int(self.head_dim("attention.value_length")?),
+            "n_expert_shared" => int(self.required_int("expert_shared_count", None)?),
+            "n_expert_groups" => int(self.int_key("expert_group_count", None).unwrap_or(0)),
+            "n_group_used" => int(self.int_key("expert_group_used_count", None).unwrap_or(0)),
+            "expert_gating_func" => int(self.expert_gating_func()),
+            "expert_weights_norm" => flag(self.bool_key("expert_weights_norm").unwrap_or(false)),
+            "expert_weights_scale" => float(self.float_key("expert_weights_scale").unwrap_or(0.0)),
+            "f_attn_temp_scale" => float(self.float_key("attention.temperature_scale").unwrap_or(0.0)),
+            "mscale" => float(f64::from(self.mscale())),
             other => Err(format!("`{other}` is not a layout symbol")),
         }
+    }
+}
+
+// deepseek2's hparams, read the way `llama_model_deepseek2::load_arch_hparams` reads
+// them at llama.cpp commit 52b3df0.
+impl Hparams<'_> {
+    /// Purpose: This function reads a GGUF key as a truth value.
+    ///
+    /// Inputs:
+    /// - `suffix`: the key after the architecture name, such as `expert_weights_norm`.
+    ///
+    /// Outputs: the value, or `None` when the key is missing or not a bool.
+    fn bool_key(&self, suffix: &str) -> Option<bool> {
+        match self.meta.get(&self.key(suffix))? {
+            GValue::Bool(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Purpose: This function counts the vocabulary the way deepseek2's load_arch_hparams
+    /// does, from `vocab_size` first and the token list second.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the vocabulary size, or 0 when the file states neither.
+    fn deepseek2_n_vocab(&self) -> i64 {
+        self.int_key("vocab_size", None)
+            .or_else(|| self.meta.get("tokenizer.ggml.tokens").and_then(GValue::len).and_then(|n| i64::try_from(n).ok()))
+            .unwrap_or(0)
+    }
+
+    /// Purpose: This function tells whether a deepseek2 model is one of the variants
+    /// llama.cpp calls lite, such as DeepSeek-V2-Lite and GigaChat3-10B-A1.8B.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `true` for 27 or 26 layers, or 48 layers with a vocabulary of 128256.
+    fn deepseek2_is_lite(&self) -> bool {
+        self.n_layer == 27 || self.n_layer == 26 || (self.n_layer == 48 && self.deepseek2_n_vocab() == 128_256)
+    }
+
+    /// Purpose: This function returns the rank of the low-rank Q projection.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the rank, 0 for a deepseek2 lite variant, or an error when the key is
+    /// missing.
+    fn q_lora_rank(&self) -> Result<i64, String> {
+        // load_arch_hparams skips the key for the lite variants, so n_lora_q stays 0
+        // even when the file has it.
+        if self.arch == "deepseek2" && self.deepseek2_is_lite() {
+            return Ok(0);
+        }
+        self.required_int("attention.q_lora_rank", None)
+    }
+
+    /// Purpose: This function tells whether the model stores MLA's head widths, which is
+    /// how llama_hparams::is_mla decides.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: `true` when both MLA head widths are set and not 0.
+    fn is_mla(&self) -> bool {
+        let k = self.int_key("attention.key_length_mla", None).unwrap_or(0);
+        let v = self.int_key("attention.value_length_mla", None).unwrap_or(0);
+        k != 0 && v != 0
+    }
+
+    /// Purpose: This function returns the expert gating function's
+    /// llama_expert_gating_func_type value.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: 1 for softmax, 2 for sigmoid, or the file's value.
+    fn expert_gating_func(&self) -> i64 {
+        let v = self.int_key("expert_gating_func", None).unwrap_or(0);
+        if v != 0 || self.arch != "deepseek2" {
+            return v;
+        }
+        // deepseek2 files that predate the key: GLM 4.7 Lite is sigmoid, the DeepSeek V2
+        // and V2.5 files are softmax.
+        if (self.n_layer == 47 || self.n_layer == 48) && self.deepseek2_n_vocab() == 154_880 { 2 } else { 1 }
+    }
+
+    /// Purpose: This function returns llama_hparams' rope_yarn_log_mul.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: deepseek2's `rope.scaling.yarn_log_multiplier` over 0.1, or 0 when the key
+    /// is missing or the architecture is not deepseek2.
+    fn rope_yarn_log_mul(&self) -> f32 {
+        if self.arch != "deepseek2" {
+            return 0.0;
+        }
+        // load_arch_hparams cancels the 0.1 the convert script multiplies in.
+        #[allow(clippy::cast_possible_truncation)]
+        self.float_key("rope.scaling.yarn_log_multiplier").map_or(0.0, |v| v as f32 / 0.1)
+    }
+
+    /// Purpose: This function returns the factor deepseek2's graph squares into kq_scale.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: deepseek2.cpp's `mscale`, computed in f32 as llama.cpp computes it.
+    fn mscale(&self) -> f32 {
+        // First undo the YaRN correction llama_context put into attn_factor, then apply
+        // the model's own mscale_all_dim.
+        let freq_scale = self.freq_scale();
+        let attn_factor_org = self.attn_factor() * (1.0 + 0.1 * (1.0 / freq_scale).ln());
+        attn_factor_org * (1.0 + 0.1 * self.rope_yarn_log_mul() * (1.0 / freq_scale).ln())
     }
 }

@@ -24,7 +24,7 @@ pub use symbols::SYMBOLS;
 
 /// The architectures with a built-in layout, as `general.architecture` spells them.
 /// Only what exists: a name here always has a file in `builtin/`.
-pub const SUPPORTED: &[&str] = &["llama", "qwen3", "qwen3moe"];
+pub const SUPPORTED: &[&str] = &["llama", "llama4", "qwen2", "qwen3", "qwen3moe", "deepseek2", "nemotron", "deci"];
 
 /// Purpose: This function returns the text of a layout file built into dovata.
 ///
@@ -36,8 +36,13 @@ pub const SUPPORTED: &[&str] = &["llama", "qwen3", "qwen3moe"];
 fn builtin_source(arch: &str) -> Option<&'static str> {
     Some(match arch {
         "llama" => include_str!("builtin/llama.layout.toml"),
+        "llama4" => include_str!("builtin/llama4.layout.toml"),
         "qwen3" => include_str!("builtin/qwen3.layout.toml"),
         "qwen3moe" => include_str!("builtin/qwen3moe.layout.toml"),
+        "qwen2" => include_str!("builtin/qwen2.layout.toml"),
+        "nemotron" => include_str!("builtin/nemotron.layout.toml"),
+        "deci" => include_str!("builtin/deci.layout.toml"),
+        "deepseek2" => include_str!("builtin/deepseek2.layout.toml"),
         _ => return None,
     })
 }

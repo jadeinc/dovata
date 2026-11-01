@@ -45,6 +45,9 @@ weights = [
   { name = "blk.{L}.attn_norm.weight", dims = ["n_embd"] },
   # create_tensor_qkv: one fused QKV weight when the file has it, else Q, K and V,
   # each with an optional bias.
+  # K's width is n_embd_v_gqa, not n_embd_k_gqa, because qwen3moe.cpp passes its
+  # n_embd_gqa, the V width, for both K and V. The two are equal, since the graph
+  # asserts that the K and V head widths match.
   { name = "blk.{L}.attn_qkv.weight", dims = ["n_embd", "n_embd_head_k * n_head + n_embd_v_gqa + n_embd_v_gqa"], optional = true },
   { name = "blk.{L}.attn_qkv.bias", dims = ["n_embd_head_k * n_head + n_embd_v_gqa + n_embd_v_gqa"], optional = true, when = "has(blk.{L}.attn_qkv.weight)" },
   { name = "blk.{L}.attn_q.weight", dims = ["n_embd", "n_embd_head_k * n_head"], when = "!has(blk.{L}.attn_qkv.weight)" },
@@ -98,6 +101,8 @@ block = [
   { op = "mul", in = ["norm", "blk.{L}.attn_norm.weight"], out = "attn_norm" },
 
   # build_qkv, fused path: one matmul, then Q, K and V as views of its rows.
+  # Every head width in the block is n_embd_head_v, qwen3moe.cpp's n_embd_head,
+  # which it asserts equals n_embd_head_k.
   { op = "mul_mat", when = "has(blk.{L}.attn_qkv.weight)", in = ["blk.{L}.attn_qkv.weight", "attn_norm"], out = "wqkv" },
   { op = "add", when = "has(blk.{L}.attn_qkv.bias)", in = ["wqkv", "blk.{L}.attn_qkv.bias"], out = "wqkv" },
   { op = "view", when = "has(blk.{L}.attn_qkv.weight)", in = ["wqkv"], out = "Qcur", ne = ["n_embd_head_v", "n_head", "n_tokens"], nb = ["row_size(n_embd_head_v)", "src.nb1"], offset = 0 },

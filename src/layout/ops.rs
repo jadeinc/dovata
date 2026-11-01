@@ -232,6 +232,13 @@ pub(crate) const OPS: &[OpDef] = &[
     OpDef { name: "swiglu", ggml: Ggml::Glu("SWIGLU"), min_inputs: 1, max_inputs: 2, params: &[], shape: glu },
     OpDef { name: "geglu", ggml: Ggml::Glu("GEGLU"), min_inputs: 1, max_inputs: 2, params: &[], shape: glu },
     OpDef { name: "reglu", ggml: Ggml::Glu("REGLU"), min_inputs: 1, max_inputs: 2, params: &[], shape: glu },
+    // Added for deepseek2: MLA joins the rope and non-rope parts of Q and K with concat,
+    // and expert groups mask the unchosen groups with fill.
+    OpDef { name: "concat", ggml: Ggml::Op("CONCAT"), min_inputs: 2, max_inputs: 2, params: &[p("dim", Int, Required)], shape: concat },
+    OpDef { name: "fill", ggml: Ggml::Op("FILL"), min_inputs: 1, max_inputs: 1, params: &[p("c", Float, Required)], shape: fill },
+    // Tiling, as ggml_repeat_4d builds it: llama4's build_moe_ffn copies each token's row
+    // once per chosen expert, and deepseek2's legacy attention broadcasts K's rope part.
+    OpDef { name: "repeat", ggml: Ggml::Op("REPEAT"), min_inputs: 1, max_inputs: 1, params: &[p("ne", Ints, Required)], shape: repeat },
 ];
 
 /// Purpose: This function looks up an op by its layout name.
@@ -776,6 +783,61 @@ fn glu(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
     Ok(fresh([a.ne[0] / 2, a.ne[1], a.ne[2], a.ne[3]], a.ty))
 }
 
+/// Purpose: This function gives the result shape of `concat`.
+///
+/// Inputs:
+/// - `i`: the op's inputs.
+/// - `params`: the op's parameters.
+///
+/// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
+fn concat(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+    let (a, b) = (&i[0], &i[1]);
+    // ggml_concat: the two inputs share a type and every dim but `dim`, which adds up.
+    let dim = int(params, "dim").and_then(|d| usize::try_from(d).ok()).filter(|d| *d < 4).ok_or("concat: dim must be 0, 1, 2 or 3")?;
+    check(a.ty == b.ty, "concat: the inputs differ in type")?;
+    let mut ne = a.ne;
+    for (d, n) in ne.iter_mut().enumerate() {
+        if d == dim {
+            *n += b.ne[d];
+        } else {
+            check(*n == b.ne[d], &format!("concat along dim {dim}: dim {d} is {n} in the first input and {} in the second", b.ne[d]))?;
+        }
+    }
+    Ok(fresh(ne, a.ty))
+}
+
+/// Purpose: This function gives the result shape of `fill`.
+///
+/// Inputs:
+/// - `i`: the op's inputs.
+/// - `_`: the op's parameters, which this rule does not read.
+///
+/// Outputs: the result's shape and type, or an error when ggml would refuse the input.
+fn fill(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+    let a = &i[0];
+    // ggml_fill_impl: a new tensor shaped like the input, every element set to `c`.
+    check(a.ty == F32 || a.ty == F16, "fill: the input must be f32 or f16")?;
+    check(is_contiguous(a), "fill needs a contiguous input")?;
+    Ok(fresh(a.ne, a.ty))
+}
+
+/// Purpose: This function gives the result shape of `repeat`.
+///
+/// Inputs:
+/// - `i`: the op's inputs.
+/// - `params`: the op's parameters.
+///
+/// Outputs: the result's shape and type, or an error when ggml would refuse the input.
+fn repeat(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+    let a = &i[0];
+    let ne = dims4(&ints(params, "ne").unwrap_or_default(), "repeat's ne")?;
+    // ggml_can_repeat: every dim of the result is a whole number of the input's, and an
+    // empty input repeats only into an empty result.
+    let ok = if nelements(a.ne) == 0 { nelements(ne) == 0 } else { (0..4).all(|d| ne[d].is_multiple_of(a.ne[d])) };
+    check(ok, &format!("repeat: {:?} is not a whole number of copies of {:?} (ggml_can_repeat)", ne, a.ne))?;
+    Ok(fresh(ne, a.ty))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -829,5 +891,26 @@ mod tests {
         let permuted = TInfo { ne: o.ne, nb: o.alias.unwrap().nb, ty: F32 };
         let mut p = BTreeMap::from([("ne".to_string(), Param::Ints(vec![128 * 32, 7]))]);
         assert!(reshape(&[permuted], &mut p).unwrap_err().contains("cont"));
+    }
+
+    #[test]
+    fn concat_fill_and_repeat_follow_ggml() {
+        // MLA's Q: the absorbed part, 512 per head, then the rope part, 64 per head.
+        let absorbed = t([512, 16, 7, 1], F32);
+        let rope = t([64, 16, 7, 1], F32);
+        let mut dim0 = BTreeMap::from([("dim".to_string(), Param::Int(0))]);
+        assert_eq!(concat(&[absorbed, rope], &mut dim0).unwrap().ne, [576, 16, 7, 1]);
+        let mut dim1 = BTreeMap::from([("dim".to_string(), Param::Int(1))]);
+        assert!(concat(&[absorbed, rope], &mut dim1).is_err(), "dim 0 differs, so they join only along it");
+        assert!(concat(&[absorbed, t([64, 16, 7, 1], F16)], &mut dim0).is_err(), "the types differ");
+        // fill keeps the shape and type, and needs contiguous f32 or f16.
+        assert_eq!(fill(&[rope], &mut BTreeMap::new()).unwrap(), fresh(rope.ne, F32));
+        assert!(fill(&[t([64, 16, 1, 1], I32)], &mut BTreeMap::new()).is_err());
+        // repeat: K's one rope head copied to 16 heads, but not to a width it does not divide.
+        let k_pe = t([64, 1, 7, 1], F32);
+        let mut heads = BTreeMap::from([("ne".to_string(), Param::Ints(vec![64, 16, 7]))]);
+        assert_eq!(repeat(&[k_pe], &mut heads).unwrap().ne, [64, 16, 7, 1]);
+        let mut odd = BTreeMap::from([("ne".to_string(), Param::Ints(vec![96, 16, 7]))]);
+        assert!(repeat(&[k_pe], &mut odd).is_err());
     }
 }

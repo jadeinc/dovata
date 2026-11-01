@@ -39,7 +39,7 @@ not know yet.
 | `symbols.rs` | The closed set of names expressions may use, and which GGUF key or bind option each one reads. |
 | `ops.rs` | The ops a layout may use: their ggml enum, their params, and the shape rule ported from each op's constructor in `ggml.c`. |
 | `bind.rs` | `Layout::bind`, and the bound types the planner reads: `BoundGraph`, `BoundOp`, `BoundTensor`, `TensorKind`. |
-| `builtin/*.layout.toml` | The built-in layouts: `llama`, `qwen3`, `qwen3moe`. |
+| `builtin/*.layout.toml` | The built-in layouts: `llama`, `llama4`, `qwen2`, `qwen3`, `qwen3moe`, `deepseek2`, `nemotron`, `deci`. |
 | `ggml-ops.txt` | ggml's graph node types, copied from `ggml.h`, which every layout op is checked against. |
 | `testutil.rs`, `tests.rs` | Synthetic GGUF headers for each architecture, and the tests that bind them. |
 
@@ -299,6 +299,25 @@ llama.cpp's own.
 | `kv_k_f32`, `kv_v_f32` | whether the K or V cache type is f32 |
 | `attn_rot_k`, `attn_rot_v` | whether llama.cpp rotates K (and Q) or V by a Hadamard matrix: the cache is quantized and the head width divides by 64 |
 | `n_attn_rot_k`, `n_attn_rot_v` | the rotation sizes `build_input_k_rot` and `build_input_v_rot` use |
+| `n_moe_layer_step` | `<arch>.interleave_moe_layer_step`; required when used |
+| `n_no_rope_layer_step` | llama4: `n_layer` when `<arch>.attention.sliding_window` is 0, else 4, llama_hparams' default |
+| `n_swa` | llama4: 8192, which llama4 sets over the file's value; 0 when `<arch>.attention.sliding_window` is 0 |
+| `is_swa` | per layer; llama4: `L % p < p - 1`, with p from `<arch>.attention.sliding_window_pattern`, 4 when absent; false when `n_swa` is 0 |
+| `freq_base_swa`, `freq_scale_swa` | llama4: a chunked layer's rope base and scale, llama_hparams' `rope_freq_base_train_swa` and `rope_freq_scale_train_swa` |
+| `n_ctx_swa` | the SWA cache's length: `n_ctx`, the size llama.cpp gives it with `swa_full` |
+| `n_kv_swa` | the SWA cache cells one step attends over, planned at its maximum, `n_ctx_swa` |
+| `n_layer_dense_lead` | `<arch>.leading_dense_block_count`; 0 when absent |
+| `q_lora_rank` | `<arch>.attention.q_lora_rank`, required; 0 for deepseek2's lite variants (26 or 27 layers, or 48 with a vocabulary of 128256), which never read it |
+| `kv_lora_rank` | `<arch>.attention.kv_lora_rank`; required when used |
+| `is_mla` | whether `<arch>.attention.key_length_mla` and `value_length_mla` are both set and not 0, as `llama_hparams::is_mla` decides |
+| `n_embd_head_k_mla`, `n_embd_head_v_mla` | `<arch>.attention.key_length_mla` and `value_length_mla` when `is_mla`; else `n_embd_head_k` and `n_embd_head_v` |
+| `n_expert_shared` | `<arch>.expert_shared_count`; required when used |
+| `n_expert_groups`, `n_group_used` | `<arch>.expert_group_count` and `expert_group_used_count`; 0 when absent |
+| `expert_gating_func` | `<arch>.expert_gating_func`, as `llama_expert_gating_func_type`: 1 softmax, 2 sigmoid; deepseek2's default when absent or 0 |
+| `expert_weights_norm` | `<arch>.expert_weights_norm`; false when absent |
+| `expert_weights_scale` | `<arch>.expert_weights_scale`; 0 when absent |
+| `f_attn_temp_scale` | `<arch>.attention.temperature_scale`; 0 when absent |
+| `mscale` | deepseek2.cpp's YaRN factor for its `kq_scale`, from `attn_factor`, `freq_scale` and `<arch>.rope.scaling.yarn_log_multiplier` |
 
 Outside a block, a per-layer symbol reads layer 0, as llama.cpp's `n_head()` does.
 Hparams only some architectures read, such as `attention.scale`, have no symbol yet,
@@ -332,12 +351,29 @@ per-layer array through `get_key_or_arr`. A few details follow llama.cpp closely
 - `freq_scale` is `cparams.rope_freq_scale`, computed in f32 as llama.cpp computes it,
   from `rope.scaling.factor` or the older `rope.scale_linear`.
 - `attn_factor` is `cparams.yarn_attn_factor`, from the block in `llama_context`'s
-  constructor. That block has a `rope_yarn_log_mul` branch, which is not taken here,
-  since only deepseek2 reads that key.
+  constructor. That block has a `rope_yarn_log_mul` branch, which is taken for
+  deepseek2, the one built-in architecture that reads `rope.scaling.yarn_log_multiplier`.
+  deepseek2's `load_arch_hparams` divides the key by 0.1 to undo the convert script.
 - The KV rotation symbols repeat the rule in `llama_kv_cache`'s constructor that turns
   on a Hadamard rotation of Q, K and V when the cache is quantized. `n_attn_rot_k`
   follows `llama_kv_cache::build_input_k_rot`, which doubles from 64 while the result
   still divides the head width.
+- `n_no_rope_layer_step`, `n_swa`, `is_swa`, `freq_base_swa` and `freq_scale_swa`
+  follow llama4's `load_arch_hparams`, and refuse other architectures, which set them
+  their own way. `freq_base_swa` is `rope.freq_base_swa`, else `freq_base`.
+  `freq_scale_swa` is `rope_freq_scale_train`, the scale before llama_context resets it
+  to 1 for scaling type none. `attention.sliding_window_pattern` is read as a scalar,
+  as `get_key_or_arr(kid, uint32_t &)` reads it, so an array leaves the default of 4.
+- The deepseek2 rows follow `llama_model_deepseek2::load_arch_hparams`, including its
+  defaults for older files: `expert_gating_func` is softmax when the key is absent, or
+  sigmoid for GLM 4.7 Lite (47 or 48 layers and a vocabulary of 154880), and a lite
+  variant's `q_lora_rank` is 0 even when the file has the key. The vocabulary those
+  rules compare is `vocab_size` first and the token list second, the reverse of
+  `n_vocab`, because that is the order deepseek2 reads them in.
+- `mscale` is a symbol rather than an expression because it takes a logarithm, which
+  the expression language does not have: deepseek2.cpp computes `attn_factor * (1 +
+  0.1 ln(1/freq_scale))`, times `1 + 0.1 * rope_yarn_log_mul * ln(1/freq_scale)`, in f32,
+  and the layout writes `kq_scale` as `mscale * mscale / sqrt(n_embd_head_k_mla)`.
 
 ### The op vocabulary
 
@@ -377,6 +413,9 @@ hide nodes the kernels must still implement.
 | `top_k` | a | `k` |
 | `silu`, `gelu`, `relu`, `sigmoid`, `tanh`, `exp`, `softplus` | a | |
 | `swiglu`, `geglu`, `reglu` | gate and up (the `_split` form), or one input split in half | |
+| `concat` | a, b (same type; every dim but `dim` equal) | `dim` |
+| `fill` | a (f32 or f16, contiguous) | `c`, the value of every element of a new tensor shaped like a |
+| `repeat` | a | `ne`, the result's shape: a whole number of copies of a in every dim |
 
 Each op carries the shape rule from its constructor in `ggml/src/ggml.c`, asserts
 included. A rule sees each input's shape, byte strides and type, the same three things
@@ -404,6 +443,7 @@ The size helpers and some shape rules in `ops.rs` are ports of named functions i
 | `view` | `ggml_view_1d` to `_4d`, with `nb` from nb1 up and `offset` both in bytes, as the C call takes them; a view with no `nb` is packed |
 | `permute` | `ggml_permute`: input dim `d` goes to position `axes[d]` |
 | `set_rows` | `ggml_set_rows(a, b, c)`, which writes the rows of `b` into `a` at the ids in `c` and returns a view of `a` |
+| `repeat` | `ggml_repeat(a, b)`, which reads only `b`'s shape; the layout states that shape in `ne`, as `ggml_repeat_4d` takes it, so the node's one input is the one ggml reads |
 
 The inputs of `set_rows` are in that call order, while ggml stores them internally as
 `src = [b, c, a]`. `is_view_op` names the ops that only reinterpret their input's
@@ -487,6 +527,15 @@ condition can go wrong. A condition that skips an op reading a weight leaves tha
 unread, which is refused. A condition that skips the op producing a name a later op
 reads is a use-before-produce error.
 
+`builtin/deci.layout.toml` shows the costs at their largest. Each layer is one of four
+kinds, chosen by its own `n_head`, `n_head_kv` and `n_ff`, so its self-attention branch
+carries `n_head > 0 && n_head_kv > 0` on 42 lines and its FFN carries `n_ff > 0` on 14.
+It also needs the alias the deepseek2 sketch below asks about: an attention-free layer
+sets `cur = inpL` and then `ffn_inp = cur`, so the two ops that read `ffn_inp` are each
+written twice, once reading `ffn_inp` and once reading `inpL`. And its output projection
+is created in two branches with two shapes; a weight is declared once, so its `dims`
+pick the shape with `n_head_kv == 0 ? n_embd : n_embd_head_k * n_head`.
+
 ## When a layout is checked
 
 A layout is checked in two stages, so each mistake is reported as early as it can be
@@ -542,69 +591,98 @@ whose shape differs from its `dims`; an input that resolves to nothing, or to an
 activation not yet produced; an op whose inputs break ggml's shape rule; and a file
 tensor no op reads that `unused` does not list.
 
-## Sketch: deepseek2 (DeepSeek V3 and R1, Kimi K2)
+## Two KV caches: llama4's chunked attention
 
-deepseek2 is the hardest of the group 1 architectures. It needs symbols and ops the
-round 1 layouts did not, and each is a row in a table, not a new mechanism.
+llama4's rope layers attend in chunks of `n_swa` tokens, and llama.cpp keeps their KV in
+a second cache, the SWA half of `llama_kv_cache_iswa`. That cache has its own cells, so
+it has its own write indices, its own mask and its own rotation matrices. The layout
+writes this with what the format already has.
 
-*New symbols*: `n_layer_dense_lead` (`leading_dense_block_count`), `q_lora_rank` and
-`kv_lora_rank` (`attention.q_lora_rank`, `attention.kv_lora_rank`), the MLA head widths
-(`attention.key_length_mla`, `attention.value_length_mla`), `n_expert_shared`,
-`expert_gating_func`, `expert_weights_norm`, `expert_weights_scale`, `n_expert_groups`
-and `n_group_used`. deepseek2's `load_arch_hparams` reads all of them, and its
-`rope_yarn_log_mul` changes `attn_factor`, so that symbol gains a deepseek2 branch.
-*New ops*: `concat`, `fill` and `repeat`, with their shape rules.
-
-Leading dense blocks are a per-layer condition, on the weights and on the ops:
-
-```toml
-  { name = "blk.{L}.ffn_gate.weight", dims = ["n_embd", "n_ff"], when = "L < n_layer_dense_lead" },
-  { name = "blk.{L}.ffn_gate_inp.weight", dims = ["n_embd", "n_expert"], when = "L >= n_layer_dense_lead" },
-  { name = "blk.{L}.exp_probs_b.bias", dims = ["n_expert"], optional = true, when = "L >= n_layer_dense_lead" },
-  { name = "blk.{L}.ffn_up_shexp.weight", dims = ["n_embd", "n_ff_exp * n_expert_shared"], when = "L >= n_layer_dense_lead" },
-```
-
-The gating and the expert-weight normalization are chosen by the file, by reference:
+- The second cache's inputs are declared again with a `_swa` suffix, under
+  `when = "n_swa > 0"`, since a file that turns chunked attention off has one cache.
+- The KV tensors stay one per layer. A chunked layer's is `n_ctx_swa` cells long, and
+  its read views span `n_kv_swa` cells: `dims = ["n_embd_k_gqa", "is_swa ? n_ctx_swa : n_ctx"]`.
+- Each op that reads one of the two sets is written twice, under `!is_swa` and
+  `is_swa`, because `build_attn` picks one tensor or the other per layer:
 
 ```toml
-  { op = "soft_max", when = "L >= n_layer_dense_lead && expert_gating_func == 1", in = ["ffn_moe_logits"], out = "ffn_moe_probs" },
-  { op = "sigmoid", when = "L >= n_layer_dense_lead && expert_gating_func == 2", in = ["ffn_moe_logits"], out = "ffn_moe_probs" },
-  # DeepSeek V3's selection bias steers the choice of experts but not their weights,
-  # so the argsort reads the biased probabilities when there are any.
-  { op = "add", when = "has(blk.{L}.exp_probs_b.bias)", in = ["ffn_moe_probs", "blk.{L}.exp_probs_b.bias"], out = "selection_probs" },
-  { op = "argsort", when = "has(blk.{L}.exp_probs_b.bias)", in = ["selection_probs"], out = "ffn_moe_argsort", order = "desc" },
-  { op = "argsort", when = "L >= n_layer_dense_lead && !has(blk.{L}.exp_probs_b.bias)", in = ["ffn_moe_probs"], out = "ffn_moe_argsort", order = "desc" },
-  # ... get_rows reads ffn_moe_probs, never selection_probs ...
-  { op = "sum_rows", when = "L >= n_layer_dense_lead && expert_weights_norm", in = ["weights"], out = "ffn_moe_weights_sum" },
-  { op = "scale", when = "L >= n_layer_dense_lead && expert_weights_scale != 0 && expert_weights_scale != 1", in = ["weights"], out = "weights", s = "expert_weights_scale" },
+  { op = "set_rows", when = "!is_swa", in = ["cache_k_l{L}", "k_cur", "inp_k_idxs"], out = "k_cache" },
+  { op = "set_rows", when = "is_swa", in = ["cache_k_l{L}", "k_cur", "inp_k_idxs_swa"], out = "k_cache" },
 ```
 
-`expert_gating_func` takes llama.cpp's values, 1 for softmax and 2 for sigmoid
-(`llama_expert_gating_func_type`). The two argsorts show the one place the mechanism is
-awkward. In C++, `selection_probs = probs` makes one pointer stand for another at no
-cost, and a skipped op in a layout cannot do that, because its name stays unassigned.
-The consumer is written twice instead, under complementary conditions, which matches
-llama.cpp's node list exactly. If this pattern turns out to be common, a pure alias
-(`selection_probs` names `ffn_moe_probs`, no node) is the obvious addition; it is an
-open question for review. Expert groups (DeepSeek V3's 8 groups, top 4) are more ops
-under `n_expert_groups > 1`; Kimi K2 has one group, so they are skipped.
+llama4 has seven such pairs: the four Hadamard rotations, the two KV writes and the
+attention. This is the pattern the deepseek2 sketch below calls awkward. A skipped op
+cannot make one name stand for another, so each consumer is written once per choice.
 
-Shared experts are a dense `build_ffn` over the same input, added to the MoE output:
+`n_ctx_swa` is `n_ctx`, the size llama.cpp gives the SWA cache with `swa_full`, the
+default of `llama_context_default_params`. llama-cli and llama-server default to
+`swa_full = false`, which sizes it `GGML_PAD(min(n_ctx, n_swa + n_ubatch), 256)`: for
+Scout at `n_ctx` 32768 with 512-token batches, 8704 cells instead of 32768 in 36 of the
+48 layers. That size depends on `n_ubatch`, the largest batch the context was made for.
+The bind options have only `n_tokens`, this step's batch, and a persistent cache sized
+from it would change size between a prefill step and a decode step. When the bind
+options carry the batch size llama.cpp sizes the cache with, only `n_ctx_swa` in
+`symbols.rs` needs to change.
 
-```toml
-  { op = "mul_mat", when = "L >= n_layer_dense_lead", in = ["blk.{L}.ffn_up_shexp.weight", "ffn_norm"], out = "shexp_up" },
-  # ... gate, swiglu, down, as in qwen3's dense FFN ...
-  { op = "add", when = "L >= n_layer_dense_lead", in = ["ffn_moe_out", "ffn_shexp"], out = "ffn_out" },
-```
+What the program writes into the inputs is not part of a layout. For llama4 that is the
+chunked mask, where a token at position p sees the cells from `floor(p / n_swa) * n_swa`
+to p, and `inp_attn_scale`, the NoPE layers' temperature, `log(floor((p + 1) / 8192) +
+1) * 0.1 + 1`. Both use constants that llama4's `load_arch_hparams` sets in code rather
+than reads from the file. The layout's header comment records them.
 
-MLA attention with the absorption trick is the largest part: the Q path with an
-optional low-rank `q_a`/`q_b` pair (`when = "q_lora_rank > 0"`), views that split the
-compressed KV and the rope part, `concat` to build Q and K, a K-only cache of
-`kv_lora_rank + n_rot` per token, V as a view of that cache's first `kv_lora_rank`
-values (`build_attn` with `llm_graph_input_attn_k`), `flash_attn_ext`, then `wv_b`
-applied after attention with a permute, `mul_mat`, permute and `cont`. All of it is ops
-and views the format already has. The KV tensor shrinks to one cache per layer, which
-the format expresses by declaring only `cache_k_l{L}`.
+## deepseek2: MLA attention and a K-only cache
+
+`builtin/deepseek2.layout.toml` covers every file llama.cpp loads as deepseek2: DeepSeek
+V2, V2-Lite, V3 and R1, Kimi K2, Moonlight, GLM-4.7-Flash, GigaChat3 and Mistral Large 3.
+It needed the deepseek2 symbols in the table above, a deepseek2 branch in `attn_factor`,
+and the ops `concat`, `fill` and `repeat`. Everything else is the format as it was.
+
+- *Two attention paths, chosen by `is_mla`.* A file converted since llama.cpp split
+  `attn_kv_b` in two takes MLA with absorption. Q's non-rope part is multiplied by
+  `attn_k_b`, `concat` joins it to the rope part, and K is the compressed KV joined to
+  K's one rope head. The cache is `cache_k_l{L}` alone, `n_embd_k_gqa` wide, which is
+  `kv_lora_rank + n_rot` with one KV head. V is a view of that cache's first
+  `kv_lora_rank` values, as `build_attn` makes it for `llm_graph_input_attn_k`. After
+  `flash_attn_ext`, a permute, a `mul_mat` by `attn_v_b`, a permute and a `cont` turn
+  the result back into `n_head` heads. That path builds no Hadamard rotation, so the
+  rotation inputs and ops carry `!is_mla`. An older file with `attn_kv_b` whole takes
+  the legacy path: K and V are expanded before the cache, `repeat` copies K's rope head
+  to every head, and the cache, the rotation and the attention are the ordinary ones.
+- *Low-rank Q.* `q_lora_rank > 0` selects `attn_q_a`, its norm and `attn_q_b`, and
+  `q_lora_rank == 0` selects the one `attn_q`, on the weights and the ops alike.
+- *Leading dense blocks.* `L < n_layer_dense_lead` and its complement split the FFN
+  weights and ops. An MoE layer adds its shared experts, one dense FFN
+  `n_ff_exp * n_expert_shared` wide, to the routed experts' output.
+- *Routing.* `expert_gating_func` picks `soft_max` or `sigmoid`. `expert_weights_norm`
+  and `expert_weights_scale` turn on the normalization and the scale.
+  `n_expert_groups > 1` adds DeepSeek V3's group masking with `fill` and `set_rows`. A
+  fused `ffn_gate_up_exps` is split into its gate and up halves by views.
+- *Scales.* `kq_scale` is `mscale * mscale / sqrt(n_embd_head_k_mla)`. Mistral Large
+  3's `attention.temperature_scale` adds the `inp_attn_scale` input and one `mul` into Q.
+
+The layout binds real headers of DeepSeek-Coder-V2-Lite in both its legacy and its MLA
+form, Moonlight-16B-A3B, GigaChat3-10B-A1.8B, GLM-4.7-Flash, DeepSeek-R1-0528, Mistral
+Large 3 and Kimi K2, whose five split parts open as one model. No published deepseek2
+file has more than one expert group, so only the synthetic header checks that path.
+
+Four places were awkward to write, and are open for review:
+
+- *An alias.* In C++, `selection_probs = probs` makes one pointer stand for another, and
+  a layout name cannot stand for another without a node. Each consumer of
+  `selection_probs` is written once per case under complementary conditions: the group
+  reshape twice, and the expert argsort twice, once reading `selection_probs` and once
+  reading `ffn_moe_probs`. A pure alias, one name for another with no node, would
+  remove both pairs.
+- *A branch that reassigns `cur`.* After the MLA decompression the C++ goes on with
+  `cur`, whichever path ran. The two paths' `cur` have different names here,
+  `fattn_mla` and `__fattn__`, so the reshape that follows is written twice. Giving
+  every reassignment one name avoids it, which is what the routing does for
+  `ffn_moe_weights`.
+- *A shape-only input.* `ggml_repeat(a, b)` reads only `b`'s shape. The layout states
+  that shape in `repeat`'s `ne`, so the node's inputs match ggml's `src`, but the line
+  no longer says the shape is `q_pe`'s.
+- *A logarithm.* The expression language has none, so `mscale` is a symbol computed in
+  Rust instead of a formula in the layout.
 
 ## Sketch: qwen35moe (Qwen3.6), delta-net layers with recurrent state
 
@@ -673,14 +751,33 @@ built-in layout can then be bound on any machine, with no model file. The shapes
 small but follow each architecture's `load_arch_tensors` exactly. They are large
 enough that every block-quantized type the tests use divides them: rows of 64 and 128,
 and a head width of 64, so the KV rotation applies. The builders follow
-`llama_model_qwen3moe`, `llama_model_qwen3` and `llama_model_llama`, with the attention
-weights `create_tensor_qkv` makes. The llama builder can also write the Mixtral form,
-llama with experts `n_ff` wide. The tensor types are chosen per test, which is how one
-layout is bound to an f16 file and a quantized one.
+`llama_model_qwen3moe`, `llama_model_qwen3`, `llama_model_llama` and
+`llama_model_llama4`, with the attention weights `create_tensor_qkv` makes. The llama
+builder can also write the Mixtral form, llama with experts `n_ff` wide. The llama4
+builder writes experts on every `interleave_moe_layer_step`-th layer, which is every
+layer for Scout and every second one for Maverick, and can write a fused QKV weight. The
+tensor types are chosen per test, which is how one layout is bound to an f16 file and a
+quantized one. The deepseek2 builder follows `llama_model_deepseek2` and takes a
+`Deepseek2` variant: MLA or a legacy `attn_kv_b`, with or without the low-rank Q, and
+the gating, bias, normalization, scale, expert groups, fused gate and up experts and
+temperature scale each choosable. Its K cache row is 128 values, so the rule for
+rotating a quantized cache holds, and the tests can show that the MLA path still builds
+no rotation.
+
+The qwen2, nemotron and deci builders follow `llama_model_qwen2`, `llama_model_nemotron`
+and `llama_model_deci`. qwen2 and nemotron create Q as `n_embd` wide, so their tests use
+an `n_embd` of 128, two heads of 64. The deci builder takes each layer's `n_head`,
+`n_head_kv` and `n_ff` and writes them as per-layer int32 arrays, as
+`conversion/deci.py` does, with `Header::i32s`; its test binds one layer of each kind.
 
 `a_real_header_binds_its_builtin_layout` binds a real model when `DOVATA_TEST_HEADER`
 names a GGUF file, or the first tens of megabytes of one; step 6 below shows the
-command.
+command. For a split model, name the first part, with the start of every other part
+beside it under llama.cpp's part names, since `Model::open` reads them all. The test
+checks the bound KV cache against `ModelDims`, which reads one head count for every
+layer. A file whose head counts are per-layer arrays, such as deci's, is priced layer by
+layer from the header instead, and an MLA model, which keeps no V cache, is priced
+without one.
 
 ## Adding a layout
 
@@ -718,3 +815,4 @@ command.
 - The embeddings input path of `build_inp_embd`, for multimodal inputs. Layouts take
   token ids.
 - Multiple KV streams. The layouts plan one sequence stream, as `kv_unified` does.
+- The smaller SWA cache llama.cpp makes with `swa_full = false`. See "Two KV caches".
