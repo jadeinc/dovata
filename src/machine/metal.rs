@@ -11,7 +11,8 @@ use super::MetalLimits;
 /// Inputs: none.
 ///
 /// Outputs: the working-set and buffer limits, or `None` when the Mac has no Metal GPU.
-pub(super) fn limits() -> Option<MetalLimits> {
+pub(super) fn limits() -> Option<MetalLimits>
+{
     let device = MTLCreateSystemDefaultDevice()?;
     Some(MetalLimits {
         working_set_bytes: device.recommendedMaxWorkingSetSize(),

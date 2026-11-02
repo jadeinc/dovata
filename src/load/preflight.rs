@@ -39,7 +39,10 @@ impl Preflight {
     /// - `path`: the model file, or the first part of a split model.
     ///
     /// Outputs: the [`Preflight`], or an [`Error`].
-    pub fn read(path: &Path) -> Result<Preflight, Error> {
+    pub fn read(
+        path: &Path,
+    ) -> Result<Preflight, Error>
+    {
         use std::io::Read;
 
         let unreadable = |e: std::io::Error| Error::Unreadable { path: path.display().to_string(), detail: e.to_string() };
@@ -57,7 +60,10 @@ impl Preflight {
     /// - `bytes`: the start of the model file.
     ///
     /// Outputs: the [`Preflight`], or an [`Error`] naming why the file cannot be planned.
-    pub fn evaluate(bytes: &[u8]) -> Result<Preflight, Error> {
+    pub fn evaluate(
+        bytes: &[u8],
+    ) -> Result<Preflight, Error>
+    {
         let gguf = Gguf::parse(bytes).map_err(|e| Error::NotLoadable(e.to_string()))?;
 
         // Split parts after the first carry no model metadata, only `split.*` keys and
@@ -104,7 +110,11 @@ impl Preflight {
     /// - `requested`: the context length, in tokens.
     ///
     /// Outputs: `true` when it is longer than `<arch>.context_length`.
-    pub fn ctx_exceeds_native(&self, requested: u32) -> bool {
+    pub fn ctx_exceeds_native(
+        &self,
+        requested: u32,
+    ) -> bool
+    {
         self.context_length.is_some_and(|native| u64::from(requested) > native)
     }
 }
@@ -132,7 +142,11 @@ impl fmt::Display for Error {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             Error::Unreadable { path, detail } => write!(f, "cannot read the model at {path}: {detail}"),
             Error::NotLoadable(detail) => write!(
@@ -176,7 +190,11 @@ pub(crate) mod tests {
     /// - `name`: the `general.name` to declare, if any.
     ///
     /// Outputs: the header bytes, with no tensors.
-    pub(crate) fn header(arch: &str, name: Option<&str>) -> Vec<u8> {
+    pub(crate) fn header(
+        arch: &str,
+        name: Option<&str>,
+    ) -> Vec<u8>
+    {
         header_with(arch, name, &[])
     }
 
@@ -189,7 +207,12 @@ pub(crate) mod tests {
     /// - `extra`: more entries, as `(key, type tag, encoded value)`.
     ///
     /// Outputs: the header bytes, with no tensors.
-    pub(crate) fn header_with(arch: &str, name: Option<&str>, extra: &[(&str, u32, Vec<u8>)]) -> Vec<u8> {
+    pub(crate) fn header_with(
+        arch: &str,
+        name: Option<&str>,
+        extra: &[(&str, u32, Vec<u8>)],
+    ) -> Vec<u8>
+    {
         let mut kvs: Vec<(String, u32, Vec<u8>)> = Vec::new();
 
         let push_str = |kvs: &mut Vec<(String, u32, Vec<u8>)>, k: &str, v: &str| {
@@ -234,7 +257,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_complete_header_preflights() {
+    fn a_complete_header_preflights()
+    {
         let bytes = header_with("qwen3moe", Some("Qwen3-Coder-30B-A3B-Instruct"), &[("general.file_type", 4, 15u32.to_le_bytes().to_vec())]);
         let pf = Preflight::evaluate(&bytes).expect("preflights");
         assert_eq!(pf.architecture, "qwen3moe");
@@ -245,14 +269,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn any_architecture_with_the_required_keys_passes() {
+    fn any_architecture_with_the_required_keys_passes()
+    {
         // Whether dovata can plan it is the layout's question, not preflight's.
         let pf = Preflight::evaluate(&header("mamba2", Some("Some-New-Model"))).expect("preflights");
         assert_eq!(pf.architecture, "mamba2");
     }
 
     #[test]
-    fn a_missing_required_key_is_reported() {
+    fn a_missing_required_key_is_reported()
+    {
         let mut b = b"GGUF".to_vec();
         b.extend_from_slice(&3u32.to_le_bytes());
         b.extend_from_slice(&0u64.to_le_bytes());
@@ -274,7 +300,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn truncated_index_is_refused() {
+    fn truncated_index_is_refused()
+    {
         // Declare three tensors and supply none: the range-fetch case.
         let mut bytes = header("llama", None);
         bytes[8..16].copy_from_slice(&3u64.to_le_bytes());
@@ -282,7 +309,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_later_split_part_is_refused_and_names_part_one() {
+    fn a_later_split_part_is_refused_and_names_part_one()
+    {
         let bytes = header_with(
             "llama",
             None,
@@ -298,21 +326,24 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_file_that_is_not_a_gguf_is_rejected_with_a_pointer_to_the_inspector() {
+    fn a_file_that_is_not_a_gguf_is_rejected_with_a_pointer_to_the_inspector()
+    {
         let err = Preflight::evaluate(b"\x7fELF____________").unwrap_err();
         assert!(matches!(err, Error::NotLoadable(_)), "{err:?}");
         assert!(err.to_string().contains("gguf-inspect"), "{err}");
     }
 
     #[test]
-    fn an_oversized_context_is_detectable() {
+    fn an_oversized_context_is_detectable()
+    {
         let pf = Preflight::evaluate(&header("qwen3moe", None)).unwrap();
         assert!(!pf.ctx_exceeds_native(32_768));
         assert!(pf.ctx_exceeds_native(1_000_000));
     }
 
     #[test]
-    fn a_missing_file_is_unreadable() {
+    fn a_missing_file_is_unreadable()
+    {
         let err = Preflight::read(Path::new("/nonexistent/model.gguf")).unwrap_err();
         assert!(matches!(err, Error::Unreadable { .. }), "{err:?}");
     }

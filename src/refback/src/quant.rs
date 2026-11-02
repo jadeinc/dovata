@@ -36,7 +36,10 @@ pub const Q4_0_BLOCK: usize = 2 + QK / 2;
 /// - `ty`: the `ggml_type`.
 ///
 /// Outputs: `true` for F32, F16, Q8_0 and Q4_0.
-pub fn covered(ty: u32) -> bool {
+pub fn covered(
+    ty: u32,
+) -> bool
+{
     matches!(ty, F32 | F16 | Q4_0 | Q8_0)
 }
 
@@ -48,7 +51,11 @@ pub fn covered(ty: u32) -> bool {
 ///
 /// Outputs: the row's size, or `None` for a type the check does not cover or a row that
 /// is not whole blocks.
-pub fn row_bytes(ty: u32, cols: usize) -> Option<usize> {
+pub fn row_bytes(
+    ty: u32,
+    cols: usize,
+) -> Option<usize>
+{
     match ty {
         F32 => Some(cols * 4),
         F16 => Some(cols * 2),
@@ -64,7 +71,10 @@ pub fn row_bytes(ty: u32, cols: usize) -> Option<usize> {
 /// - `h`: the half's bits.
 ///
 /// Outputs: the same value as an f32.
-pub fn f16_to_f32(h: u16) -> f32 {
+pub fn f16_to_f32(
+    h: u16,
+) -> f32
+{
     let sign = u32::from(h >> 15) << 31;
     let exp = u32::from((h >> 10) & 0x1f);
     let man = u32::from(h & 0x3ff);
@@ -88,7 +98,10 @@ pub fn f16_to_f32(h: u16) -> f32 {
 /// - `v`: the value.
 ///
 /// Outputs: the half's bits.
-pub fn f32_to_f16(v: f32) -> u16 {
+pub fn f32_to_f16(
+    v: f32,
+) -> u16
+{
     let x = v.to_bits();
     let sign = ((x >> 16) & 0x8000) as u16;
     let exp = ((x >> 23) & 0xff) as i32;
@@ -124,7 +137,10 @@ pub fn f32_to_f16(v: f32) -> u16 {
 /// - `b`: at least two bytes.
 ///
 /// Outputs: the value.
-fn le16(b: &[u8]) -> u16 {
+fn le16(
+    b: &[u8],
+) -> u16
+{
     u16::from_le_bytes([b[0], b[1]])
 }
 
@@ -138,7 +154,12 @@ fn le16(b: &[u8]) -> u16 {
 ///
 /// Outputs: none. Every value is exact in f32: a Q8_0 or Q4_0 element is a small integer
 /// times an f16 scale.
-pub fn decode_row(ty: u32, row: &[u8], out: &mut [f32]) {
+pub fn decode_row(
+    ty: u32,
+    row: &[u8],
+    out: &mut [f32],
+)
+{
     match ty {
         F32 => {
             for (o, b) in out.iter_mut().zip(row.chunks_exact(4)) {
@@ -178,7 +199,10 @@ pub fn decode_row(ty: u32, row: &[u8], out: &mut [f32]) {
 /// - `cols`: its length, a weight's row length.
 ///
 /// Outputs: values in [-1, 1], each a multiple of 1/8 so it is exact in f32.
-pub fn input(cols: usize) -> Vec<f32> {
+pub fn input(
+    cols: usize,
+) -> Vec<f32>
+{
     (0..cols).map(|c| ((c * 7 + 3) % 17) as f32 / 8.0 - 1.0).collect()
 }
 
@@ -193,7 +217,14 @@ pub fn input(cols: usize) -> Vec<f32> {
 /// - `x`: the input vector, `cols` long.
 ///
 /// Outputs: y, one value per row.
-pub fn matvec(ty: u32, w: &[u8], cols: usize, rows: usize, x: &[f32]) -> Vec<f32> {
+pub fn matvec(
+    ty: u32,
+    w: &[u8],
+    cols: usize,
+    rows: usize,
+    x: &[f32],
+) -> Vec<f32>
+{
     let rb = row_bytes(ty, cols).expect("matvec is called only for covered types and whole rows");
     let mut row = vec![0f32; cols];
     (0..rows)
@@ -226,7 +257,14 @@ pub struct Reference {
 /// Outputs: the [`Reference`]. Each product of two f32 values is exact in f64. An f32
 /// kernel rounds each product, or each of a product's two steps, and each of its `cols`
 /// sums, so its error is at most `(cols + 2) * 2^-23 * sum(|w * x|)`.
-pub fn reference(ty: u32, w: &[u8], cols: usize, rows: usize, x: &[f32]) -> Reference {
+pub fn reference(
+    ty: u32,
+    w: &[u8],
+    cols: usize,
+    rows: usize,
+    x: &[f32],
+) -> Reference
+{
     let rb = row_bytes(ty, cols).expect("reference is called only for covered types and whole rows");
     let mut row = vec![0f32; cols];
     let mut y = Vec::with_capacity(rows);
@@ -253,7 +291,11 @@ pub fn reference(ty: u32, w: &[u8], cols: usize, rows: usize, x: &[f32]) -> Refe
 ///
 /// Outputs: the largest error as a fraction of its row's bound, or a message naming the
 /// first row past its bound.
-pub fn compare(got: &[f32], want: &Reference) -> Result<f64, String> {
+pub fn compare(
+    got: &[f32],
+    want: &Reference,
+) -> Result<f64, String>
+{
     if got.len() != want.y.len() {
         return Err(format!("the kernel gave {} values for {} rows", got.len(), want.y.len()));
     }
@@ -273,7 +315,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn halves_widen_and_round_trip() {
+    fn halves_widen_and_round_trip()
+    {
         for (bits, v) in [(0x3c00u16, 1.0f32), (0xc000, -2.0), (0x3555, 1365.0 / 4096.0), (0x0001, 1.0 / 16_777_216.0), (0x7bff, 65504.0), (0x8000, -0.0)] {
             assert_eq!(f16_to_f32(bits).to_bits(), v.to_bits(), "{bits:#06x}");
             assert_eq!(f32_to_f16(v), bits, "{v}");
@@ -284,7 +327,8 @@ mod tests {
     }
 
     #[test]
-    fn q8_0_decodes_as_ggml_does() {
+    fn q8_0_decodes_as_ggml_does()
+    {
         // d = 0.5, qs = -3, 0, 1, ... : element j is qs[j] * d.
         let mut blk = f32_to_f16(0.5).to_le_bytes().to_vec();
         blk.extend((0..32).map(|j: i32| (j - 3) as i8 as u8));
@@ -296,7 +340,8 @@ mod tests {
     }
 
     #[test]
-    fn q4_0_puts_low_nibbles_first_and_high_nibbles_after() {
+    fn q4_0_puts_low_nibbles_first_and_high_nibbles_after()
+    {
         // d = 2; byte j holds low nibble j % 16 and high nibble 15 - j % 16.
         let mut blk = f32_to_f16(2.0).to_le_bytes().to_vec();
         blk.extend((0..16u8).map(|j| j | ((15 - j) << 4)));
@@ -309,7 +354,8 @@ mod tests {
     }
 
     #[test]
-    fn the_cpu_matvec_meets_its_bound_and_a_wrong_matrix_does_not() {
+    fn the_cpu_matvec_meets_its_bound_and_a_wrong_matrix_does_not()
+    {
         let (cols, rows) = (64, 3);
         let w: Vec<u8> = (0..cols * rows).flat_map(|i| f32_to_f16((i % 29) as f32 / 16.0 - 0.9).to_le_bytes()).collect();
         let x = input(cols);

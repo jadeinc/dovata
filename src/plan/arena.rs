@@ -24,7 +24,11 @@ impl Request {
     /// - `other`: the second tensor; `self` is the first.
     ///
     /// Outputs: `true` when their op ranges overlap.
-    fn overlaps_in_time(&self, other: &Request) -> bool {
+    fn overlaps_in_time(
+        &self,
+        other: &Request,
+    ) -> bool
+    {
         self.first <= other.last && other.first <= self.last
     }
 }
@@ -45,7 +49,11 @@ pub struct Placement {
 /// - `align`: the alignment, a power of two.
 ///
 /// Outputs: the rounded offset.
-fn align_up(x: u64, align: u64) -> u64 {
+fn align_up(
+    x: u64,
+    align: u64,
+) -> u64
+{
     x.div_ceil(align) * align
 }
 
@@ -56,7 +64,10 @@ fn align_up(x: u64, align: u64) -> u64 {
 /// - `requests`: the tensors to place, with their sizes and lifetimes.
 ///
 /// Outputs: each tensor's byte offset in the region, and the region's total size.
-pub fn assign(requests: &[Request]) -> Placement {
+pub fn assign(
+    requests: &[Request],
+) -> Placement
+{
     let mut order: Vec<usize> = (0..requests.len()).collect();
     order.sort_by(|&a, &b| {
         let (ra, rb) = (&requests[a], &requests[b]);
@@ -101,7 +112,11 @@ pub fn assign(requests: &[Request]) -> Placement {
 /// - `p`: the placement [`assign`] returned for them.
 ///
 /// Outputs: `Ok(())`, or an error naming the first bad tensor or pair.
-pub fn check(requests: &[Request], p: &Placement) -> Result<(), String> {
+pub fn check(
+    requests: &[Request],
+    p: &Placement,
+) -> Result<(), String>
+{
     for (i, r) in requests.iter().enumerate() {
         if p.offsets[i] % r.align != 0 {
             return Err(format!("{} at offset {} is not aligned to {}", r.name, p.offsets[i], r.align));
@@ -138,12 +153,19 @@ mod tests {
     /// - `last`: the last op that uses it.
     ///
     /// Outputs: the [`Request`].
-    fn req(name: &str, bytes: u64, first: u32, last: u32) -> Request {
+    fn req(
+        name: &str,
+        bytes: u64,
+        first: u32,
+        last: u32,
+    ) -> Request
+    {
         Request { name: name.into(), bytes, align: 256, first, last }
     }
 
     #[test]
-    fn disjoint_lifetimes_share_offset() {
+    fn disjoint_lifetimes_share_offset()
+    {
         let rs = [req("a", 1000, 0, 1), req("b", 1000, 2, 3)];
         let p = assign(&rs);
         assert_eq!(p.offsets[0], p.offsets[1]);
@@ -152,7 +174,8 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_lifetimes_do_not() {
+    fn overlapping_lifetimes_do_not()
+    {
         let rs = [req("a", 1000, 0, 2), req("b", 1000, 2, 3)];
         let p = assign(&rs);
         assert_ne!(p.offsets[0], p.offsets[1]);
@@ -161,7 +184,8 @@ mod tests {
     }
 
     #[test]
-    fn a_small_tensor_fits_in_a_gap_below_a_live_one() {
+    fn a_small_tensor_fits_in_a_gap_below_a_live_one()
+    {
         // c is alive with b but not with a, so it can take a's bytes below b.
         let rs = [req("a", 4096, 0, 1), req("b", 4096, 0, 5), req("c", 1024, 2, 5)];
         let p = assign(&rs);
@@ -170,7 +194,8 @@ mod tests {
     }
 
     #[test]
-    fn offsets_honor_each_alignment() {
+    fn offsets_honor_each_alignment()
+    {
         let mut rs = vec![req("a", 100, 0, 9)];
         rs.push(Request { name: "b".into(), bytes: 100, align: 4096, first: 0, last: 9 });
         let p = assign(&rs);
@@ -179,7 +204,8 @@ mod tests {
     }
 
     #[test]
-    fn input_order_does_not_change_the_result() {
+    fn input_order_does_not_change_the_result()
+    {
         let rs: Vec<Request> = (0..40)
             .map(|i: u32| req(&format!("t{i:02}"), 512 * u64::from(1 + (i * 7 % 5)), i % 9, i % 9 + (i % 4)))
             .collect();
@@ -197,7 +223,8 @@ mod tests {
     }
 
     #[test]
-    fn check_catches_an_overlap() {
+    fn check_catches_an_overlap()
+    {
         let rs = [req("a", 1000, 0, 2), req("b", 1000, 1, 3)];
         let bad = Placement { offsets: vec![0, 512], size: 1512 };
         assert!(check(&rs, &bad).unwrap_err().contains("overlap"));

@@ -1,11 +1,12 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/hub.rs
+//! File: src/chat/src/hf_hub.rs
 //! Description: Builds a `Chat` from a model repo on the Hugging Face Hub.
 
 use std::io::Read;
 
-use hf_hub::api::sync::{ApiBuilder, ApiError};
-use hf_hub::{Cache, Repo, RepoType};
+// The leading `::` names the hf-hub library, not this module, which has the same name.
+use ::hf_hub::api::sync::{ApiBuilder, ApiError};
+use ::hf_hub::{Cache, Repo, RepoType};
 use serde::Deserialize;
 
 use crate::{header, Chat, ChatError, Gguf, Result, Tokenizer};
@@ -43,7 +44,8 @@ impl RepoInfo {
     /// Inputs: none.
     ///
     /// Outputs: the repo id, such as `Qwen/Qwen3-0.6B`, or `None`.
-    pub(crate) fn card_base_model(&self) -> Option<String> {
+    pub(crate) fn card_base_model(&self) -> Option<String>
+    {
         let value = &self.card.as_ref()?.base_model;
         let id = value.as_str().or_else(|| value.as_array()?.first()?.as_str())?;
         let (org, name) = id.split_once('/')?;
@@ -58,7 +60,11 @@ impl RepoInfo {
 /// - `revision`: a branch, tag or commit of `repo`, or `None` for `main`.
 ///
 /// Outputs: the [`Chat`], or an error if a download fails or the files do not match.
-pub(crate) fn from_hub(repo: &str, revision: Option<&str>) -> Result<Chat> {
+pub(crate) fn from_hub(
+    repo: &str,
+    revision: Option<&str>,
+) -> Result<Chat>
+{
     let revision = revision.unwrap_or("main");
     let cache = Cache::from_env();
     // `with_token` replaces the token hf-hub read from the login file, so pass that one
@@ -118,7 +124,11 @@ pub(crate) fn from_hub(repo: &str, revision: Option<&str>) -> Result<Chat> {
 /// - `cached`: tells whether a file is already in the local Hugging Face cache.
 ///
 /// Outputs: the chosen file name, or `None` if the repo has no model GGUF.
-pub(crate) fn pick_gguf<'a>(files: &[&'a str], cached: impl Fn(&str) -> bool) -> Option<&'a str> {
+pub(crate) fn pick_gguf<'a>(
+    files: &[&'a str],
+    cached: impl Fn(&str) -> bool,
+) -> Option<&'a str>
+{
     let mut candidates: Vec<&str> = files.iter().copied().filter(|f| is_model_gguf(f)).collect();
     candidates.sort_unstable();
     candidates.iter().copied().find(|f| cached(f)).or_else(|| candidates.first().copied())
@@ -131,7 +141,10 @@ pub(crate) fn pick_gguf<'a>(files: &[&'a str], cached: impl Fn(&str) -> bool) ->
 /// - `name`: a file name from the repo.
 ///
 /// Outputs: `true` for a model GGUF, `false` for anything else.
-fn is_model_gguf(name: &str) -> bool {
+fn is_model_gguf(
+    name: &str,
+) -> bool
+{
     let lower = name.to_ascii_lowercase();
     let Some(stem) = lower.strip_suffix(".gguf") else {
         return false;
@@ -147,7 +160,10 @@ fn is_model_gguf(name: &str) -> bool {
 /// - `stem`: the file name without `.gguf`.
 ///
 /// Outputs: `true` for a part after the first.
-fn is_later_split_part(stem: &str) -> bool {
+fn is_later_split_part(
+    stem: &str,
+) -> bool
+{
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let Some((head, total)) = stem.rsplit_once("-of-") else {
         return false;
@@ -164,7 +180,10 @@ fn is_later_split_part(stem: &str) -> bool {
 /// - `gguf`: the parsed GGUF header.
 ///
 /// Outputs: the repo id, or `None` if the header has no Hugging Face URL.
-pub(crate) fn base_repo(gguf: &Gguf) -> Option<String> {
+pub(crate) fn base_repo(
+    gguf: &Gguf,
+) -> Option<String>
+{
     let url = gguf.string(KEY_BASE_REPO_URL)?;
     let id = ["https://huggingface.co/", "http://huggingface.co/"]
         .iter()
@@ -183,7 +202,11 @@ pub(crate) fn base_repo(gguf: &Gguf) -> Option<String> {
 ///
 /// Outputs: the parsed header, or an error if a request fails or the header does not
 /// parse.
-fn range_fetch(url: &str, token: Option<&str>) -> Result<Gguf> {
+fn range_fetch(
+    url: &str,
+    token: Option<&str>,
+) -> Result<Gguf>
+{
     // Keep the token on same-host redirects, which the Hub uses between revisions, and
     // drop it on the hop to the storage CDN, whose URL is already signed. That is
     // hf-hub's own policy.
@@ -226,7 +249,10 @@ fn range_fetch(url: &str, token: Option<&str>) -> Result<Gguf> {
 /// - `repo`: the repo id to name in the message.
 ///
 /// Outputs: the converter.
-fn hub_error(repo: &str) -> impl Fn(ApiError) -> ChatError + '_ {
+fn hub_error(
+    repo: &str,
+) -> impl Fn(ApiError) -> ChatError + '_
+{
     move |e| {
         let hint = match &e {
             ApiError::RequestError(inner) => status_hint(inner),
@@ -243,7 +269,11 @@ fn hub_error(repo: &str) -> impl Fn(ApiError) -> ChatError + '_ {
 /// - `e`: the request error.
 ///
 /// Outputs: the `ChatError::Hub`.
-fn request_error(repo: &str, e: &ureq::Error) -> ChatError {
+fn request_error(
+    repo: &str,
+    e: &ureq::Error,
+) -> ChatError
+{
     ChatError::Hub(format!("{repo}: {e}{}", status_hint(e)))
 }
 
@@ -253,7 +283,10 @@ fn request_error(repo: &str, e: &ureq::Error) -> ChatError {
 /// - `e`: the request error.
 ///
 /// Outputs: the hint, or an empty string.
-fn status_hint(e: &ureq::Error) -> &'static str {
+fn status_hint(
+    e: &ureq::Error,
+) -> &'static str
+{
     match e {
         // The Hub answers 401 for a repo that does not exist, as well as for one that is
         // private or gated, so as not to reveal which.

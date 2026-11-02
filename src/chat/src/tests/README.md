@@ -7,7 +7,7 @@ and the template environment.
 Almost everything here runs offline against fixtures that the tests build themselves, so
 `cargo test -p dovata-chat` needs no model file, no network and no GPU. The exceptions
 are the tests in `real.rs`, which run only when environment variables name real model
-files, and two tests in `hub.rs`, which are `#[ignore]`d because they download from
+files, and two tests in `hf_hub.rs`, which are `#[ignore]`d because they download from
 huggingface.co.
 
 ## The fixtures
@@ -54,7 +54,7 @@ belongs in the repository, so with a variable unset its test prints a note and p
 - `mod.rs`: the tests of `Chat` itself, such as encoding, rendering, the special tokens
   and bad input, and the list of the other test modules.
 - `fixture.rs`: the fixture header, tokenizer and scratch folder described above.
-- `hub.rs`: the Hub rule's pure parts, offline: which GGUF in a repo is picked, and where
+- `hf_hub.rs`: the Hub rule's pure parts, offline: which GGUF in a repo is picked, and where
   the base model's id is read from. It also holds the two network tests, which fetch
   `Qwen/Qwen3-0.6B-GGUF` and `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`. Run them with
   `cargo test -p dovata-chat -- --ignored`.

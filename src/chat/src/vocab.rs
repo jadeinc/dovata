@@ -25,7 +25,12 @@ const EXAMPLES: usize = 5;
 /// - `tokenizer`: the tokenizer from `tokenizer.json`.
 ///
 /// Outputs: `Ok(())`, or a `ChatError::VocabMismatch` listing the ids that differ.
-pub fn check(gguf_tokens: &[&str], gguf_types: Option<&[u64]>, tokenizer: &Tokenizer) -> Result<(), ChatError> {
+pub fn check(
+    gguf_tokens: &[&str],
+    gguf_types: Option<&[u64]>,
+    tokenizer: &Tokenizer,
+) -> Result<(), ChatError>
+{
     let added: HashSet<u32> = tokenizer.get_added_tokens_decoder().into_keys().collect();
     // One past the highest id, rather than the token count: a tokenizer's ids can have
     // gaps, and an id past the GGUF's end is a mismatch wherever it sits.
@@ -70,7 +75,15 @@ pub fn check(gguf_tokens: &[&str], gguf_types: Option<&[u64]>, tokenizer: &Token
 /// - `tokenizer`: the tokenizer.
 ///
 /// Outputs: `true` if they agree.
-fn agrees(id: u32, gguf: &str, ours: &str, types: Option<&[u64]>, added: &HashSet<u32>, tokenizer: &Tokenizer) -> bool {
+fn agrees(
+    id: u32,
+    gguf: &str,
+    ours: &str,
+    types: Option<&[u64]>,
+    added: &HashSet<u32>,
+    tokenizer: &Tokenizer,
+) -> bool
+{
     if gguf == ours {
         return true;
     }
@@ -95,7 +108,12 @@ fn agrees(id: u32, gguf: &str, ours: &str, types: Option<&[u64]>, added: &HashSe
 /// - `types`: the GGUF's token types, if any.
 ///
 /// Outputs: `true` for padding.
-fn is_padding(id: u32, gguf: &str, types: Option<&[u64]>) -> bool {
+fn is_padding(
+    id: u32,
+    gguf: &str,
+    types: Option<&[u64]>,
+) -> bool
+{
     match type_of(types, id) {
         Some(t) => t == TYPE_UNUSED,
         // A file without token types: fall back to the name the converter writes.
@@ -110,6 +128,10 @@ fn is_padding(id: u32, gguf: &str, types: Option<&[u64]>) -> bool {
 /// - `id`: the token id.
 ///
 /// Outputs: the type, or `None`.
-fn type_of(types: Option<&[u64]>, id: u32) -> Option<u64> {
+fn type_of(
+    types: Option<&[u64]>,
+    id: u32,
+) -> Option<u64>
+{
     types?.get(id as usize).copied()
 }

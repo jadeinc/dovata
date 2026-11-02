@@ -28,7 +28,11 @@ struct Options {
 ///   arguments.
 ///
 /// Outputs: the JSON text, or an error for a bad argument or a value JSON cannot hold.
-pub(crate) fn tojson(value: &Value, kwargs: Kwargs) -> Result<Value, Error> {
+pub(crate) fn tojson(
+    value: &Value,
+    kwargs: Kwargs,
+) -> Result<Value, Error>
+{
     let indent = match kwargs.get::<Option<Value>>("indent")? {
         None => None,
         Some(v) if v.kind() == ValueKind::String => Some(v.as_str().unwrap_or_default().to_owned()),
@@ -77,7 +81,13 @@ pub(crate) fn tojson(value: &Value, kwargs: Kwargs) -> Result<Value, Error> {
 ///
 /// Outputs: the JSON text.
 #[cfg(test)]
-pub(crate) fn dumps(value: &Value, indent: Option<&str>, sort_keys: bool, ensure_ascii: bool) -> String {
+pub(crate) fn dumps(
+    value: &Value,
+    indent: Option<&str>,
+    sort_keys: bool,
+    ensure_ascii: bool,
+) -> String
+{
     let opts = Options {
         indent: indent.map(str::to_owned),
         item_sep: if indent.is_some() { ",".into() } else { ", ".into() },
@@ -96,7 +106,10 @@ pub(crate) fn dumps(value: &Value, indent: Option<&str>, sort_keys: bool, ensure
 /// - `msg`: the message.
 ///
 /// Outputs: the error.
-fn invalid(msg: String) -> Error {
+fn invalid(
+    msg: String,
+) -> Error
+{
     Error::new(ErrorKind::InvalidOperation, msg)
 }
 
@@ -109,7 +122,13 @@ fn invalid(msg: String) -> Error {
 /// - `depth`: how deeply the value is nested.
 ///
 /// Outputs: `Ok(())`, or an error for a value JSON cannot hold.
-fn write_value(out: &mut String, value: &Value, opts: &Options, depth: usize) -> Result<(), Error> {
+fn write_value(
+    out: &mut String,
+    value: &Value,
+    opts: &Options,
+    depth: usize,
+) -> Result<(), Error>
+{
     match value.kind() {
         ValueKind::None => out.push_str("null"),
         ValueKind::Bool => out.push_str(if value.is_true() { "true" } else { "false" }),
@@ -170,7 +189,12 @@ fn write_value(out: &mut String, value: &Value, opts: &Options, depth: usize) ->
 /// - `depth`: how many indents to write.
 ///
 /// Outputs: none.
-fn newline(out: &mut String, opts: &Options, depth: usize) {
+fn newline(
+    out: &mut String,
+    opts: &Options,
+    depth: usize,
+)
+{
     if let Some(indent) = &opts.indent {
         out.push('\n');
         for _ in 0..depth {
@@ -186,7 +210,10 @@ fn newline(out: &mut String, opts: &Options, depth: usize) {
 /// - `key`: the map key.
 ///
 /// Outputs: the key as a string, or an error for a key JSON cannot hold.
-fn key_string(key: &Value) -> Result<String, Error> {
+fn key_string(
+    key: &Value,
+) -> Result<String, Error>
+{
     match key.kind() {
         ValueKind::String => Ok(key.as_str().unwrap_or_default().to_owned()),
         ValueKind::None => Ok("null".into()),
@@ -207,7 +234,11 @@ fn key_string(key: &Value) -> Result<String, Error> {
 /// - `value`: the number.
 ///
 /// Outputs: `Ok(())`, or an error if the value is not a number.
-fn write_number(out: &mut String, value: &Value) -> Result<(), Error> {
+fn write_number(
+    out: &mut String,
+    value: &Value,
+) -> Result<(), Error>
+{
     if value.is_integer() {
         let _ = write!(out, "{value}");
         return Ok(());
@@ -223,7 +254,10 @@ fn write_number(out: &mut String, value: &Value) -> Result<(), Error> {
 /// - `f`: the float.
 ///
 /// Outputs: the text, such as `1e+16`.
-fn python_float(f: f64) -> String {
+fn python_float(
+    f: f64,
+) -> String
+{
     if f.is_nan() {
         return "NaN".into();
     }
@@ -249,7 +283,12 @@ fn python_float(f: f64) -> String {
 /// - `ensure_ascii`: whether to escape characters outside ASCII.
 ///
 /// Outputs: none.
-fn write_string(out: &mut String, s: &str, ensure_ascii: bool) {
+fn write_string(
+    out: &mut String,
+    s: &str,
+    ensure_ascii: bool,
+)
+{
     out.push('"');
     for c in s.chars() {
         match c {

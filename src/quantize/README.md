@@ -21,7 +21,7 @@ match all of that exactly. Calling the real one is the only way to be sure it do
 *Quantizing is never a side effect.* A 30B model is tens of gigabytes read and written
 and several minutes of work. If `fetch` or the planner did it on their own, a typo in a
 type name could cost an hour and fill a disk. So nothing calls `quantize` except the
-caller, and a repo that lacks the requested type is an error from `hub`, not a cue to
+caller, and a repo that lacks the requested type is an error from `hf_hub`, not a cue to
 quantize.
 
 *Run the program, do not link the library.* An earlier version linked llama.cpp's C
@@ -249,6 +249,6 @@ cargo test -p dovata --lib --no-default-features quantize
 Nothing inside dovata calls `quantize`, by design. Its callers are the Jade compiler
 and, once it is written, the `dovata plan` command. The plan is for that command to
 quantize only when a user asks for a type the Hub repo does not offer: it fetches the
-unquantized model with `hub::fetch`, then passes it here with `default_output` as the
+unquantized model with `hf_hub::fetch`, then passes it here with `default_output` as the
 destination. The planned `refback` crate will use `crate::gguf::write` the way
 `fixture.rs` does, to make its own small models.

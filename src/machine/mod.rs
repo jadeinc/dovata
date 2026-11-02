@@ -23,7 +23,8 @@ pub use probe::{current, usage};
 ///
 /// Outputs: always [`MachineError::NotBuilt`].
 #[cfg(not(feature = "machine"))]
-pub fn current() -> Result<Machine, MachineError> {
+pub fn current() -> Result<Machine, MachineError>
+{
     Err(MachineError::NotBuilt)
 }
 
@@ -34,7 +35,10 @@ pub fn current() -> Result<Machine, MachineError> {
 ///
 /// Outputs: always [`MachineError::NotBuilt`].
 #[cfg(not(feature = "machine"))]
-pub fn usage(process: Option<&str>) -> Result<Usage, MachineError> {
+pub fn usage(
+    process: Option<&str>,
+) -> Result<Usage, MachineError>
+{
     let _ = process;
     Err(MachineError::NotBuilt)
 }
@@ -173,7 +177,11 @@ impl fmt::Display for MachineError {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             MachineError::NotBuilt => write!(
                 f,
@@ -197,7 +205,11 @@ impl Machine {
     /// Outputs: an Apple target on a Mac with Metal, using Metal's working set and buffer
     /// limits; else a CUDA target for the first NVIDIA GPU, using its total VRAM; else a
     /// CPU target with all physical memory.
-    pub fn target(&self, cpu_only: bool) -> Target {
+    pub fn target(
+        &self,
+        cpu_only: bool,
+    ) -> Target
+    {
         if !cpu_only {
             if let Some(m) = self.metal {
                 return Target::Apple {
@@ -221,7 +233,11 @@ impl Machine {
 /// - `total_bytes`: physical memory, from `sysctl hw.memsize`.
 ///
 /// Outputs: the snapshot without swap or pressure, or a [`MachineError::Parse`].
-pub fn parse_vm_stat(text: &str, total_bytes: u64) -> Result<MemoryUse, MachineError> {
+pub fn parse_vm_stat(
+    text: &str,
+    total_bytes: u64,
+) -> Result<MemoryUse, MachineError>
+{
     let fail = |detail: &str| MachineError::Parse { what: "vm_stat output".into(), detail: detail.into() };
     let page: u64 = text
         .lines()
@@ -259,7 +275,10 @@ pub fn parse_vm_stat(text: &str, total_bytes: u64) -> Result<MemoryUse, MachineE
 /// - `text`: the output, such as `total = 2048.00M  used = 512.50M  free = 1535.50M`.
 ///
 /// Outputs: total and used swap in bytes, or a [`MachineError::Parse`].
-pub fn parse_swapusage(text: &str) -> Result<(u64, u64), MachineError> {
+pub fn parse_swapusage(
+    text: &str,
+) -> Result<(u64, u64), MachineError>
+{
     let field = |name: &str| -> Option<u64> {
         let rest = text.split(&format!("{name} = ")).nth(1)?;
         let value = rest.split_whitespace().next()?;
@@ -286,7 +305,10 @@ pub fn parse_swapusage(text: &str) -> Result<(u64, u64), MachineError> {
 /// - `text`: the output, whose last line is `System-wide memory free percentage: 54%`.
 ///
 /// Outputs: the free percentage, or `None` when the line is missing.
-pub fn parse_memory_pressure(text: &str) -> Option<Pressure> {
+pub fn parse_memory_pressure(
+    text: &str,
+) -> Option<Pressure>
+{
     let line = text.lines().find(|l| l.contains("memory free percentage"))?;
     let value = line.rsplit(':').next()?.trim().trim_end_matches('%');
     value.parse().ok().map(Pressure::FreePercent)
@@ -298,7 +320,10 @@ pub fn parse_memory_pressure(text: &str) -> Option<Pressure> {
 /// - `text`: the file's contents.
 ///
 /// Outputs: the snapshot without pressure, or a [`MachineError::Parse`].
-pub fn parse_meminfo(text: &str) -> Result<MemoryUse, MachineError> {
+pub fn parse_meminfo(
+    text: &str,
+) -> Result<MemoryUse, MachineError>
+{
     let kib = |key: &str| -> Option<u64> {
         let line = text.lines().find(|l| l.split(':').next() == Some(key))?;
         let value: u64 = line.split(':').nth(1)?.split_whitespace().next()?.parse().ok()?;
@@ -330,7 +355,10 @@ pub fn parse_meminfo(text: &str) -> Result<MemoryUse, MachineError> {
 /// - `text`: the file's contents, whose first line is `some avg10=1.25 avg60=...`.
 ///
 /// Outputs: the `some avg10` stall percentage, or `None` when it is missing.
-pub fn parse_psi(text: &str) -> Option<Pressure> {
+pub fn parse_psi(
+    text: &str,
+) -> Option<Pressure>
+{
     let line = text.lines().find(|l| l.starts_with("some "))?;
     let value = line.split_whitespace().find_map(|w| w.strip_prefix("avg10="))?;
     value.parse().ok().map(Pressure::StallPercent)
@@ -346,7 +374,10 @@ pub const NVIDIA_QUERY: &str =
 /// - `text`: the output of `nvidia-smi --query-gpu=<NVIDIA_QUERY> --format=csv,noheader,nounits`.
 ///
 /// Outputs: one [`Gpu`] per line, or a [`MachineError::Parse`].
-pub fn parse_nvidia_smi(text: &str) -> Result<Vec<Gpu>, MachineError> {
+pub fn parse_nvidia_smi(
+    text: &str,
+) -> Result<Vec<Gpu>, MachineError>
+{
     let fields = NVIDIA_QUERY.split(',').count();
     let mut gpus = Vec::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -384,7 +415,11 @@ pub fn parse_nvidia_smi(text: &str) -> Result<Vec<Gpu>, MachineError> {
 ///   `qwen-chat`, or the whole command.
 ///
 /// Outputs: every matching process, in the order `ps` listed them.
-pub fn parse_ps(text: &str, name: &str) -> Vec<ProcessUse> {
+pub fn parse_ps(
+    text: &str,
+    name: &str,
+) -> Vec<ProcessUse>
+{
     text.lines()
         .filter_map(|line| {
             let mut words = line.trim_start().splitn(2, char::is_whitespace);
@@ -407,7 +442,8 @@ mod tests {
     const GIB: u64 = 1 << 30;
 
     #[test]
-    fn vm_stat_gives_used_immovable_and_compressed() {
+    fn vm_stat_gives_used_immovable_and_compressed()
+    {
         let text = include_str!("testdata/macos-vm_stat.txt");
         let m = parse_vm_stat(text, 24 * GIB).unwrap();
         let page = 16384;
@@ -424,7 +460,8 @@ mod tests {
     }
 
     #[test]
-    fn swapusage_reads_each_unit() {
+    fn swapusage_reads_each_unit()
+    {
         assert_eq!(parse_swapusage(include_str!("testdata/macos-swapusage.txt")), Ok((0, 0)));
         assert_eq!(parse_swapusage("total = 2048.00M  used = 512.50M  free = 1535.50M  (encrypted)"), Ok((2 * GIB, 537_395_200)));
         assert_eq!(parse_swapusage("total = 1.50G  used = 0.00M  free = 1.50G"), Ok((1_610_612_736, 0)));
@@ -432,7 +469,8 @@ mod tests {
     }
 
     #[test]
-    fn memory_pressure_reads_the_free_percentage() {
+    fn memory_pressure_reads_the_free_percentage()
+    {
         let p = parse_memory_pressure(include_str!("testdata/macos-memory_pressure.txt"));
         assert!(matches!(p, Some(Pressure::FreePercent(v)) if v <= 100), "{p:?}");
         assert_eq!(parse_memory_pressure("System-wide memory free percentage: 7%"), Some(Pressure::FreePercent(7)));
@@ -440,7 +478,8 @@ mod tests {
     }
 
     #[test]
-    fn meminfo_gives_used_from_available() {
+    fn meminfo_gives_used_from_available()
+    {
         let m = parse_meminfo(include_str!("testdata/linux-meminfo.txt")).unwrap();
         assert_eq!(m.total_bytes, 65_842_148 * 1024);
         assert_eq!(m.available_bytes, 41_207_716 * 1024);
@@ -452,13 +491,15 @@ mod tests {
     }
 
     #[test]
-    fn psi_reads_some_avg10() {
+    fn psi_reads_some_avg10()
+    {
         assert_eq!(parse_psi(include_str!("testdata/linux-pressure-memory.txt")), Some(Pressure::StallPercent(1.25)));
         assert_eq!(parse_psi(""), None);
     }
 
     #[test]
-    fn nvidia_smi_reads_each_gpu() {
+    fn nvidia_smi_reads_each_gpu()
+    {
         let gpus = parse_nvidia_smi(include_str!("testdata/nvidia-smi.csv")).unwrap();
         assert_eq!(gpus.len(), 2);
         assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 4090");
@@ -472,7 +513,8 @@ mod tests {
     }
 
     #[test]
-    fn ps_matches_by_program_name() {
+    fn ps_matches_by_program_name()
+    {
         let text = include_str!("testdata/macos-ps.txt");
         let found = parse_ps(text, "qwen-chat");
         assert_eq!(found.iter().map(|p| p.pid).collect::<Vec<_>>(), [5120, 5121]);
@@ -484,7 +526,8 @@ mod tests {
     }
 
     #[test]
-    fn the_target_follows_the_hardware() {
+    fn the_target_follows_the_hardware()
+    {
         let mut m = Machine {
             os: "macOS 26.5.2".into(),
             chip: Some("Apple M4".into()),
@@ -504,13 +547,15 @@ mod tests {
     }
 
     #[test]
-    fn pressure_serializes_in_snake_case() {
+    fn pressure_serializes_in_snake_case()
+    {
         assert_eq!(serde_json::to_string(&Pressure::FreePercent(55)).unwrap(), r#"{"free_percent":55}"#);
     }
 
     #[test]
     #[cfg(not(feature = "machine"))]
-    fn reading_the_machine_is_refused_without_feature() {
+    fn reading_the_machine_is_refused_without_feature()
+    {
         assert_eq!(current(), Err(MachineError::NotBuilt));
         assert_eq!(usage(None).unwrap_err(), MachineError::NotBuilt);
         assert!(MachineError::NotBuilt.to_string().contains("`machine` cargo feature"));

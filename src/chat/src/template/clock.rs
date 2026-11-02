@@ -9,7 +9,11 @@
 /// - `secs`: the time, in seconds since the Unix epoch.
 ///
 /// Outputs: the formatted text.
-pub(crate) fn strftime(format: &str, secs: i64) -> String {
+pub(crate) fn strftime(
+    format: &str,
+    secs: i64,
+) -> String
+{
     let days = secs.div_euclid(86_400);
     let sod = secs.rem_euclid(86_400);
     let (year, month, day) = civil_from_days(days);
@@ -107,7 +111,10 @@ const MONTHS: [&str; 12] = [
 /// - `days`: the days since 1970-01-01.
 ///
 /// Outputs: the year, month and day.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
+fn civil_from_days(
+    days: i64,
+) -> (i64, u32, u32)
+{
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -128,7 +135,12 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 /// - `day`: the day of the month, from 1.
 ///
 /// Outputs: the day of the year, from 1.
-fn day_of_year(year: i64, month: u32, day: u32) -> i64 {
+fn day_of_year(
+    year: i64,
+    month: u32,
+    day: u32,
+) -> i64
+{
     const BEFORE: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
     let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
     BEFORE[month as usize - 1] + i64::from(day) + i64::from(leap && month > 2)

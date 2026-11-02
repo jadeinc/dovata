@@ -50,7 +50,7 @@ compute garbage.
 
 A split model can be opened two ways. `Model::open` takes the first part's path and
 finds the others by llama.cpp's naming rule. `Model::from_parts` takes the list of files
-the Hub download in `src/hub/` returns, so nothing is guessed from names.
+the Hub download in `src/hf_hub/` returns, so nothing is guessed from names.
 `Model::from_headers` builds the same value from header bytes in memory, for tests; its
 paths are only labels.
 

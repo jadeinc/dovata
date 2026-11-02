@@ -54,7 +54,13 @@ pub struct StepOp {
 ///
 /// Outputs: the [`Plan`] with its step, or a [`PlanError`] saying why the model cannot be
 /// bound or placed.
-pub fn plan(model: &Model, layout: &Layout, opts: &BindOptions, target: &Target) -> Result<Plan, PlanError> {
+pub fn plan(
+    model: &Model,
+    layout: &Layout,
+    opts: &BindOptions,
+    target: &Target,
+) -> Result<Plan, PlanError>
+{
     let graph = layout.bind(model, opts).map_err(PlanError::Layout)?;
     plan_graph(model, &graph, target)
 }
@@ -67,7 +73,12 @@ pub fn plan(model: &Model, layout: &Layout, opts: &BindOptions, target: &Target)
 /// - `target`: the machine to plan for.
 ///
 /// Outputs: the [`Plan`] with its step, or a [`PlanError`].
-pub fn plan_graph(model: &Model, graph: &BoundGraph, target: &Target) -> Result<Plan, PlanError> {
+pub fn plan_graph(
+    model: &Model,
+    graph: &BoundGraph,
+    target: &Target,
+) -> Result<Plan, PlanError>
+{
     check_weights(model, graph)?;
     let others = tensors_to_place(graph)?;
     let mut plan = place(model, &others, target)?;
@@ -102,7 +113,11 @@ pub fn plan_graph(model: &Model, graph: &BoundGraph, target: &Target) -> Result<
 ///
 /// Outputs: `Ok(())`, or [`PlanError::Invariant`] when the graph was bound to another
 /// model.
-fn check_weights(model: &Model, graph: &BoundGraph) -> Result<(), PlanError> {
+fn check_weights(
+    model: &Model,
+    graph: &BoundGraph,
+) -> Result<(), PlanError>
+{
     let mismatch = |detail: String| PlanError::Invariant(format!("the bound graph does not match the model: {detail}"));
     if graph.arch != model.architecture() {
         return Err(mismatch(format!("it is for {}, the model is {}", graph.arch, model.architecture())));
@@ -124,7 +139,10 @@ fn check_weights(model: &Model, graph: &BoundGraph) -> Result<(), PlanError> {
 ///
 /// Outputs: one [`PlanTensor`] per input, activation, KV, state and view tensor, in graph
 /// order, or [`PlanError::Invariant`] when the graph has more ops than fit in a `u32`.
-fn tensors_to_place(graph: &BoundGraph) -> Result<Vec<PlanTensor>, PlanError> {
+fn tensors_to_place(
+    graph: &BoundGraph,
+) -> Result<Vec<PlanTensor>, PlanError>
+{
     let n_ops = u32::try_from(graph.ops.len()).map_err(|_| PlanError::Invariant("more than 2^32 ops".into()))?;
     let end = n_ops.saturating_sub(1);
 
@@ -194,7 +212,10 @@ mod tests {
     /// - `kv`: the K and V cache type.
     ///
     /// Outputs: the options.
-    fn opts(kv: KvType) -> BindOptions {
+    fn opts(
+        kv: KvType,
+    ) -> BindOptions
+    {
         BindOptions { n_ctx: 256, n_tokens: 8, n_outputs: 1, kv_k: kv, kv_v: kv }
     }
 
@@ -204,7 +225,10 @@ mod tests {
     /// - `target`: the machine to plan for.
     ///
     /// Outputs: the model, its bound graph and the plan.
-    fn small(target: &Target) -> (Model, BoundGraph, Plan) {
+    fn small(
+        target: &Target,
+    ) -> (Model, BoundGraph, Plan)
+    {
         let model = qwen3moe(&SMALL, F16, false).model();
         let layout = builtin("qwen3moe").unwrap();
         let graph = layout.bind(&model, &opts(KvType::Q8_0)).unwrap();
@@ -213,7 +237,8 @@ mod tests {
     }
 
     #[test]
-    fn every_bound_tensor_gets_one_entry() {
+    fn every_bound_tensor_gets_one_entry()
+    {
         let (_, graph, plan) = small(&Target::apple(1 << 30, 1 << 30));
         assert_eq!(plan.entries.len(), graph.tensors.len());
         for t in &graph.tensors {
@@ -222,7 +247,8 @@ mod tests {
     }
 
     #[test]
-    fn the_step_names_only_planned_tensors() {
+    fn the_step_names_only_planned_tensors()
+    {
         let (_, graph, plan) = small(&Target::cpu(1 << 30));
         let step = plan.step.as_ref().unwrap();
         assert_eq!(step.ops.len(), graph.ops.len());
@@ -235,7 +261,8 @@ mod tests {
     }
 
     #[test]
-    fn outputs_live_to_the_end_and_inputs_from_the_start() {
+    fn outputs_live_to_the_end_and_inputs_from_the_start()
+    {
         let (_, graph, plan) = small(&Target::cuda(1 << 30));
         let end = u32::try_from(graph.ops.len() - 1).unwrap();
         let out = plan.entry("result_output").unwrap();
@@ -246,7 +273,8 @@ mod tests {
     }
 
     #[test]
-    fn kv_is_persistent_and_scratch_reuses_memory() {
+    fn kv_is_persistent_and_scratch_reuses_memory()
+    {
         let (_, graph, plan) = small(&Target::apple(1 << 30, 1 << 30));
         let kv = plan.entries.iter().filter(|e| e.role == Role::Kv).count();
         assert_eq!(kv, 2 * graph.n_layer as usize);
@@ -258,7 +286,8 @@ mod tests {
     }
 
     #[test]
-    fn views_sit_inside_the_tensor_they_view() {
+    fn views_sit_inside_the_tensor_they_view()
+    {
         let (_, graph, plan) = small(&Target::cuda(1 << 30));
         for t in &graph.tensors {
             if let TensorKind::View { of, byte_offset, .. } = t.kind {
@@ -269,7 +298,8 @@ mod tests {
     }
 
     #[test]
-    fn planning_is_deterministic() {
+    fn planning_is_deterministic()
+    {
         let a = small(&Target::apple(1 << 30, 1 << 30)).2;
         let b = small(&Target::apple(1 << 30, 1 << 30)).2;
         assert_eq!(a.to_json(), b.to_json());
@@ -277,7 +307,8 @@ mod tests {
     }
 
     #[test]
-    fn a_layout_error_comes_back_as_a_plan_error() {
+    fn a_layout_error_comes_back_as_a_plan_error()
+    {
         let model = qwen3moe(&SMALL, F16, false).model();
         let layout = builtin("qwen3moe").unwrap();
         let err = plan(&model, &layout, &BindOptions { n_tokens: 0, ..opts(KvType::F16) }, &Target::cpu(1 << 30)).unwrap_err();
@@ -285,7 +316,8 @@ mod tests {
     }
 
     #[test]
-    fn a_graph_bound_to_another_model_is_refused() {
+    fn a_graph_bound_to_another_model_is_refused()
+    {
         let model = qwen3moe(&SMALL, F16, false).model();
         let tied = qwen3moe(&SMALL, F16, true).model();
         let graph = builtin("qwen3moe").unwrap().bind(&tied, &opts(KvType::F16)).unwrap();
@@ -295,7 +327,8 @@ mod tests {
     /// Plans a real model on all three targets when `DOVATA_TEST_HEADER` names a GGUF
     /// file or the first tens of megabytes of one.
     #[test]
-    fn a_real_header_plans_on_every_target() {
+    fn a_real_header_plans_on_every_target()
+    {
         let Ok(path) = std::env::var("DOVATA_TEST_HEADER") else {
             eprintln!("skipped: set DOVATA_TEST_HEADER to a GGUF header to plan a real model");
             return;

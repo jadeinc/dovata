@@ -13,8 +13,8 @@ use serde::Serialize;
 
 mod error;
 mod header;
-#[cfg(feature = "hub")]
-mod hub;
+#[cfg(feature = "hf-hub")]
+mod hf_hub;
 mod message;
 mod template;
 pub mod vocab;
@@ -57,7 +57,11 @@ impl std::fmt::Debug for Chat {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result
+    {
         // The template is kilobytes of Jinja and the tokenizer is the whole vocabulary,
         // so print their sizes rather than their contents.
         f.debug_struct("Chat")
@@ -106,7 +110,11 @@ impl Chat {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn from_files(gguf: &Path, tokenizer_json: &Path) -> Result<Chat> {
+    pub fn from_files(
+        gguf: &Path,
+        tokenizer_json: &Path,
+    ) -> Result<Chat>
+    {
         let header = header::read(gguf)?;
         let tokenizer = Tokenizer::from_file(tokenizer_json)
             .map_err(|e| ChatError::Tokenizer(format!("{}: {e}", tokenizer_json.display())))?;
@@ -120,9 +128,13 @@ impl Chat {
     /// - `revision`: a branch, tag or commit of `repo`, or `None` for `main`.
     ///
     /// Outputs: the `Chat`, or an error if a download fails or the files do not match.
-    #[cfg(feature = "hub")]
-    pub fn from_hub(repo: &str, revision: Option<&str>) -> Result<Chat> {
-        hub::from_hub(repo, revision)
+    #[cfg(feature = "hf-hub")]
+    pub fn from_hub(
+        repo: &str,
+        revision: Option<&str>,
+    ) -> Result<Chat>
+    {
+        hf_hub::from_hub(repo, revision)
     }
 
     /// Purpose: This function builds a `Chat` from a GGUF header that is already parsed,
@@ -134,7 +146,11 @@ impl Chat {
     ///
     /// Outputs: the `Chat`, or an error if the header lacks a piece or the vocabularies
     /// differ.
-    pub fn from_gguf(header: &Gguf, tokenizer: Tokenizer) -> Result<Chat> {
+    pub fn from_gguf(
+        header: &Gguf,
+        tokenizer: Tokenizer,
+    ) -> Result<Chat>
+    {
         let pieces = header::Pieces::of(header)?;
         vocab::check(&pieces.tokens, pieces.token_types.as_deref(), &tokenizer)?;
         Chat::new(pieces.template, tokenizer, pieces.bos, pieces.eos)
@@ -150,7 +166,13 @@ impl Chat {
     /// - `eos`: the EOS string, if any.
     ///
     /// Outputs: the `Chat`, or an error if the template does not compile.
-    pub fn new(template: String, tokenizer: Tokenizer, bos: Option<String>, eos: Option<String>) -> Result<Chat> {
+    pub fn new(
+        template: String,
+        tokenizer: Tokenizer,
+        bos: Option<String>,
+        eos: Option<String>,
+    ) -> Result<Chat>
+    {
         let env = template::environment(template.clone(), None).map_err(ChatError::Template)?;
         Ok(Chat { template, env, tokenizer, bos, eos })
     }
@@ -163,7 +185,11 @@ impl Chat {
     ///
     /// Outputs: the same `Chat`, with its clock fixed.
     #[must_use]
-    pub fn with_time(mut self, now: SystemTime) -> Chat {
+    pub fn with_time(
+        mut self,
+        now: SystemTime,
+    ) -> Chat
+    {
         template::set_clock(&mut self.env, Some(now));
         self
     }
@@ -175,7 +201,12 @@ impl Chat {
     /// - `add_special`: whether the tokenizer adds its own special tokens, such as BOS.
     ///
     /// Outputs: the token ids, or an error if encoding fails.
-    pub fn encode(&self, text: &str, add_special: bool) -> Result<Vec<u32>> {
+    pub fn encode(
+        &self,
+        text: &str,
+        add_special: bool,
+    ) -> Result<Vec<u32>>
+    {
         let encoding = self
             .tokenizer
             .encode_fast(text, add_special)
@@ -190,7 +221,12 @@ impl Chat {
     /// - `skip_special`: whether to drop special tokens such as turn markers.
     ///
     /// Outputs: the text, or an error if decoding fails.
-    pub fn decode(&self, ids: &[u32], skip_special: bool) -> Result<String> {
+    pub fn decode(
+        &self,
+        ids: &[u32],
+        skip_special: bool,
+    ) -> Result<String>
+    {
         self.tokenizer.decode(ids, skip_special).map_err(|e| ChatError::Tokenizer(format!("decode: {e}")))
     }
 
@@ -201,7 +237,12 @@ impl Chat {
     /// - `add_generation_prompt`: whether to end with the start of an assistant turn.
     ///
     /// Outputs: the prompt, or an error if rendering fails.
-    pub fn render(&self, messages: &[Message], add_generation_prompt: bool) -> Result<String> {
+    pub fn render(
+        &self,
+        messages: &[Message],
+        add_generation_prompt: bool,
+    ) -> Result<String>
+    {
         self.render_with(messages, add_generation_prompt, &())
     }
 
@@ -219,7 +260,8 @@ impl Chat {
         messages: &[Message],
         add_generation_prompt: bool,
         extra: &E,
-    ) -> Result<String> {
+    ) -> Result<String>
+    {
         for (i, m) in messages.iter().enumerate() {
             m.check().map_err(|e| ChatError::BadInput(format!("message {i}: {e}")))?;
         }
@@ -271,7 +313,8 @@ impl Chat {
     /// Inputs: none.
     ///
     /// Outputs: the BOS text, or `None` if the model has no BOS token.
-    pub fn bos(&self) -> Option<&str> {
+    pub fn bos(&self) -> Option<&str>
+    {
         self.bos.as_deref()
     }
 
@@ -280,7 +323,8 @@ impl Chat {
     /// Inputs: none.
     ///
     /// Outputs: the EOS text, or `None` if the model names no EOS token.
-    pub fn eos(&self) -> Option<&str> {
+    pub fn eos(&self) -> Option<&str>
+    {
         self.eos.as_deref()
     }
 
@@ -289,7 +333,8 @@ impl Chat {
     /// Inputs: none.
     ///
     /// Outputs: the template text.
-    pub fn template(&self) -> &str {
+    pub fn template(&self) -> &str
+    {
         &self.template
     }
 
@@ -298,7 +343,8 @@ impl Chat {
     /// Inputs: none.
     ///
     /// Outputs: a reference to the tokenizer.
-    pub fn tokenizer(&self) -> &Tokenizer {
+    pub fn tokenizer(&self) -> &Tokenizer
+    {
         &self.tokenizer
     }
 }

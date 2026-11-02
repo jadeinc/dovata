@@ -33,7 +33,10 @@ pub const SUPPORTED: &[&str] = &["llama", "llama4", "qwen2", "qwen3", "qwen3moe"
 ///
 /// Outputs: the layout's TOML text, or `None` when dovata has no built-in layout for
 /// `arch`.
-fn builtin_source(arch: &str) -> Option<&'static str> {
+fn builtin_source(
+    arch: &str,
+) -> Option<&'static str>
+{
     Some(match arch {
         "llama" => include_str!("builtin/llama.layout.toml"),
         "llama4" => include_str!("builtin/llama4.layout.toml"),
@@ -54,7 +57,10 @@ fn builtin_source(arch: &str) -> Option<&'static str> {
 ///
 /// Outputs: the layout, or `None` when dovata has none. It panics if a built-in layout
 /// fails to parse.
-pub fn builtin(arch: &str) -> Option<Layout> {
+pub fn builtin(
+    arch: &str,
+) -> Option<Layout>
+{
     builtin_source(arch).map(|src| Layout::from_toml(src).unwrap_or_else(|e| panic!("built-in layout {arch} is invalid: {e}")))
 }
 
@@ -67,7 +73,11 @@ pub fn builtin(arch: &str) -> Option<Layout> {
 ///
 /// Outputs: the layout, or an error when the passed-in layout is for another architecture
 /// or no layout exists.
-pub fn for_model(model: &Model, caller: Option<Layout>) -> Result<Layout, LayoutError> {
+pub fn for_model(
+    model: &Model,
+    caller: Option<Layout>,
+) -> Result<Layout, LayoutError>
+{
     let arch = model.architecture();
     match caller {
         Some(layout) if layout.arch() == arch => Ok(layout),
@@ -118,7 +128,11 @@ impl fmt::Display for LayoutError {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             LayoutError::Toml(e) => write!(f, "the layout is not valid TOML for a layout: {e}"),
             LayoutError::Invalid { at, detail } => write!(f, "invalid layout, at {at}: {detail}"),

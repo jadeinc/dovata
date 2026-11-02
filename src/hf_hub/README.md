@@ -1,10 +1,13 @@
-# hub: getting a model's GGUF files, from disk or from the Hugging Face Hub
+# hf_hub: getting a model's GGUF files, from disk or from the Hugging Face Hub
 
 This capability turns a model source into the paths of one model's files on disk. The
 source is a local path or a Hub link, such as
 `https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`.
-`hub::fetch(&source, want, &opts)` returns a `Fetched` holding every part
+`hf_hub::fetch(&source, want, &opts)` returns a `Fetched` holding every part
 of the model, part 1 first, along with its type and, for the Hub, the exact commit.
+
+The name is short for the Hugging Face Hub, the site at huggingface.co that hosts the
+models, and matches `hf-hub`, the Rust library it downloads with.
 
 It fetches exactly one model each time. A split model is one model, so `fetch` gets
 every part of it. It never quantizes: a repo that lacks the type asked for is an error
@@ -33,7 +36,7 @@ a model already downloaded by `huggingface-cli` or the Python library is used as
 
 *Pure core, network edge.* Reading a source, grouping a repo's files and choosing one are
 pure functions, tested against real file lists. Local paths always work. The download is
-behind the `hub` cargo feature; without it, a Hub source is refused with a message that
+behind the `hf-hub` cargo feature; without it, a Hub source is refused with a message that
 names the feature.
 
 ## Files
@@ -43,7 +46,7 @@ names the feature.
   choose one, the `FetchOptions`, `Fetched` and error types, `fetch` itself, which
   handles a local path and hands a Hub source to `fetch.rs`, and `offered`, which lists
   a repo's models without downloading any, so a caller can ask which one to fetch.
-- `fetch.rs` is the network edge, built only with the `hub` feature. It lists the repo
+- `fetch.rs` is the network edge, built only with the `hf-hub` feature. It lists the repo
   with hf-hub 0.4.3's blocking client over `ureq`, downloads every part of the chosen
   model at one commit, and checks the result. It also works out the cache directory and
   the token from the environment. The endpoint comes only from the source. The 0.4 line
@@ -183,7 +186,7 @@ not a terminal, so a build log gets no bar.
 
 | Error | When | Message, in short |
 |---|---|---|
-| `NotBuilt` | a Hub source, with the `hub` feature off | no Hugging Face client in this build; enable the `hub` feature, or pass a local path |
+| `NotBuilt` | a Hub source, with the `hf-hub` feature off | no Hugging Face client in this build; enable the `hf-hub` feature, or pass a local path |
 | `BadSource` | a malformed repo id, an endpoint that is not `https`, or no cache directory | says which |
 | `Select` with `NoGguf` | the repo has no GGUF model files | safetensors-only repos are not supported yet; convert with `convert_hf_to_gguf.py` or use a GGUF repo |
 | `Select` with `NotOffered` | the repo lacks the type | lists what it offers, then: fetch with `Want::Unquantized` and pass it to `quantize::quantize` |
@@ -205,7 +208,7 @@ when the text does not match, only the hint is lost.
 
 ```sh
 # The pure tests, which need no network
-cargo test -p dovata --lib hub
+cargo test -p dovata --lib hf_hub
 
 # The one network test: downloads about 28 MB from ggml-org/tiny-llamas into a temp dir
 cargo test -p dovata --lib -- --ignored fetches_a_small_public_gguf

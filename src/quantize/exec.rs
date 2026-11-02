@@ -26,7 +26,12 @@ const LOG_TAIL: usize = 20;
 /// - `spec`: the file type to make and the options.
 ///
 /// Outputs: a [`QuantReport`] of what was written, or a [`QuantError`].
-pub fn quantize(input: &Path, output: &Path, spec: &QuantSpec) -> Result<QuantReport, QuantError> {
+pub fn quantize(
+    input: &Path,
+    output: &Path,
+    spec: &QuantSpec,
+) -> Result<QuantReport, QuantError>
+{
     let model = Model::open(input).map_err(|e| QuantError::BadInput(format!("cannot open the input: {e}")))?;
     let job = prepare(&model, output, spec)?;
     check_outputs_on_disk(&model, &job.outputs)?;
@@ -72,7 +77,8 @@ pub fn quantize(input: &Path, output: &Path, spec: &QuantSpec) -> Result<QuantRe
 /// Inputs: none.
 ///
 /// Outputs: the program's path, or `None` when it is not installed.
-pub(crate) fn find_program() -> Option<PathBuf> {
+pub(crate) fn find_program() -> Option<PathBuf>
+{
     let names: &[&str] = if cfg!(windows) { &["llama-quantize.exe"] } else { &[PROGRAM] };
     std::env::split_paths(&std::env::var_os("PATH")?)
         .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
@@ -87,7 +93,12 @@ pub(crate) fn find_program() -> Option<PathBuf> {
 /// - `spec`: the file type and options.
 ///
 /// Outputs: the arguments, or an error when a path cannot be made absolute.
-fn arguments(input: &Path, job: &Job, spec: &QuantSpec) -> Result<Vec<OsString>, QuantError> {
+fn arguments(
+    input: &Path,
+    job: &Job,
+    spec: &QuantSpec,
+) -> Result<Vec<OsString>, QuantError>
+{
     let absolute = |p: &Path| {
         std::path::absolute(p).map_err(|e| QuantError::BadInput(format!("cannot make {} absolute: {e}", p.display())))
     };
@@ -123,7 +134,11 @@ fn arguments(input: &Path, job: &Job, spec: &QuantSpec) -> Result<Vec<OsString>,
 ///
 /// Outputs: `Ok(())` when it succeeds; otherwise the exit status and the last lines of
 /// its log, as text.
-fn run(program: &Path, args: &[OsString]) -> Result<(), String> {
+fn run(
+    program: &Path,
+    args: &[OsString],
+) -> Result<(), String>
+{
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -152,7 +167,10 @@ fn run(program: &Path, args: &[OsString]) -> Result<(), String> {
 /// - `from`: the program's standard output or standard error.
 ///
 /// Outputs: up to [`LOG_TAIL`] of the last lines that are not blank.
-fn echo(from: impl Read) -> Vec<String> {
+fn echo(
+    from: impl Read,
+) -> Vec<String>
+{
     let mut tail = VecDeque::with_capacity(LOG_TAIL);
     for line in BufReader::new(from).split(b'\n') {
         let Ok(line) = line else { break };
@@ -177,7 +195,11 @@ fn echo(from: impl Read) -> Vec<String> {
 /// - `outputs`: every file llama.cpp will write.
 ///
 /// Outputs: `Ok(())`, or a [`QuantError::BadInput`].
-fn check_outputs_on_disk(model: &Model, outputs: &[PathBuf]) -> Result<(), QuantError> {
+fn check_outputs_on_disk(
+    model: &Model,
+    outputs: &[PathBuf],
+) -> Result<(), QuantError>
+{
     let inputs: Vec<PathBuf> = model.paths.iter().filter_map(|p| std::fs::canonicalize(p).ok()).collect();
     for out in outputs {
         if let Ok(resolved) = std::fs::canonicalize(out) {
@@ -207,7 +229,10 @@ fn check_outputs_on_disk(model: &Model, outputs: &[PathBuf]) -> Result<(), Quant
 /// - `paths`: the model's files.
 ///
 /// Outputs: the total bytes.
-fn size_on_disk(paths: &[PathBuf]) -> u64 {
+fn size_on_disk(
+    paths: &[PathBuf],
+) -> u64
+{
     paths.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum()
 }
 
@@ -228,7 +253,10 @@ mod tests {
     ///
     /// Outputs: `true` when the program is on `PATH`; otherwise it prints that the test is
     /// skipped and returns `false`.
-    fn installed(test: &str) -> bool {
+    fn installed(
+        test: &str,
+    ) -> bool
+    {
         if find_program().is_some() {
             return true;
         }
@@ -242,7 +270,10 @@ mod tests {
     /// - `m`: the opened model.
     ///
     /// Outputs: each tensor's name and `ggml_type` number.
-    fn types(m: &Model) -> Vec<(String, u32)> {
+    fn types(
+        m: &Model,
+    ) -> Vec<(String, u32)>
+    {
         m.tensors().map(|t| (t.info.name.clone(), t.info.kind)).collect()
     }
 
@@ -254,12 +285,17 @@ mod tests {
     /// - `keep_split`: whether the output is split.
     ///
     /// Outputs: the [`Job`].
-    fn job(target: &str, keep_split: bool) -> Job {
+    fn job(
+        target: &str,
+        keep_split: bool,
+    ) -> Job
+    {
         Job { from: None, requantized: false, keep_split, target: target.into(), outputs: vec![target.into()] }
     }
 
     #[test]
-    fn arguments_follow_llama_quantize_usage() {
+    fn arguments_follow_llama_quantize_usage()
+    {
         let spec = QuantSpec::new(Ftype::Q8_0);
         let args = arguments(Path::new("/in/m.gguf"), &job("/o/m.Q8_0.gguf", false), &spec).unwrap();
         assert_eq!(args, ["/in/m.gguf", "/o/m.Q8_0.gguf", "Q8_0"]);
@@ -279,7 +315,8 @@ mod tests {
     }
 
     #[test]
-    fn echo_keeps_the_last_lines_of_a_log() {
+    fn echo_keeps_the_last_lines_of_a_log()
+    {
         let log: String = (1..=30).map(|i| format!("line {i}\n\n")).collect();
         let tail = echo(log.as_bytes());
         assert_eq!(tail.len(), LOG_TAIL);
@@ -289,7 +326,8 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn a_failing_program_reports_the_end_of_its_log() {
+    fn a_failing_program_reports_the_end_of_its_log()
+    {
         // `sh` stands in for llama-quantize: it logs to stderr and exits 3.
         let args: Vec<OsString> = ["-c", "echo working >&2; echo 'no tensor type fallback' >&2; exit 3"].map(Into::into).into();
         let err = run(Path::new("/bin/sh"), &args).unwrap_err();
@@ -298,7 +336,8 @@ mod tests {
     }
 
     #[test]
-    fn quantize_fixture_to_q8_0() {
+    fn quantize_fixture_to_q8_0()
+    {
         if !installed("quantize_fixture_to_q8_0") {
             return;
         }
@@ -336,7 +375,8 @@ mod tests {
     }
 
     #[test]
-    fn a_split_input_is_read_from_its_first_part() {
+    fn a_split_input_is_read_from_its_first_part()
+    {
         if !installed("a_split_input_is_read_from_its_first_part") {
             return;
         }
@@ -365,7 +405,8 @@ mod tests {
     }
 
     #[test]
-    fn type_sizes_match_what_llama_quantize_writes() {
+    fn type_sizes_match_what_llama_quantize_writes()
+    {
         // llama-quantize pads each tensor's data to the file's alignment, so if dovata's
         // size for a ggml type were wrong, the padded end of a tensor would miss the next
         // tensor's offset or the end of the file. The fixture's rows are 64 and 128 wide,
@@ -405,7 +446,8 @@ mod tests {
     }
 
     #[test]
-    fn ftype_table_matches_llama_quantize_help() {
+    fn ftype_table_matches_llama_quantize_help()
+    {
         if !installed("ftype_table_matches_llama_quantize_help") {
             return;
         }

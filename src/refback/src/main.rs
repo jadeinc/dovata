@@ -32,7 +32,8 @@ The step is dovata plan's default: 512 tokens, 1 with logits, a 4096-token f16 K
 ///
 /// Outputs: success when every check passes, 1 when a check fails or refback refuses to
 /// start, and 2 for a bad command line.
-fn main() -> ExitCode {
+fn main() -> ExitCode
+{
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| matches!(a.as_str(), "help" | "--help" | "-h")) {
         print!("{HELP}");
@@ -61,7 +62,10 @@ fn main() -> ExitCode {
 /// - `args`: the arguments, such as `["model.gguf", "--target", "apple"]`.
 ///
 /// Outputs: the model's path and whether the target is Apple, or a message.
-fn parse(args: &[String]) -> Result<(String, bool), String> {
+fn parse(
+    args: &[String],
+) -> Result<(String, bool), String>
+{
     let (mut model, mut apple) = (None, false);
     let mut i = 0;
     while i < args.len() {
@@ -92,7 +96,11 @@ fn parse(args: &[String]) -> Result<(String, bool), String> {
 ///
 /// Outputs: whether every check passed, or a message when the model cannot be planned or
 /// refback refuses to start.
-fn run(path: &Path, apple: bool) -> Result<bool, String> {
+fn run(
+    path: &Path,
+    apple: bool,
+) -> Result<bool, String>
+{
     let model = Model::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let layout = layout::for_model(&model, None).map_err(|e| e.to_string())?;
     let machine = dovata::machine::current().map_err(|e| e.to_string())?;

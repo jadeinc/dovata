@@ -19,7 +19,10 @@ use crate::{Chat, ChatError, Message};
 /// - `template`: the template source.
 ///
 /// Outputs: the `Chat`.
-fn with(template: &str) -> Chat {
+fn with(
+    template: &str,
+) -> Chat
+{
     Chat::new(template.into(), fixture::tokenizer(), None, None).unwrap()
 }
 
@@ -29,12 +32,16 @@ fn with(template: &str) -> Chat {
 /// - `template`: the template source.
 ///
 /// Outputs: the rendered text.
-fn render(template: &str) -> String {
+fn render(
+    template: &str,
+) -> String
+{
     with(template).render(&[], false).unwrap()
 }
 
 #[test]
-fn pycompat_strip_works() {
+fn pycompat_strip_works()
+{
     // The calls Qwen3's template makes on assistant content.
     assert_eq!(render(r#"[{{ "  hi \n".strip() }}]"#), "[hi]");
     assert_eq!(render(r#"[{{ "\n\nhi\n".lstrip("\n") }}]"#), "[hi\n]");
@@ -43,19 +50,22 @@ fn pycompat_strip_works() {
 }
 
 #[test]
-fn pycompat_string_and_dict_methods() {
+fn pycompat_string_and_dict_methods()
+{
     let t = r#"{% set c = "<think>\nplan\n</think>\n\nanswer" %}{{ c.split('</think>')[0].rstrip('\n').split('<think>')[-1].lstrip('\n') }}|{{ c.split('</think>')[-1].lstrip('\n') }}|{{ c.startswith('<think>') }}|{{ c.endswith('answer') }}|{% for k, v in {"a": 1}.items() %}{{ k }}={{ v }}{% endfor %}"#;
     assert_eq!(render(t), "plan|answer|True|True|a=1");
 }
 
 #[test]
-fn loop_controls_work() {
+fn loop_controls_work()
+{
     let t = "{% for x in [1, 2, 3, 4, 5] %}{% if x == 2 %}{% continue %}{% endif %}{% if x == 4 %}{% break %}{% endif %}{{ x }}{% endfor %}";
     assert_eq!(render(t), "13");
 }
 
 #[test]
-fn raise_exception_surfaces_as_raised() {
+fn raise_exception_surfaces_as_raised()
+{
     let t = "{% if messages[0].role != 'user' %}{{ raise_exception('Conversation must start with a user turn') }}{% endif %}ok";
     let err = with(t).render(&[Message::assistant("hi")], false).unwrap_err();
     assert!(matches!(&err, ChatError::Raised(m) if m == "Conversation must start with a user turn"), "{err:?}");
@@ -63,7 +73,8 @@ fn raise_exception_surfaces_as_raised() {
 }
 
 #[test]
-fn strftime_now_uses_pinned_time() {
+fn strftime_now_uses_pinned_time()
+{
     // 2024-07-26 09:05:07 UTC.
     let pinned = UNIX_EPOCH + Duration::from_secs(1_721_984_707);
     let chat = with(r#"{{ strftime_now("%d %b %Y") }}"#).with_time(pinned);
@@ -74,7 +85,8 @@ fn strftime_now_uses_pinned_time() {
 }
 
 #[test]
-fn strftime_conversions_match_python() {
+fn strftime_conversions_match_python()
+{
     let t = 1_721_984_707;
     assert_eq!(clock::strftime("%d %b %Y", t), "26 Jul 2024");
     assert_eq!(clock::strftime("%A %B %e %Y", t), "Friday July 26 2024");
@@ -89,14 +101,16 @@ fn strftime_conversions_match_python() {
 }
 
 #[test]
-fn trim_and_lstrip_blocks_are_on() {
+fn trim_and_lstrip_blocks_are_on()
+{
     // With both on, block tags on their own indented lines leave nothing behind.
     let t = "{% for m in messages %}\n    {% if m.role == 'user' %}\n[{{ m.content }}]\n    {% endif %}\n{% endfor %}\n";
     assert_eq!(with(t).render(&[Message::user("a"), Message::user("b")], false).unwrap(), "[a]\n[b]\n");
 }
 
 #[test]
-fn tools_and_documents_default_to_none() {
+fn tools_and_documents_default_to_none()
+{
     let t = "{{ tools is defined }} {{ tools is none }} {{ documents is none }}";
     assert_eq!(render(t), "True True True");
     let chat = with(t);
@@ -104,7 +118,8 @@ fn tools_and_documents_default_to_none() {
 }
 
 #[test]
-fn none_is_not_iterable_as_in_python() {
+fn none_is_not_iterable_as_in_python()
+{
     // Qwen3-Coder's guard, with no tools passed. Plain minijinja says none is
     // iterable and then fails on `none | length`.
     let t = "{% if tools is iterable and tools | length > 0 %}tools{% else %}none{% endif %}";
@@ -113,7 +128,8 @@ fn none_is_not_iterable_as_in_python() {
 }
 
 #[test]
-fn template_syntax_error_is_reported_at_construction() {
+fn template_syntax_error_is_reported_at_construction()
+{
     let err = Chat::new("{% for %}".into(), fixture::tokenizer(), None, None).unwrap_err();
     assert!(matches!(err, ChatError::Template(_)), "{err:?}");
     assert!(err.to_string().contains("chat template"), "{err}");
@@ -139,7 +155,8 @@ struct Function {
 /// Inputs: none.
 ///
 /// Outputs: the tool.
-fn weather_tool() -> Tool {
+fn weather_tool() -> Tool
+{
     Tool {
         r#type: "function",
         function: Function {
@@ -159,7 +176,8 @@ fn weather_tool() -> Tool {
 const TOOL_LITERAL: &str = r#"{"type": "function", "function": {"name": "get_weather", "description": "Weather <now> & \"later\"\n", "parameters": {"type": "object", "properties": {"city": {"type": "string", "enum": []}}, "required": ["city"]}}}"#;
 
 #[test]
-fn tojson_matches_python_compact() {
+fn tojson_matches_python_compact()
+{
     assert_eq!(
         render(&format!("{{{{ {TOOL_LITERAL} | tojson }}}}")),
         r#"{"type": "function", "function": {"name": "get_weather", "description": "Weather <now> & \"later\"\n", "parameters": {"type": "object", "properties": {"city": {"type": "string", "enum": []}}, "required": ["city"]}}}"#
@@ -167,7 +185,8 @@ fn tojson_matches_python_compact() {
 }
 
 #[test]
-fn tojson_keeps_serialized_key_order() {
+fn tojson_keeps_serialized_key_order()
+{
     /// Purpose: This struct holds the extra template values for one test.
     #[derive(Serialize)]
     struct Extra {
@@ -191,7 +210,8 @@ fn tojson_keeps_serialized_key_order() {
 }
 
 #[test]
-fn tojson_indent_matches_python() {
+fn tojson_indent_matches_python()
+{
     assert_eq!(
         render(&format!("{{{{ {TOOL_LITERAL} | tojson(indent=4) }}}}")),
         "{\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Weather <now> & \\\"later\\\"\\n\",\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"city\": {\n                    \"type\": \"string\",\n                    \"enum\": []\n                }\n            },\n            \"required\": [\n                \"city\"\n            ]\n        }\n    }\n}"
@@ -201,7 +221,8 @@ fn tojson_indent_matches_python() {
 }
 
 #[test]
-fn tojson_separators_sort_keys_and_ensure_ascii() {
+fn tojson_separators_sort_keys_and_ensure_ascii()
+{
     assert_eq!(render(r#"{{ {"a": [1, 2]} | tojson(separators=(",", ":")) }}"#), r#"{"a":[1,2]}"#);
     assert_eq!(render(r#"{{ {"b": 1, "a": {"d": 2, "c": 3}} | tojson(sort_keys=true) }}"#), r#"{"a": {"c": 3, "d": 2}, "b": 1}"#);
     let s = Value::from("caf\u{e9} \u{4f60}\u{597d} \u{1F600} \u{7f} \u{1}");
@@ -211,13 +232,15 @@ fn tojson_separators_sort_keys_and_ensure_ascii() {
 }
 
 #[test]
-fn tojson_does_not_escape_html() {
+fn tojson_does_not_escape_html()
+{
     // Jinja's built-in tojson would print \u003c and \u0026 here.
     assert_eq!(render(r#"{{ "<a href='x'>&</a>" | tojson }}"#), r#""<a href='x'>&</a>""#);
 }
 
 #[test]
-fn tojson_floats_print_as_python_repr() {
+fn tojson_floats_print_as_python_repr()
+{
     let cases = [
         (1.0, "1.0"),
         (0.1, "0.1"),
@@ -235,7 +258,8 @@ fn tojson_floats_print_as_python_repr() {
 }
 
 #[test]
-fn tojson_refuses_undefined_and_unknown_arguments() {
+fn tojson_refuses_undefined_and_unknown_arguments()
+{
     let err = with("{{ nothing | tojson }}").render(&[], false).unwrap_err();
     assert!(err.to_string().contains("not JSON serializable"), "{err}");
     let err = with("{{ 1 | tojson(width=3) }}").render(&[], false).unwrap_err();

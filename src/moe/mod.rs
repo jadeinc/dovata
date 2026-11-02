@@ -21,7 +21,10 @@ impl ExpertOrder {
     ///
     /// Outputs: the [`ExpertOrder`], or an error when a count is wrong or a layer is not
     /// an exact permutation.
-    pub fn from_json(bytes: &[u8]) -> Result<Self, String> {
+    pub fn from_json(
+        bytes: &[u8],
+    ) -> Result<Self, String>
+    {
         let v: Value = serde_json::from_slice(bytes).map_err(|e| format!("expert_order parse: {e}"))?;
         let usize_field = |k: &str| -> Result<usize, String> {
             v.get(k)
@@ -71,7 +74,10 @@ impl ExpertOrder {
     /// - `path`: the asset file.
     ///
     /// Outputs: the [`ExpertOrder`], or an error.
-    pub fn load(path: &str) -> Result<Self, String> {
+    pub fn load(
+        path: &str,
+    ) -> Result<Self, String>
+    {
         let bytes = std::fs::read(path).map_err(|e| format!("expert_order read {path}: {e}"))?;
         Self::from_json(&bytes)
     }
@@ -82,7 +88,8 @@ impl ExpertOrder {
     /// Inputs: none.
     ///
     /// Outputs: `n_layers * n_experts` expert ids.
-    pub fn flat(&self) -> &[i32] {
+    pub fn flat(&self) -> &[i32]
+    {
         &self.flat
     }
 
@@ -92,7 +99,11 @@ impl ExpertOrder {
     /// - `layer`: the layer's index, from 0.
     ///
     /// Outputs: the layer's expert ids; panics when `layer` is out of range.
-    pub fn layer(&self, layer: usize) -> &[i32] {
+    pub fn layer(
+        &self,
+        layer: usize,
+    ) -> &[i32]
+    {
         let base = layer * self.n_experts;
         &self.flat[base..base + self.n_experts]
     }
@@ -107,7 +118,8 @@ mod tests {
         "expert_order":[[3,1,0,2],[0,2,1,3]]}"#;
 
     #[test]
-    fn parses_and_flattens_row_major() {
+    fn parses_and_flattens_row_major()
+    {
         let o = ExpertOrder::from_json(GOOD.as_bytes()).unwrap();
         assert_eq!(o.n_layers, 2);
         assert_eq!(o.n_experts, 4);
@@ -117,32 +129,37 @@ mod tests {
     }
 
     #[test]
-    fn rejects_wrong_layer_count() {
+    fn rejects_wrong_layer_count()
+    {
         let j = r#"{"n_layers":3,"n_experts":4,"expert_order":[[0,1,2,3]]}"#;
         assert!(ExpertOrder::from_json(j.as_bytes()).is_err());
     }
 
     #[test]
-    fn rejects_wrong_expert_count() {
+    fn rejects_wrong_expert_count()
+    {
         let j = r#"{"n_layers":1,"n_experts":4,"expert_order":[[0,1,2]]}"#;
         assert!(ExpertOrder::from_json(j.as_bytes()).is_err());
     }
 
     #[test]
-    fn rejects_duplicate_expert() {
+    fn rejects_duplicate_expert()
+    {
         let j = r#"{"n_layers":1,"n_experts":4,"expert_order":[[0,1,1,3]]}"#;
         assert!(ExpertOrder::from_json(j.as_bytes()).unwrap_err().contains("twice"));
     }
 
     #[test]
-    fn rejects_out_of_range_expert() {
+    fn rejects_out_of_range_expert()
+    {
         let j = r#"{"n_layers":1,"n_experts":4,"expert_order":[[0,1,2,9]]}"#;
         assert!(ExpertOrder::from_json(j.as_bytes()).unwrap_err().contains("out of range"));
     }
 
     // The real shipped asset must load and be a valid 48×128 permutation set.
     #[test]
-    fn real_asset_is_valid() {
+    fn real_asset_is_valid()
+    {
         // CARGO_MANIFEST_DIR is the repo root: this crate's package root is the root,
         // and its capabilities are the children of src/.
         let path = concat!(

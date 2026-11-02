@@ -17,7 +17,8 @@ use crate::{quant, run, Check, Report, StartError};
 /// Inputs: none.
 ///
 /// Outputs: 8 tokens, 1 with logits, a 64-token f16 KV cache.
-fn opts() -> BindOptions {
+fn opts() -> BindOptions
+{
     BindOptions { n_ctx: 64, n_tokens: 8, n_outputs: 1, kv_k: KvType::F16, kv_v: KvType::F16 }
 }
 
@@ -27,7 +28,8 @@ fn opts() -> BindOptions {
 ///
 /// Outputs: the CPU, and with Metal an Apple target whose 48 KiB buffer limit splits the
 /// fixture's weights into several windows.
-fn targets() -> Vec<Target> {
+fn targets() -> Vec<Target>
+{
     #[allow(unused_mut)]
     let mut t = vec![Target::cpu(1 << 30)];
     #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -41,7 +43,10 @@ fn targets() -> Vec<Target> {
 /// - `target`: the machine to plan for.
 ///
 /// Outputs: the fixture, which must outlive the run, its part files and the plan.
-fn planned(target: Target) -> (Fixture, Vec<PathBuf>, Plan) {
+fn planned(
+    target: Target,
+) -> (Fixture, Vec<PathBuf>, Plan)
+{
     let f = Fixture::llama().unwrap();
     let model = Model::open(&f.path).unwrap();
     let layout = layout::for_model(&model, None).unwrap();
@@ -57,7 +62,11 @@ fn planned(target: Target) -> (Fixture, Vec<PathBuf>, Plan) {
 /// - `name`: the tensor's name.
 ///
 /// Outputs: the index; panics when there is no such entry.
-fn at(plan: &Plan, name: &str) -> usize {
+fn at(
+    plan: &Plan,
+    name: &str,
+) -> usize
+{
     plan.entries.iter().position(|e| e.tensor == name).unwrap_or_else(|| panic!("no entry {name}"))
 }
 
@@ -67,12 +76,16 @@ fn at(plan: &Plan, name: &str) -> usize {
 /// - `r`: the report.
 ///
 /// Outputs: one failure per line.
-fn failures(r: &Report) -> String {
+fn failures(
+    r: &Report,
+) -> String
+{
     r.failures().iter().map(|o| o.to_string()).collect::<Vec<_>>().join("\n")
 }
 
 #[test]
-fn a_true_plan_passes_every_check() {
+fn a_true_plan_passes_every_check()
+{
     for target in targets() {
         let (_f, parts, plan) = planned(target);
         let r = run(&parts, &plan).unwrap();
@@ -97,7 +110,8 @@ fn a_true_plan_passes_every_check() {
 }
 
 #[test]
-fn two_swapped_weights_fail_and_nothing_else_does() {
+fn two_swapped_weights_fail_and_nothing_else_does()
+{
     for target in targets() {
         let (_f, parts, mut plan) = planned(target);
         // Two weights of one window, so each lands inside the other's region.
@@ -120,7 +134,8 @@ fn two_swapped_weights_fail_and_nothing_else_does() {
 }
 
 #[test]
-fn an_offset_shifted_by_one_byte_fails_alignment() {
+fn an_offset_shifted_by_one_byte_fails_alignment()
+{
     for target in targets() {
         let (_f, parts, mut plan) = planned(target);
         let w = at(&plan, "blk.0.ffn_up.weight");
@@ -135,7 +150,8 @@ fn an_offset_shifted_by_one_byte_fails_alignment() {
 }
 
 #[test]
-fn a_changed_header_hash_or_size_refuses_to_start() {
+fn a_changed_header_hash_or_size_refuses_to_start()
+{
     let (_f, parts, plan) = planned(Target::cpu(1 << 30));
     let mut hash = plan.clone();
     let h = &mut hash.model.parts[0].identity.header_sha256;
@@ -148,7 +164,8 @@ fn a_changed_header_hash_or_size_refuses_to_start() {
 }
 
 #[test]
-fn two_scratch_tensors_alive_together_at_one_offset_fail_sharing() {
+fn two_scratch_tensors_alive_together_at_one_offset_fail_sharing()
+{
     for target in targets() {
         let (_f, parts, mut plan) = planned(target);
         // attn_norm-0 is read by the Q, K and V matmuls; the Q matmul writes Qcur-0
@@ -176,7 +193,8 @@ fn two_scratch_tensors_alive_together_at_one_offset_fail_sharing() {
 }
 
 #[test]
-fn a_cuda_plan_is_refused_until_cuda_is_covered() {
+fn a_cuda_plan_is_refused_until_cuda_is_covered()
+{
     let (_f, parts, plan) = planned(Target::cuda(1 << 30));
     assert!(matches!(run(&parts, &plan), Err(StartError::Unsupported(_))));
 }

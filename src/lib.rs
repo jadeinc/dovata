@@ -9,7 +9,7 @@ pub mod load;
 pub mod gguf;
 
 /// Gets a model's GGUF files from a local path or the Hugging Face Hub.
-pub mod hub;
+pub mod hf_hub;
 
 /// Quantizes a GGUF model by running llama.cpp's `llama-quantize` program.
 pub mod quantize;
@@ -30,7 +30,7 @@ pub mod moe;
 #[cfg(test)]
 mod capabilities {
     //! That each feature-gated capability is reachable under default features: the
-    //! `moe` module, and the halves of `quantize`, `hub` and `machine` that reach outside dovata.
+    //! `moe` module, and the halves of `quantize`, `hf_hub` and `machine` that reach outside dovata.
     //!
     //! A `#[cfg(feature = "…")]` with a mis-typed feature name compiles fine and
     //! silently drops the module. These name each feature once more, so a typo in
@@ -41,14 +41,16 @@ mod capabilities {
 
     #[test]
     #[cfg(feature = "moe")]
-    fn moe_pure_half_is_present() {
+    fn moe_pure_half_is_present()
+    {
         // A malformed asset must be rejected, which also proves the loader linked.
         assert!(crate::moe::ExpertOrder::from_json(b"{}").is_err());
     }
 
     #[test]
     #[cfg(feature = "quantize")]
-    fn quantize_native_half_is_present() {
+    fn quantize_native_half_is_present()
+    {
         // The pure half always builds; the feature adds running llama.cpp's
         // llama-quantize. With it, a missing input is a bad input, found before the
         // program is looked for. Without it, every call is NotBuilt.
@@ -59,11 +61,12 @@ mod capabilities {
     }
 
     #[test]
-    #[cfg(feature = "hub")]
-    fn hub_network_half_is_present() {
+    #[cfg(feature = "hf-hub")]
+    fn hf_hub_network_half_is_present()
+    {
         // With the feature, a Hub source reaches the download code, which refuses a
         // malformed repo id before touching the network. Without it, it is NotBuilt.
-        use crate::hub::{fetch, FetchError, FetchOptions, ModelSource, Want};
+        use crate::hf_hub::{fetch, FetchError, FetchOptions, ModelSource, Want};
         let src = ModelSource::Hub {
             endpoint: "https://huggingface.co".into(),
             repo: "no such/id here".into(),
@@ -76,7 +79,8 @@ mod capabilities {
 
     #[test]
     #[cfg(all(feature = "machine", any(target_os = "macos", target_os = "linux")))]
-    fn machine_probe_half_is_present() {
+    fn machine_probe_half_is_present()
+    {
         // With the feature, the machine reads; without it, it is NotBuilt.
         assert!(crate::machine::current().is_ok_and(|m| m.memory_bytes > 0));
     }

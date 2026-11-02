@@ -37,7 +37,8 @@ pub(crate) const CHATML: &str = "{% for message in messages %}{{'<|im_start|>' +
 /// Inputs: none.
 ///
 /// Outputs: the JSON text.
-pub(crate) fn tokenizer_json() -> String {
+pub(crate) fn tokenizer_json() -> String
+{
     let added: Vec<_> = WORDS[..SPECIAL]
         .iter()
         .enumerate()
@@ -81,7 +82,8 @@ pub(crate) fn tokenizer_json() -> String {
 /// Inputs: none.
 ///
 /// Outputs: the tokenizer.
-pub(crate) fn tokenizer() -> Tokenizer {
+pub(crate) fn tokenizer() -> Tokenizer
+{
     tokenizer_json().parse().expect("fixture tokenizer.json parses")
 }
 
@@ -102,7 +104,8 @@ impl Header {
     /// Inputs: none.
     ///
     /// Outputs: the header.
-    pub(crate) fn empty() -> Header {
+    pub(crate) fn empty() -> Header
+    {
         Header(vec![("general.architecture".into(), Kv::Str("llama".into()))])
     }
 
@@ -112,7 +115,8 @@ impl Header {
     /// Inputs: none.
     ///
     /// Outputs: the header.
-    pub(crate) fn chatml() -> Header {
+    pub(crate) fn chatml() -> Header
+    {
         Header::empty()
             .tokens(WORDS)
             .u32("tokenizer.ggml.bos_token_id", BOS_ID)
@@ -127,7 +131,12 @@ impl Header {
     /// - `value`: the string.
     ///
     /// Outputs: the header.
-    pub(crate) fn str(self, key: &str, value: &str) -> Header {
+    pub(crate) fn str(
+        self,
+        key: &str,
+        value: &str,
+    ) -> Header
+    {
         self.set(key, Kv::Str(value.into()))
     }
 
@@ -138,7 +147,12 @@ impl Header {
     /// - `value`: the number.
     ///
     /// Outputs: the header.
-    pub(crate) fn u32(self, key: &str, value: u32) -> Header {
+    pub(crate) fn u32(
+        self,
+        key: &str,
+        value: u32,
+    ) -> Header
+    {
         self.set(key, Kv::U32(value))
     }
 
@@ -148,7 +162,11 @@ impl Header {
     /// - `tokens`: the tokens, in id order.
     ///
     /// Outputs: the header.
-    pub(crate) fn tokens(self, tokens: &[&str]) -> Header {
+    pub(crate) fn tokens(
+        self,
+        tokens: &[&str],
+    ) -> Header
+    {
         self.set("tokenizer.ggml.tokens", Kv::Strs(tokens.iter().map(|s| (*s).to_owned()).collect()))
     }
 
@@ -158,7 +176,11 @@ impl Header {
     /// - `types`: one type per token, in id order.
     ///
     /// Outputs: the header.
-    pub(crate) fn token_types(self, types: &[i32]) -> Header {
+    pub(crate) fn token_types(
+        self,
+        types: &[i32],
+    ) -> Header
+    {
         self.set("tokenizer.ggml.token_type", Kv::I32s(types.to_vec()))
     }
 
@@ -168,7 +190,11 @@ impl Header {
     /// - `key`: the key.
     ///
     /// Outputs: the header.
-    pub(crate) fn without(mut self, key: &str) -> Header {
+    pub(crate) fn without(
+        mut self,
+        key: &str,
+    ) -> Header
+    {
         self.0.retain(|(k, _)| k != key);
         self
     }
@@ -180,7 +206,12 @@ impl Header {
     /// - `value`: the value.
     ///
     /// Outputs: the header.
-    fn set(mut self, key: &str, value: Kv) -> Header {
+    fn set(
+        mut self,
+        key: &str,
+        value: Kv,
+    ) -> Header
+    {
         self.0.retain(|(k, _)| k != key);
         self.0.push((key.into(), value));
         self
@@ -191,7 +222,8 @@ impl Header {
     /// Inputs: none.
     ///
     /// Outputs: the bytes.
-    pub(crate) fn bytes(&self) -> Vec<u8> {
+    pub(crate) fn bytes(&self) -> Vec<u8>
+    {
         /// Purpose: This function writes one string in GGUF form.
         ///
         /// Inputs:
@@ -199,7 +231,11 @@ impl Header {
         /// - `s`: the string.
         ///
         /// Outputs: none.
-        fn string(out: &mut Vec<u8>, s: &str) {
+        fn string(
+            out: &mut Vec<u8>,
+            s: &str,
+        )
+        {
             out.extend_from_slice(&(s.len() as u64).to_le_bytes());
             out.extend_from_slice(s.as_bytes());
         }
@@ -245,7 +281,8 @@ impl Header {
     /// Inputs: none.
     ///
     /// Outputs: the parsed header.
-    pub(crate) fn parse(&self) -> Gguf {
+    pub(crate) fn parse(&self) -> Gguf
+    {
         Gguf::parse(&self.bytes()).expect("fixture header parses")
     }
 }
@@ -255,7 +292,8 @@ impl Header {
 /// Inputs: none.
 ///
 /// Outputs: the `Chat`.
-pub(crate) fn chat() -> Chat {
+pub(crate) fn chat() -> Chat
+{
     Chat::from_gguf(&Header::chatml().parse(), tokenizer()).expect("fixture chat builds")
 }
 
@@ -268,7 +306,8 @@ impl Scratch {
     /// Inputs: none.
     ///
     /// Outputs: the scratch folder.
-    pub(crate) fn new() -> Scratch {
+    pub(crate) fn new() -> Scratch
+    {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("dovata-chat-test-{}-{n}", std::process::id()));
@@ -283,7 +322,12 @@ impl Scratch {
     /// - `bytes`: the file's contents.
     ///
     /// Outputs: the file's path.
-    pub(crate) fn write(&self, name: &str, bytes: impl AsRef<[u8]>) -> PathBuf {
+    pub(crate) fn write(
+        &self,
+        name: &str,
+        bytes: impl AsRef<[u8]>,
+    ) -> PathBuf
+    {
         let path = self.0.join(name);
         std::fs::write(&path, bytes).expect("write fixture");
         path
@@ -294,7 +338,8 @@ impl Scratch {
     /// Inputs: none.
     ///
     /// Outputs: the path.
-    pub(crate) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path
+    {
         &self.0
     }
 }
@@ -305,7 +350,8 @@ impl Drop for Scratch {
     /// Inputs: none.
     ///
     /// Outputs: none.
-    fn drop(&mut self) {
+    fn drop(&mut self)
+    {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }

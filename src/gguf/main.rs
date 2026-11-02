@@ -20,7 +20,8 @@ const HEADER_BUDGET: u64 = 64 * 1024 * 1024;
 ///
 /// Outputs: exit status 0 when nothing required is missing, 1 when something is or the
 /// file is unreadable, and 2 with no path.
-fn main() -> ExitCode {
+fn main() -> ExitCode
+{
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
     let Some(path) = args.iter().find(|a| !a.starts_with("--")) else {
@@ -58,7 +59,10 @@ fn main() -> ExitCode {
 /// - `path`: the file.
 ///
 /// Outputs: the bytes, or an I/O error.
-fn read_head(path: &Path) -> std::io::Result<Vec<u8>> {
+fn read_head(
+    path: &Path,
+) -> std::io::Result<Vec<u8>>
+{
     let file = File::open(path)?;
     let mut buf = Vec::new();
     file.take(HEADER_BUDGET).read_to_end(&mut buf)?;
@@ -73,7 +77,12 @@ fn read_head(path: &Path) -> std::io::Result<Vec<u8>> {
 /// - `all`: whether to print every metadata key.
 ///
 /// Outputs: none.
-fn print_report(path: &str, g: &Gguf, all: bool) {
+fn print_report(
+    path: &str,
+    g: &Gguf,
+    all: bool,
+)
+{
     let report = g.report();
 
     println!("{path}");
@@ -165,7 +174,11 @@ fn print_report(path: &str, g: &Gguf, all: bool) {
 /// - `max`: the most characters to keep.
 ///
 /// Outputs: the shortened text.
-fn elide(s: &str, max: usize) -> String {
+fn elide(
+    s: &str,
+    max: usize,
+) -> String
+{
     if s.chars().count() <= max {
         return s.to_owned();
     }

@@ -42,7 +42,11 @@ impl Serialize for BindOptions {
     /// - `s`: the serializer.
     ///
     /// Outputs: the serializer's result.
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: Serializer>(
+        &self,
+        s: S,
+    ) -> Result<S::Ok, S::Error>
+    {
         let mut st = s.serialize_struct("BindOptions", 5)?;
         st.serialize_field("n_ctx", &self.n_ctx)?;
         st.serialize_field("n_tokens", &self.n_tokens)?;
@@ -64,7 +68,8 @@ impl TensorId {
     /// Inputs: none.
     ///
     /// Outputs: the index.
-    pub fn index(self) -> usize {
+    pub fn index(self) -> usize
+    {
         self.0 as usize
     }
 }
@@ -182,7 +187,11 @@ impl BoundGraph {
     /// - `id`: the tensor's id.
     ///
     /// Outputs: the tensor.
-    pub fn tensor(&self, id: TensorId) -> &BoundTensor {
+    pub fn tensor(
+        &self,
+        id: TensorId,
+    ) -> &BoundTensor
+    {
         &self.tensors[id.index()]
     }
 
@@ -192,7 +201,11 @@ impl BoundGraph {
     /// - `name`: the bound name, such as `ffn_inp-3`.
     ///
     /// Outputs: the tensor's id, or `None`.
-    pub fn find(&self, name: &str) -> Option<TensorId> {
+    pub fn find(
+        &self,
+        name: &str,
+    ) -> Option<TensorId>
+    {
         self.tensors.iter().position(|t| t.name == name).map(|i| TensorId(u32::try_from(i).unwrap_or(u32::MAX)))
     }
 
@@ -202,7 +215,11 @@ impl BoundGraph {
     /// - `id`: the tensor's id.
     ///
     /// Outputs: the tensor itself, or the tensor a view looks into.
-    pub fn storage(&self, id: TensorId) -> TensorId {
+    pub fn storage(
+        &self,
+        id: TensorId,
+    ) -> TensorId
+    {
         match self.tensor(id).kind {
             TensorKind::View { of, .. } => of,
             _ => id,
@@ -215,7 +232,11 @@ impl BoundGraph {
     /// - `layer`: the layer index.
     ///
     /// Outputs: the ops, in run order.
-    pub fn layer_ops(&self, layer: u32) -> impl Iterator<Item = &BoundOp> {
+    pub fn layer_ops(
+        &self,
+        layer: u32,
+    ) -> impl Iterator<Item = &BoundOp>
+    {
         self.ops.iter().filter(move |o| o.layer == Some(layer))
     }
 }
@@ -265,7 +286,11 @@ impl Scope for Eval<'_, '_> {
     /// - `name`: a symbol, `L`, a loop variable, or `src.*`.
     ///
     /// Outputs: the value, or an error.
-    fn name(&self, name: &str) -> Result<Value, String> {
+    fn name(
+        &self,
+        name: &str,
+    ) -> Result<Value, String>
+    {
         if name == "L" {
             return self.layer.map(|l| Value::Int(i64::from(l))).ok_or_else(|| "L outside the block".into());
         }
@@ -293,7 +318,11 @@ impl Scope for Eval<'_, '_> {
     /// - `template`: the tensor name, with its placeholders still in it.
     ///
     /// Outputs: `true` when it does.
-    fn has(&self, template: &str) -> Result<bool, String> {
+    fn has(
+        &self,
+        template: &str,
+    ) -> Result<bool, String>
+    {
         Ok(self.model.tensor(&expand(template, self.layer, self.var)).is_some())
     }
 
@@ -304,7 +333,11 @@ impl Scope for Eval<'_, '_> {
     /// - `n`: the element count.
     ///
     /// Outputs: the size in bytes, or an error.
-    fn row_size(&self, n: i64) -> Result<i64, String> {
+    fn row_size(
+        &self,
+        n: i64,
+    ) -> Result<i64, String>
+    {
         let src = self.src.ok_or("row_size without an input")?;
         let n = u64::try_from(n).map_err(|_| "row_size of a negative count")?;
         i64::try_from(ops::row_size(src.ty, n)?).map_err(|_| "a size too large".into())
@@ -319,7 +352,12 @@ impl Scope for Eval<'_, '_> {
 /// - `var`: the loop variable and its value, or `None`.
 ///
 /// Outputs: the full tensor name.
-fn expand(template: &str, layer: Option<u32>, var: Option<(&str, i64)>) -> String {
+fn expand(
+    template: &str,
+    layer: Option<u32>,
+    var: Option<(&str, i64)>,
+) -> String
+{
     let mut out = template.to_owned();
     if let Some(l) = layer {
         out = out.replace("{L}", &l.to_string());
@@ -336,7 +374,10 @@ fn expand(template: &str, layer: Option<u32>, var: Option<(&str, i64)>) -> Strin
 /// - `ne`: the four dims.
 ///
 /// Outputs: the dims, at least one.
-fn trim(ne: [u64; 4]) -> Vec<u64> {
+fn trim(
+    ne: [u64; 4],
+) -> Vec<u64>
+{
     let mut n = 4;
     while n > 1 && ne[n - 1] == 1 {
         n -= 1;
@@ -350,7 +391,10 @@ fn trim(ne: [u64; 4]) -> Vec<u64> {
 /// - `dims`: the dims.
 ///
 /// Outputs: the four dims.
-fn pad(dims: &[u64]) -> [u64; 4] {
+fn pad(
+    dims: &[u64],
+) -> [u64; 4]
+{
     let mut ne = [1u64; 4];
     for (i, d) in dims.iter().take(4).enumerate() {
         ne[i] = *d;
@@ -366,7 +410,12 @@ impl Layout {
     /// - `opts`: the step's sizes and KV cache types.
     ///
     /// Outputs: the bound graph, or an error naming the first problem.
-    pub fn bind(&self, model: &Model, opts: &BindOptions) -> Result<BoundGraph, LayoutError> {
+    pub fn bind(
+        &self,
+        model: &Model,
+        opts: &BindOptions,
+    ) -> Result<BoundGraph, LayoutError>
+    {
         if model.architecture() != self.arch {
             return Err(LayoutError::WrongArch { layout: self.arch.clone(), model: model.architecture().to_owned() });
         }
@@ -429,7 +478,13 @@ impl<'a> Binder<'a> {
     /// - `src`: the op's first input, or `None`.
     ///
     /// Outputs: the scope.
-    fn eval(&self, layer: Option<u32>, var: Option<(&'a str, i64)>, src: Option<TInfo>) -> Eval<'_, 'a> {
+    fn eval(
+        &self,
+        layer: Option<u32>,
+        var: Option<(&'a str, i64)>,
+        src: Option<TInfo>,
+    ) -> Eval<'_, 'a>
+    {
         Eval { hp: &self.hp, model: self.model, layer, var, src }
     }
 
@@ -440,7 +495,12 @@ impl<'a> Binder<'a> {
     /// - `shape`: its shape, strides and type.
     ///
     /// Outputs: the new tensor's id.
-    fn push(&mut self, t: BoundTensor, shape: TInfo) -> TensorId {
+    fn push(
+        &mut self,
+        t: BoundTensor,
+        shape: TInfo,
+    ) -> TensorId
+    {
         let id = TensorId(u32::try_from(self.tensors.len()).unwrap_or(u32::MAX));
         *self.names.entry(t.name.clone()).or_insert(0) += 1;
         self.tensors.push(t);
@@ -454,7 +514,11 @@ impl<'a> Binder<'a> {
     /// - `base`: the wanted name.
     ///
     /// Outputs: `base`, or `base#1`, `base#2` and so on.
-    fn unique(&mut self, base: String) -> String {
+    fn unique(
+        &mut self,
+        base: String,
+    ) -> String
+    {
         match self.names.get(&base) {
             None => base,
             Some(&n) => {
@@ -476,7 +540,8 @@ impl<'a> Binder<'a> {
     /// Inputs: none.
     ///
     /// Outputs: `Ok(())`, or an error for a type dovata cannot size.
-    fn file_tensors(&mut self) -> Result<(), LayoutError> {
+    fn file_tensors(&mut self) -> Result<(), LayoutError>
+    {
         for t in self.model.tensors() {
             let info = t.info;
             let bytes = info.bytes().ok_or_else(|| LayoutError::UnsupportedType { name: info.name.clone(), ggml_type: info.kind })?;
@@ -506,7 +571,11 @@ impl<'a> Binder<'a> {
     /// - `name`: the declared name.
     ///
     /// Outputs: every layer when the name has `{L}`, else one `None`.
-    fn instances(&self, name: &str) -> Vec<Option<u32>> {
+    fn instances(
+        &self,
+        name: &str,
+    ) -> Vec<Option<u32>>
+    {
         if name.contains("{L}") { (0..self.hp.n_layer()).map(Some).collect() } else { vec![None] }
     }
 
@@ -515,7 +584,8 @@ impl<'a> Binder<'a> {
     /// Inputs: none.
     ///
     /// Outputs: `Ok(())`, or an error for a missing or wrongly shaped weight.
-    fn weight_decls(&mut self) -> Result<(), LayoutError> {
+    fn weight_decls(&mut self) -> Result<(), LayoutError>
+    {
         let layout = self.layout;
         for w in &layout.weights {
             for layer in self.instances(&w.name) {
@@ -562,7 +632,11 @@ impl<'a> Binder<'a> {
     /// - `opts`: the bind options.
     ///
     /// Outputs: `Ok(())`, or an error.
-    fn tensor_decls(&mut self, opts: &BindOptions) -> Result<(), LayoutError> {
+    fn tensor_decls(
+        &mut self,
+        opts: &BindOptions,
+    ) -> Result<(), LayoutError>
+    {
         let layout = self.layout;
         for t in &layout.tensors {
             for layer in self.instances(&t.name) {
@@ -603,7 +677,12 @@ impl<'a> Binder<'a> {
     /// - `layer`: the layer index, or `None` outside the block.
     ///
     /// Outputs: `Ok(())`, or the first error.
-    fn section(&mut self, specs: &'a [OpSpec], layer: Option<u32>) -> Result<(), LayoutError> {
+    fn section(
+        &mut self,
+        specs: &'a [OpSpec],
+        layer: Option<u32>,
+    ) -> Result<(), LayoutError>
+    {
         for spec in specs {
             let site = |var: Option<(&str, i64)>| {
                 let mut s = spec.site();
@@ -641,7 +720,14 @@ impl<'a> Binder<'a> {
     /// - `at`: the place in the layout file, for the error.
     ///
     /// Outputs: the tensor's id, `None` for an absent optional input, or an error.
-    fn resolve(&mut self, name: &str, template: &str, optional: bool, at: &str) -> Result<Option<TensorId>, LayoutError> {
+    fn resolve(
+        &mut self,
+        name: &str,
+        template: &str,
+        optional: bool,
+        at: &str,
+    ) -> Result<Option<TensorId>, LayoutError>
+    {
         if let Some(id) = self.env.get(name) {
             return Ok(Some(*id));
         }
@@ -680,7 +766,14 @@ impl<'a> Binder<'a> {
     /// - `at`: the place in the layout file, for the error.
     ///
     /// Outputs: `Ok(())`, or an error.
-    fn op(&mut self, spec: &'a OpSpec, layer: Option<u32>, var: Option<(&'a str, i64)>, at: &str) -> Result<(), LayoutError> {
+    fn op(
+        &mut self,
+        spec: &'a OpSpec,
+        layer: Option<u32>,
+        var: Option<(&'a str, i64)>,
+        at: &str,
+    ) -> Result<(), LayoutError>
+    {
         let eval_err = |detail: String| LayoutError::Eval { at: at.to_owned(), detail };
         if let Some(cond) = &spec.when {
             if !cond.eval_bool(&self.eval(layer, var, None)).map_err(eval_err)? {
@@ -788,7 +881,8 @@ impl<'a> Binder<'a> {
     /// Inputs: none.
     ///
     /// Outputs: `Ok(())`, or an error listing the unread tensors.
-    fn unreferenced(&self) -> Result<(), LayoutError> {
+    fn unreferenced(&self) -> Result<(), LayoutError>
+    {
         let mut unused: HashSet<String> = HashSet::new();
         for u in &self.layout.unused {
             for layer in self.instances(&u.name) {
@@ -812,14 +906,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn names_expand_layer_and_loop_variable() {
+    fn names_expand_layer_and_loop_variable()
+    {
         assert_eq!(expand("blk.{L}.attn_q.weight", Some(7), None), "blk.7.attn_q.weight");
         assert_eq!(expand("cur_experts.{e}", Some(1), Some(("e", 3))), "cur_experts.3");
         assert_eq!(expand("token_embd.weight", None, None), "token_embd.weight");
     }
 
     #[test]
-    fn dims_drop_trailing_ones() {
+    fn dims_drop_trailing_ones()
+    {
         assert_eq!(trim([2048, 1, 1, 1]), vec![2048]);
         assert_eq!(trim([1, 1, 1, 1]), vec![1]);
         assert_eq!(trim([1, 8, 7, 1]), vec![1, 8, 7]);

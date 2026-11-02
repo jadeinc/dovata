@@ -43,7 +43,8 @@ impl Check {
     /// Inputs: none.
     ///
     /// Outputs: a name such as `bytes`.
-    pub fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str
+    {
         match self {
             Check::Identity => "identity",
             Check::Region => "region",
@@ -77,7 +78,12 @@ impl Outcome {
     /// - `detail`: what was found.
     ///
     /// Outputs: the [`Outcome`].
-    pub fn pass(check: Check, subject: impl Into<String>, detail: impl Into<String>) -> Outcome {
+    pub fn pass(
+        check: Check,
+        subject: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Outcome
+    {
         Outcome { check, subject: subject.into(), pass: true, detail: detail.into() }
     }
 
@@ -89,7 +95,12 @@ impl Outcome {
     /// - `detail`: what was wrong.
     ///
     /// Outputs: the [`Outcome`].
-    pub fn fail(check: Check, subject: impl Into<String>, detail: impl Into<String>) -> Outcome {
+    pub fn fail(
+        check: Check,
+        subject: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Outcome
+    {
         Outcome { check, subject: subject.into(), pass: false, detail: detail.into() }
     }
 }
@@ -101,7 +112,11 @@ impl fmt::Display for Outcome {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         let status = if self.pass { "pass" } else { "FAIL" };
         write!(f, "{status}  {:<8}  {}: {}", self.check.name(), self.subject, self.detail)
     }
@@ -121,7 +136,8 @@ impl Report {
     /// Inputs: none.
     ///
     /// Outputs: `true` when nothing failed.
-    pub fn passed(&self) -> bool {
+    pub fn passed(&self) -> bool
+    {
         self.outcomes.iter().all(|o| o.pass)
     }
 
@@ -130,7 +146,8 @@ impl Report {
     /// Inputs: none.
     ///
     /// Outputs: each failure, in run order.
-    pub fn failures(&self) -> Vec<&Outcome> {
+    pub fn failures(&self) -> Vec<&Outcome>
+    {
         self.outcomes.iter().filter(|o| !o.pass).collect()
     }
 
@@ -140,7 +157,11 @@ impl Report {
     /// - `check`: the kind of check.
     ///
     /// Outputs: the subjects, sorted, each once.
-    pub fn failed(&self, check: Check) -> Vec<&str> {
+    pub fn failed(
+        &self,
+        check: Check,
+    ) -> Vec<&str>
+    {
         let mut s: Vec<&str> = self.outcomes.iter().filter(|o| o.check == check && !o.pass).map(|o| o.subject.as_str()).collect();
         s.sort_unstable();
         s.dedup();
@@ -168,7 +189,11 @@ impl fmt::Display for StartError {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             StartError::Identity(m) => write!(f, "refusing the model: {m}"),
             StartError::Unsupported(m) => write!(f, "{m}"),
@@ -188,7 +213,11 @@ impl std::error::Error for StartError {}
 ///
 /// Outputs: the [`Report`] of every check, or a [`StartError`] when the files are not the
 /// ones the plan was made for or its regions cannot be set up.
-pub fn run(parts: &[PathBuf], plan: &Plan) -> Result<Report, StartError> {
+pub fn run(
+    parts: &[PathBuf],
+    plan: &Plan,
+) -> Result<Report, StartError>
+{
     let mut outcomes = identity::check(parts, plan)?;
     let (mut memory, set_up) = regions::Memory::set_up(parts, plan)?;
     outcomes.extend(set_up);

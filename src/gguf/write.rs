@@ -39,7 +39,8 @@ impl Writer {
     /// Inputs: none.
     ///
     /// Outputs: an empty [`Writer`].
-    pub fn new() -> Writer {
+    pub fn new() -> Writer
+    {
         Writer::default()
     }
 
@@ -51,7 +52,12 @@ impl Writer {
     /// - `value`: the value.
     ///
     /// Outputs: the writer, for chaining.
-    pub fn kv(&mut self, key: impl Into<String>, value: Value) -> &mut Writer {
+    pub fn kv(
+        &mut self,
+        key: impl Into<String>,
+        value: Value,
+    ) -> &mut Writer
+    {
         let key = key.into();
         match self.metadata.iter_mut().find(|(k, _)| *k == key) {
             Some(slot) => slot.1 = value,
@@ -69,7 +75,14 @@ impl Writer {
     /// - `data`: its encoded bytes.
     ///
     /// Outputs: the writer, for chaining.
-    pub fn tensor(&mut self, name: impl Into<String>, dims: &[u64], ggml_type: u32, data: Vec<u8>) -> &mut Writer {
+    pub fn tensor(
+        &mut self,
+        name: impl Into<String>,
+        dims: &[u64],
+        ggml_type: u32,
+        data: Vec<u8>,
+    ) -> &mut Writer
+    {
         self.tensors.push(Tensor { name: name.into(), dims: dims.to_vec(), kind: ggml_type, data });
         self
     }
@@ -82,7 +95,13 @@ impl Writer {
     /// - `values`: its elements.
     ///
     /// Outputs: the writer, for chaining.
-    pub fn f32_tensor(&mut self, name: impl Into<String>, dims: &[u64], values: &[f32]) -> &mut Writer {
+    pub fn f32_tensor(
+        &mut self,
+        name: impl Into<String>,
+        dims: &[u64],
+        values: &[f32],
+    ) -> &mut Writer
+    {
         let data = values.iter().flat_map(|v| v.to_le_bytes()).collect();
         self.tensor(name, dims, 0, data)
     }
@@ -93,7 +112,8 @@ impl Writer {
     ///
     /// Outputs: the file's bytes, or a [`WriteError`] for anything a GGUF reader would
     /// refuse.
-    pub fn to_bytes(&self) -> Result<Vec<u8>, WriteError> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, WriteError>
+    {
         let alignment = self.alignment()?;
 
         let mut b = Vec::new();
@@ -139,7 +159,11 @@ impl Writer {
     /// - `path`: the file to write.
     ///
     /// Outputs: `Ok(())`, or a [`WriteError`].
-    pub fn write(&self, path: &Path) -> Result<(), WriteError> {
+    pub fn write(
+        &self,
+        path: &Path,
+    ) -> Result<(), WriteError>
+    {
         let bytes = self.to_bytes()?;
         std::fs::write(path, bytes).map_err(|e| WriteError::Io { path: path.display().to_string(), detail: e.to_string() })
     }
@@ -150,7 +174,8 @@ impl Writer {
     ///
     /// Outputs: `general.alignment` if set, else 32, or an error when the key is not a
     /// `u32` power of two.
-    fn alignment(&self) -> Result<u64, WriteError> {
+    fn alignment(&self) -> Result<u64, WriteError>
+    {
         match self.metadata.iter().find(|(k, _)| k == KEY_ALIGNMENT) {
             None => Ok(DEFAULT_ALIGNMENT),
             Some((_, Value::U32(a))) if a.is_power_of_two() => Ok(u64::from(*a)),
@@ -165,7 +190,10 @@ impl Writer {
 /// - `t`: the tensor.
 ///
 /// Outputs: its data size, or a [`WriteError`].
-fn check_tensor(t: &Tensor) -> Result<u64, WriteError> {
+fn check_tensor(
+    t: &Tensor,
+) -> Result<u64, WriteError>
+{
     if t.name.len() > MAX_NAME_LEN {
         return Err(WriteError::NameTooLong(t.name.clone()));
     }
@@ -189,7 +217,10 @@ fn check_tensor(t: &Tensor) -> Result<u64, WriteError> {
 /// - `v`: the value.
 ///
 /// Outputs: the tag, 0 to 12.
-fn tag(v: &Value) -> u32 {
+fn tag(
+    v: &Value,
+) -> u32
+{
     match v {
         Value::U8(_) => 0,
         Value::I8(_) => 1,
@@ -214,7 +245,11 @@ fn tag(v: &Value) -> u32 {
 /// - `s`: the string.
 ///
 /// Outputs: none.
-fn put_string(b: &mut Vec<u8>, s: &str) {
+fn put_string(
+    b: &mut Vec<u8>,
+    s: &str,
+)
+{
     b.extend_from_slice(&(s.len() as u64).to_le_bytes());
     b.extend_from_slice(s.as_bytes());
 }
@@ -227,7 +262,12 @@ fn put_string(b: &mut Vec<u8>, s: &str) {
 /// - `v`: the value.
 ///
 /// Outputs: `Ok(())`, or an error for an empty, nested or mixed array.
-fn put_payload(b: &mut Vec<u8>, key: &str, v: &Value) -> Result<(), WriteError> {
+fn put_payload(
+    b: &mut Vec<u8>,
+    key: &str,
+    v: &Value,
+) -> Result<(), WriteError>
+{
     match v {
         Value::U8(x) => b.push(*x),
         Value::I8(x) => b.extend_from_slice(&x.to_le_bytes()),
@@ -267,7 +307,11 @@ fn put_payload(b: &mut Vec<u8>, key: &str, v: &Value) -> Result<(), WriteError> 
 /// - `alignment`: the alignment.
 ///
 /// Outputs: none.
-fn pad(b: &mut Vec<u8>, alignment: u64) {
+fn pad(
+    b: &mut Vec<u8>,
+    alignment: u64,
+)
+{
     let len = b.len() as u64;
     b.resize(len.div_ceil(alignment).saturating_mul(alignment) as usize, 0);
 }
@@ -307,7 +351,11 @@ impl fmt::Display for WriteError {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             WriteError::BadAlignment => write!(f, "{KEY_ALIGNMENT} must be a u32 power of two"),
             WriteError::EmptyArray(k) => write!(f, "metadata {k} is an empty array, which has no element type to write"),
@@ -342,7 +390,8 @@ mod tests {
     /// Inputs: none.
     ///
     /// Outputs: the keys and values.
-    fn every_value_type() -> Vec<(&'static str, Value)> {
+    fn every_value_type() -> Vec<(&'static str, Value)>
+    {
         vec![
             ("t.u8", Value::U8(200)),
             ("t.i8", Value::I8(-5)),
@@ -363,7 +412,8 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_through_the_reader() {
+    fn round_trips_through_the_reader()
+    {
         let mut w = Writer::new();
         w.kv("general.architecture", Value::String("llama".into()));
         for (k, v) in every_value_type() {
@@ -408,7 +458,8 @@ mod tests {
     }
 
     #[test]
-    fn setting_a_key_twice_replaces_it_in_place() {
+    fn setting_a_key_twice_replaces_it_in_place()
+    {
         let mut w = Writer::new();
         w.kv("a", Value::U32(1)).kv("b", Value::U32(2)).kv("a", Value::U32(3));
         let g = Gguf::parse(&w.to_bytes().unwrap()).unwrap();
@@ -416,7 +467,8 @@ mod tests {
     }
 
     #[test]
-    fn a_file_with_no_tensors_parses() {
+    fn a_file_with_no_tensors_parses()
+    {
         let mut w = Writer::new();
         w.kv("general.architecture", Value::String("llama".into()));
         let g = Gguf::parse(&w.to_bytes().unwrap()).unwrap();
@@ -425,7 +477,8 @@ mod tests {
     }
 
     #[test]
-    fn refuses_what_a_reader_would() {
+    fn refuses_what_a_reader_would()
+    {
         let err = |w: &Writer| w.to_bytes().unwrap_err();
 
         let mut w = Writer::new();

@@ -22,7 +22,10 @@ pub(crate) const N_LAYER: u32 = 2;
 /// - `w`: the GGUF writer to add the keys to.
 ///
 /// Outputs: none.
-pub(crate) fn llama_metadata(w: &mut Writer) {
+pub(crate) fn llama_metadata(
+    w: &mut Writer,
+)
+{
     let s = |v: &str| Value::String(v.to_owned());
     let mut tokens = vec!["<unk>".to_owned(), "<s>".to_owned(), "</s>".to_owned(), "<0x0A>".to_owned()];
     tokens.extend(('a'..='z').map(|c| format!("\u{2581}{c}")));
@@ -62,7 +65,8 @@ pub(crate) fn llama_metadata(w: &mut Writer) {
 /// Inputs: none.
 ///
 /// Outputs: each tensor's name and shape, in the order llama.cpp's converter writes them.
-pub(crate) fn tensor_shapes() -> Vec<(String, Vec<u64>)> {
+pub(crate) fn tensor_shapes() -> Vec<(String, Vec<u64>)>
+{
     let (e, v, q, kv, ff) =
         (u64::from(N_EMBD), u64::from(N_VOCAB), u64::from(HEAD_DIM * N_HEAD), u64::from(HEAD_DIM * N_HEAD_KV), u64::from(N_FF));
     let mut t = vec![("token_embd.weight".to_owned(), vec![e, v])];
@@ -93,7 +97,11 @@ pub(crate) fn tensor_shapes() -> Vec<(String, Vec<u64>)> {
 /// - `n`: how many values.
 ///
 /// Outputs: the values; all ones for a norm tensor.
-fn values(name: &str, n: u64) -> Vec<f32> {
+fn values(
+    name: &str,
+    n: u64,
+) -> Vec<f32>
+{
     if name.contains("norm") {
         return vec![1.0; n as usize];
     }
@@ -113,7 +121,11 @@ fn values(name: &str, n: u64) -> Vec<f32> {
 /// - `shapes`: each tensor's name and shape.
 ///
 /// Outputs: none.
-fn add_tensors<'a>(w: &mut Writer, shapes: impl IntoIterator<Item = &'a (String, Vec<u64>)>) {
+fn add_tensors<'a>(
+    w: &mut Writer,
+    shapes: impl IntoIterator<Item = &'a (String, Vec<u64>)>,
+)
+{
     for (name, dims) in shapes {
         w.f32_tensor(name.as_str(), dims, &values(name, dims.iter().product()));
     }
@@ -124,7 +136,8 @@ fn add_tensors<'a>(w: &mut Writer, shapes: impl IntoIterator<Item = &'a (String,
 /// Inputs: none.
 ///
 /// Outputs: a [`Writer`] holding the model.
-pub(crate) fn tiny_llama() -> Writer {
+pub(crate) fn tiny_llama() -> Writer
+{
     let mut w = Writer::new();
     llama_metadata(&mut w);
     w.kv("general.file_type", Value::U32(0));
@@ -138,7 +151,10 @@ pub(crate) fn tiny_llama() -> Writer {
 /// - `path`: the file to write.
 ///
 /// Outputs: none; panics when the file cannot be written.
-pub(crate) fn write_tiny_llama(path: &Path) {
+pub(crate) fn write_tiny_llama(
+    path: &Path,
+)
+{
     tiny_llama().write(path).unwrap();
 }
 
@@ -151,7 +167,13 @@ pub(crate) fn write_tiny_llama(path: &Path) {
 /// - `tensors`: the tensor count across all parts.
 ///
 /// Outputs: none.
-fn split_keys(w: &mut Writer, no: u16, count: u16, tensors: usize) {
+fn split_keys(
+    w: &mut Writer,
+    no: u16,
+    count: u16,
+    tensors: usize,
+)
+{
     w.kv("split.no", Value::U16(no))
         .kv("split.count", Value::U16(count))
         .kv("split.tensors.count", Value::I32(i32::try_from(tensors).unwrap()));
@@ -162,7 +184,8 @@ fn split_keys(w: &mut Writer, no: u16, count: u16, tensors: usize) {
 /// Inputs: none.
 ///
 /// Outputs: the two parts' file bytes, part 1 first.
-pub(crate) fn split_headers() -> (Vec<u8>, Vec<u8>) {
+pub(crate) fn split_headers() -> (Vec<u8>, Vec<u8>)
+{
     let shapes = tensor_shapes();
     let (first, second) = shapes.split_at(shapes.len() / 2);
     let mut p0 = Writer::new();
@@ -183,7 +206,11 @@ pub(crate) fn split_headers() -> (Vec<u8>, Vec<u8>) {
 /// - `stem`: the model name the part file names start with.
 ///
 /// Outputs: both paths, part 1 first; panics when a file cannot be written.
-pub(crate) fn write_tiny_llama_split(dir: &Path, stem: &str) -> Vec<PathBuf> {
+pub(crate) fn write_tiny_llama_split(
+    dir: &Path,
+    stem: &str,
+) -> Vec<PathBuf>
+{
     let (p0, p1) = split_headers();
     let paths = vec![dir.join(format!("{stem}-00001-of-00002.gguf")), dir.join(format!("{stem}-00002-of-00002.gguf"))];
     std::fs::write(&paths[0], p0).unwrap();
@@ -198,7 +225,10 @@ pub(crate) fn write_tiny_llama_split(dir: &Path, stem: &str) -> Vec<PathBuf> {
 /// - `test`: a short name for the test.
 ///
 /// Outputs: the directory's path.
-pub(crate) fn scratch_dir(test: &str) -> PathBuf {
+pub(crate) fn scratch_dir(
+    test: &str,
+) -> PathBuf
+{
     let dir = std::env::temp_dir().join(format!("dovata-{test}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -206,7 +236,8 @@ pub(crate) fn scratch_dir(test: &str) -> PathBuf {
 }
 
 #[test]
-fn the_fixture_preflights_as_one_model() {
+fn the_fixture_preflights_as_one_model()
+{
     let m = crate::load::Model::from_headers(&[("m.gguf".into(), tiny_llama().to_bytes().unwrap())]).unwrap();
     assert_eq!(m.architecture(), "llama");
     assert_eq!(m.tensors().count(), tensor_shapes().len());

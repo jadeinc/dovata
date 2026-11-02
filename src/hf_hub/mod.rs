@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/hub/mod.rs
+//! File: src/hf_hub/mod.rs
 //! Description: Finds one model's GGUF files, on disk or on the Hugging Face Hub.
 
 use std::collections::BTreeMap;
@@ -10,7 +10,7 @@ use crate::load::model::{self, split_paths};
 use crate::load::Model;
 use crate::quantize::{model_stem, split_suffix, strip_suffix_ignore_case, Ftype};
 
-#[cfg(feature = "hub")]
+#[cfg(feature = "hf-hub")]
 mod fetch;
 
 /// Purpose: This enum holds where a model comes from: a path or a Hub repo.
@@ -41,7 +41,10 @@ impl ModelSource {
     /// - `s`: the text, such as `/models/x.gguf` or a huggingface.co link.
     ///
     /// Outputs: the source, or an error when the text names no model.
-    pub fn parse(s: &str) -> Result<ModelSource, SourceError> {
+    pub fn parse(
+        s: &str,
+    ) -> Result<ModelSource, SourceError>
+    {
         let s = s.trim();
         let fail = |reason: &str| SourceError { input: s.to_owned(), reason: reason.to_owned() };
         if s.is_empty() {
@@ -80,7 +83,10 @@ impl std::str::FromStr for ModelSource {
     /// - `s`: the text.
     ///
     /// Outputs: the source, or an error.
-    fn from_str(s: &str) -> Result<ModelSource, SourceError> {
+    fn from_str(
+        s: &str,
+    ) -> Result<ModelSource, SourceError>
+    {
         ModelSource::parse(s)
     }
 }
@@ -95,7 +101,11 @@ impl fmt::Display for ModelSource {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             ModelSource::Path(p) => write!(f, "{}", p.display()),
             ModelSource::Hub { endpoint, repo, revision: None, file: None } => write!(f, "{endpoint}/{repo}"),
@@ -119,7 +129,10 @@ impl fmt::Display for ModelSource {
 /// - `rest`: the link after its scheme.
 ///
 /// Outputs: the Hub source, or the reason the link names no model.
-fn parse_url(rest: &str) -> Result<ModelSource, String> {
+fn parse_url(
+    rest: &str,
+) -> Result<ModelSource, String>
+{
     let rest = rest.split(['?', '#']).next().unwrap_or(rest);
     let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
     // `hf.co` and `www.huggingface.co` redirect to `huggingface.co`, and hf-hub keeps the
@@ -175,7 +188,10 @@ fn parse_url(rest: &str) -> Result<ModelSource, String> {
 /// - `s`: the text.
 ///
 /// Outputs: `true` when it is.
-fn is_repo_id(s: &str) -> bool {
+fn is_repo_id(
+    s: &str,
+) -> bool
+{
     let ok = |n: &str| !n.is_empty() && n != "." && !n.contains("..") && n.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b));
     matches!(s.split_once('/'), Some((org, name)) if ok(org) && ok(name))
 }
@@ -186,7 +202,10 @@ fn is_repo_id(s: &str) -> bool {
 /// - `s`: the text.
 ///
 /// Outputs: the decoded text.
-fn percent_decode(s: &str) -> String {
+fn percent_decode(
+    s: &str,
+) -> String
+{
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -219,7 +238,11 @@ impl fmt::Display for SourceError {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         write!(f, "cannot read {:?} as a model: {}", self.input, self.reason)
     }
 }
@@ -243,7 +266,11 @@ impl fmt::Display for Want {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             Want::Unquantized => f.write_str("the unquantized model"),
             Want::Ftype(t) => write!(f, "{t}"),
@@ -269,7 +296,11 @@ impl fmt::Display for Level {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         f.write_str(&self.label)?;
         if self.files.len() > 1 {
             write!(f, " ({} parts)", self.files.len())?;
@@ -287,7 +318,10 @@ type Groups<'a> = BTreeMap<(&'a str, &'a str, u16), Vec<(u16, String)>>;
 /// - `files`: the file paths in the Hub repo.
 ///
 /// Outputs: one entry per model, most precise first.
-pub fn levels(files: &[String]) -> Vec<Level> {
+pub fn levels(
+    files: &[String],
+) -> Vec<Level>
+{
     let mut groups: Groups<'_> = BTreeMap::new();
     for path in files.iter().filter(|p| is_model_gguf(p)) {
         let (dir, name) = path.rsplit_once('/').unwrap_or(("", path.as_str()));
@@ -321,7 +355,10 @@ pub fn levels(files: &[String]) -> Vec<Level> {
 ///
 /// Outputs: `true` for a model, and `false` for a vision projector or an importance
 /// matrix.
-fn is_model_gguf(path: &str) -> bool {
+fn is_model_gguf(
+    path: &str,
+) -> bool
+{
     let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
     name.ends_with(".gguf") && !name.starts_with("mmproj") && !name.contains("imatrix")
 }
@@ -344,7 +381,10 @@ const NAME_ALIASES: [(&str, Ftype); 6] = [
 /// - `path`: the file's path in the repo.
 ///
 /// Outputs: the label, and the type or `None`.
-fn classify(path: &str) -> (String, Option<Ftype>) {
+fn classify(
+    path: &str,
+) -> (String, Option<Ftype>)
+{
     let mut comps = path.rsplit('/');
     let name = comps.next().unwrap_or(path);
     let stem = model_stem(name);
@@ -370,7 +410,10 @@ fn classify(path: &str) -> (String, Option<Ftype>) {
 /// - `text`: the name.
 ///
 /// Outputs: the label and type, or `None`.
-fn find_ftype(text: &str) -> Option<(String, Option<Ftype>)> {
+fn find_ftype(
+    text: &str,
+) -> Option<(String, Option<Ftype>)>
+{
     let up = text.to_ascii_uppercase();
     let names = Ftype::ALL.iter().map(|f| (f.name(), *f)).chain(NAME_ALIASES);
     // (length, end, start, ftype) of the best match so far: longer wins, then the one
@@ -399,7 +442,11 @@ fn find_ftype(text: &str) -> Option<(String, Option<Ftype>)> {
 /// - `want`: which type is wanted.
 ///
 /// Outputs: the chosen model, or an error.
-pub fn select(files: &[String], want: Want) -> Result<Level, SelectError> {
+pub fn select(
+    files: &[String],
+    want: Want,
+) -> Result<Level, SelectError>
+{
     let all = levels(files);
     if all.is_empty() {
         return Err(SelectError::NoGguf);
@@ -433,7 +480,11 @@ pub fn select(files: &[String], want: Want) -> Result<Level, SelectError> {
 /// - `want`: what was asked for.
 ///
 /// Outputs: the model, or an error when there is more than one.
-fn one(mut found: Vec<Level>, want: Want) -> Result<Level, SelectError> {
+fn one(
+    mut found: Vec<Level>,
+    want: Want,
+) -> Result<Level, SelectError>
+{
     match found.len() {
         1 => Ok(found.remove(0)),
         _ => Err(SelectError::Ambiguous { want, candidates: found }),
@@ -447,7 +498,11 @@ fn one(mut found: Vec<Level>, want: Want) -> Result<Level, SelectError> {
 /// - `name`: the file or directory.
 ///
 /// Outputs: the chosen model, or an error.
-pub fn select_file(files: &[String], name: &str) -> Result<Level, SelectError> {
+pub fn select_file(
+    files: &[String],
+    name: &str,
+) -> Result<Level, SelectError>
+{
     let name = name.trim_matches('/');
     let all = levels(files);
     if let Some(level) = all.iter().find(|l| l.files.iter().any(|f| f == name)) {
@@ -488,7 +543,10 @@ pub enum SelectError {
 /// - `levels`: the models.
 ///
 /// Outputs: the list as text.
-fn list(levels: &[Level]) -> String {
+fn list(
+    levels: &[Level],
+) -> String
+{
     let typed: Vec<String> = levels.iter().filter(|l| l.ftype.is_some()).map(ToString::to_string).collect();
     let named: Vec<String> = levels.iter().filter(|l| l.ftype.is_none()).map(ToString::to_string).collect();
     match (typed.is_empty(), named.is_empty()) {
@@ -505,7 +563,11 @@ impl fmt::Display for SelectError {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             SelectError::NoGguf => write!(
                 f,
@@ -559,7 +621,11 @@ impl fmt::Debug for FetchOptions {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         f.debug_struct("FetchOptions")
             .field("cache_dir", &self.cache_dir)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
@@ -584,7 +650,7 @@ pub struct Fetched {
 /// Purpose: This enum lists the errors a fetch can return.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FetchError {
-    /// This build has no Hub client: the `hub` feature is off.
+    /// This build has no Hub client: the `hf-hub` feature is off.
     NotBuilt { source: String },
     /// The source cannot be fetched as written, such as a malformed repo id.
     BadSource(String),
@@ -605,7 +671,10 @@ impl From<model::Error> for FetchError {
     /// - `e`: the model loading error.
     ///
     /// Outputs: the fetch error.
-    fn from(e: model::Error) -> FetchError {
+    fn from(
+        e: model::Error,
+    ) -> FetchError
+    {
         FetchError::Model(e)
     }
 }
@@ -617,12 +686,16 @@ impl fmt::Display for FetchError {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             FetchError::NotBuilt { source } => write!(
                 f,
                 "cannot fetch {source}: this build of dovata has no Hugging Face client, since it was \
-                 compiled without the `hub` cargo feature. Enable it, or download the GGUF and pass its path"
+                 compiled without the `hf-hub` cargo feature. Enable it, or download the GGUF and pass its path"
             ),
             FetchError::BadSource(detail) => f.write_str(detail),
             FetchError::Select { repo, error } => write!(f, "{repo}: {error}"),
@@ -650,15 +723,20 @@ impl std::error::Error for FetchError {}
 /// - `opts`: the cache directory and the access token.
 ///
 /// Outputs: the model's file paths, part 1 first, or an error.
-pub fn fetch(source: &ModelSource, want: Want, opts: &FetchOptions) -> Result<Fetched, FetchError> {
+pub fn fetch(
+    source: &ModelSource,
+    want: Want,
+    opts: &FetchOptions,
+) -> Result<Fetched, FetchError>
+{
     match source {
         ModelSource::Path(path) => local(path),
         ModelSource::Hub { endpoint, repo, revision, file } => {
-            #[cfg(feature = "hub")]
+            #[cfg(feature = "hf-hub")]
             {
                 fetch::from_hub(endpoint, repo, revision.as_deref(), file.as_deref(), want, opts)
             }
-            #[cfg(not(feature = "hub"))]
+            #[cfg(not(feature = "hf-hub"))]
             {
                 let _ = (endpoint, repo, revision, file, want, opts);
                 Err(FetchError::NotBuilt { source: source.to_string() })
@@ -675,14 +753,18 @@ pub fn fetch(source: &ModelSource, want: Want, opts: &FetchOptions) -> Result<Fe
 ///
 /// Outputs: one [`Level`] per model, most precise first, or an error. A local path or a
 /// link that names a file is one model, so it is refused as [`FetchError::BadSource`].
-pub fn offered(source: &ModelSource, opts: &FetchOptions) -> Result<Vec<Level>, FetchError> {
+pub fn offered(
+    source: &ModelSource,
+    opts: &FetchOptions,
+) -> Result<Vec<Level>, FetchError>
+{
     match source {
         ModelSource::Hub { endpoint, repo, revision, file: None } => {
-            #[cfg(feature = "hub")]
+            #[cfg(feature = "hf-hub")]
             {
                 fetch::offered(endpoint, repo, revision.as_deref(), opts)
             }
-            #[cfg(not(feature = "hub"))]
+            #[cfg(not(feature = "hf-hub"))]
             {
                 let _ = (endpoint, repo, revision, opts);
                 Err(FetchError::NotBuilt { source: source.to_string() })
@@ -698,7 +780,10 @@ pub fn offered(source: &ModelSource, opts: &FetchOptions) -> Result<Vec<Level>, 
 /// - `path`: the file, or any part of a split model.
 ///
 /// Outputs: the model's file paths, or an error.
-fn local(path: &Path) -> Result<Fetched, FetchError> {
+fn local(
+    path: &Path,
+) -> Result<Fetched, FetchError>
+{
     let model = match later_part_count(path) {
         Some(count) => {
             let parts = split_paths(path, count).ok_or_else(|| model::Error::SplitName(path.display().to_string()))?;
@@ -715,7 +800,10 @@ fn local(path: &Path) -> Result<Fetched, FetchError> {
 /// - `path`: the file.
 ///
 /// Outputs: the part count, or `None` for any other file.
-fn later_part_count(path: &Path) -> Option<u16> {
+fn later_part_count(
+    path: &Path,
+) -> Option<u16>
+{
     use std::io::Read;
     let mut bytes = Vec::new();
     std::fs::File::open(path).ok()?.take(crate::load::preflight::HEADER_BUDGET).read_to_end(&mut bytes).ok()?;
@@ -731,7 +819,12 @@ fn later_part_count(path: &Path) -> Option<u16> {
 /// - `revision`: the commit, if any.
 ///
 /// Outputs: the fetch result.
-fn fetched(model: &Model, repo: Option<String>, revision: Option<String>) -> Fetched {
+fn fetched(
+    model: &Model,
+    repo: Option<String>,
+    revision: Option<String>,
+) -> Fetched
+{
     Fetched {
         parts: model.paths.clone(),
         ftype: model.meta().file_type().and_then(Ftype::from_file_type),
@@ -750,7 +843,10 @@ mod tests {
     /// - `name`: the list's short name.
     ///
     /// Outputs: the file paths.
-    fn repo(name: &str) -> Vec<String> {
+    fn repo(
+        name: &str,
+    ) -> Vec<String>
+    {
         let text = match name {
             "coder" => include_str!("testdata/unsloth--Qwen3-Coder-30B-A3B-Instruct-GGUF.txt"),
             "235b" => include_str!("testdata/unsloth--Qwen3-235B-A22B-Instruct-2507-GGUF.txt"),
@@ -770,7 +866,10 @@ mod tests {
     /// - `files`: the paths.
     ///
     /// Outputs: the paths as strings.
-    fn names(files: &[&str]) -> Vec<String> {
+    fn names(
+        files: &[&str],
+    ) -> Vec<String>
+    {
         files.iter().map(|s| (*s).to_owned()).collect()
     }
 
@@ -782,7 +881,12 @@ mod tests {
     /// - `file`: the file, if any.
     ///
     /// Outputs: the source.
-    fn hub(repo: &str, revision: Option<&str>, file: Option<&str>) -> ModelSource {
+    fn hub(
+        repo: &str,
+        revision: Option<&str>,
+        file: Option<&str>,
+    ) -> ModelSource
+    {
         ModelSource::Hub {
             endpoint: "https://huggingface.co".into(),
             repo: repo.into(),
@@ -794,7 +898,8 @@ mod tests {
     const CODER: &str = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF";
 
     #[test]
-    fn parses_urls_blob_and_resolve_links() {
+    fn parses_urls_blob_and_resolve_links()
+    {
         let p = |s: &str| ModelSource::parse(s).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(p(&format!("https://huggingface.co/{CODER}")), hub(CODER, None, None));
         assert_eq!(p(&format!("https://huggingface.co/{CODER}/")), hub(CODER, None, None));
@@ -828,8 +933,8 @@ mod tests {
         if let Some(home) = std::env::var_os("HOME") {
             assert_eq!(p("~/m.gguf"), ModelSource::Path(PathBuf::from(home).join("m.gguf")));
         }
-        // `src/hub` has the shape of a repo id, but it exists here, the package root.
-        assert_eq!(p("src/hub"), ModelSource::Path("src/hub".into()), "an existing path wins");
+        // `src/hf_hub` has the shape of a repo id, but it exists here, the package root.
+        assert_eq!(p("src/hf_hub"), ModelSource::Path("src/hf_hub".into()), "an existing path wins");
 
         // A bare repo id names no server, so it is refused, with the link it meant.
         let err = ModelSource::parse(CODER).unwrap_err();
@@ -849,7 +954,8 @@ mod tests {
     }
 
     #[test]
-    fn display_reads_back() {
+    fn display_reads_back()
+    {
         for s in [
             hub(CODER, None, None),
             hub(CODER, Some("main"), None),
@@ -863,7 +969,8 @@ mod tests {
     }
 
     #[test]
-    fn exact_quant_file_selected() {
+    fn exact_quant_file_selected()
+    {
         let pick = |list: &str, t: Ftype| select(&repo(list), Want::Ftype(t)).unwrap_or_else(|e| panic!("{e}")).files;
         assert_eq!(pick("coder", Ftype::Q4_K_M), ["Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"]);
         assert_eq!(pick("coder", Ftype::IQ4_XS), ["Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"]);
@@ -881,7 +988,8 @@ mod tests {
     }
 
     #[test]
-    fn unquantized_prefers_bf16() {
+    fn unquantized_prefers_bf16()
+    {
         let un = |files: &[String]| select(files, Want::Unquantized).unwrap_or_else(|e| panic!("{e}"));
         let coder = un(&repo("coder"));
         assert_eq!((coder.label.as_str(), coder.ftype), ("BF16", Some(Ftype::BF16)));
@@ -900,7 +1008,8 @@ mod tests {
     }
 
     #[test]
-    fn missing_unquantized_picks_highest_precision() {
+    fn missing_unquantized_picks_highest_precision()
+    {
         let un = |files: &[String]| select(files, Want::Unquantized).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(un(&repo("thebloke")).files, ["llama-2-7b.Q8_0.gguf"]);
         // A dynamic quant has no rank, however large: Q5_K_M wins over UD-Q8_K_XL.
@@ -913,7 +1022,8 @@ mod tests {
     }
 
     #[test]
-    fn split_parts_are_one_level() {
+    fn split_parts_are_one_level()
+    {
         let all = levels(&repo("235b"));
         assert_eq!(all.len(), 20, "{all:#?}");
         assert_eq!(all.iter().map(|l| l.files.len()).sum::<usize>(), 76, "every part of every model, nothing else");
@@ -935,7 +1045,8 @@ mod tests {
     }
 
     #[test]
-    fn subdirectory_quants_grouped() {
+    fn subdirectory_quants_grouped()
+    {
         let all = levels(&repo("235b"));
         for l in &all {
             let dir = l.files[0].split('/').next().unwrap();
@@ -959,7 +1070,8 @@ mod tests {
     }
 
     #[test]
-    fn labels_that_are_not_ftypes_are_kept() {
+    fn labels_that_are_not_ftypes_are_kept()
+    {
         let all = levels(&repo("coder"));
         let get = |label: &str| all.iter().find(|l| l.label == label).unwrap_or_else(|| panic!("{label} in {all:#?}"));
         assert_eq!(get("UD-Q4_K_XL").ftype, None);
@@ -979,7 +1091,8 @@ mod tests {
     }
 
     #[test]
-    fn mmproj_ignored() {
+    fn mmproj_ignored()
+    {
         let all = levels(&repo("gemma"));
         assert!(all.iter().all(|l| !l.files[0].starts_with("mmproj")), "{all:#?}");
         assert_eq!(all.iter().filter(|l| l.ftype == Some(Ftype::BF16)).count(), 1);
@@ -989,7 +1102,8 @@ mod tests {
     }
 
     #[test]
-    fn not_offered_lists_levels() {
+    fn not_offered_lists_levels()
+    {
         let err = select(&repo("coder"), Want::Ftype(Ftype::IQ3_M)).unwrap_err();
         let SelectError::NotOffered { want, offered } = &err else { panic!("{err:?}") };
         assert_eq!(*want, Ftype::IQ3_M);
@@ -1001,7 +1115,8 @@ mod tests {
     }
 
     #[test]
-    fn no_gguf_is_refused() {
+    fn no_gguf_is_refused()
+    {
         let err = select(&repo("safetensors"), Want::Unquantized).unwrap_err();
         assert_eq!(err, SelectError::NoGguf);
         assert!(err.to_string().contains("safetensors are not supported yet"), "{err}");
@@ -1009,7 +1124,8 @@ mod tests {
     }
 
     #[test]
-    fn ambiguity_and_missing_files_are_reported() {
+    fn ambiguity_and_missing_files_are_reported()
+    {
         let dup = names(&["m-Q8_0.gguf", "old/m-Q8_0.gguf"]);
         assert!(matches!(select(&dup, Want::Ftype(Ftype::Q8_0)), Err(SelectError::Ambiguous { .. })));
         let err = select_file(&repo("coder"), "Q9_9.gguf").unwrap_err();
@@ -1021,8 +1137,9 @@ mod tests {
     // ── local paths ──────────────────────────────────────────────────────────
 
     #[test]
-    fn a_local_file_is_fetched_as_it_is() {
-        let dir = crate::quantize::fixture::scratch_dir("hub-local");
+    fn a_local_file_is_fetched_as_it_is()
+    {
+        let dir = crate::quantize::fixture::scratch_dir("hf-hub-local");
         let path = dir.join("tiny.gguf");
         crate::quantize::fixture::write_tiny_llama(&path);
         let got = fetch(&ModelSource::Path(path.clone()), Want::Ftype(Ftype::Q4_K_M), &FetchOptions::default()).unwrap();
@@ -1031,8 +1148,9 @@ mod tests {
     }
 
     #[test]
-    fn any_local_part_brings_its_siblings() {
-        let dir = crate::quantize::fixture::scratch_dir("hub-split");
+    fn any_local_part_brings_its_siblings()
+    {
+        let dir = crate::quantize::fixture::scratch_dir("hf-hub-split");
         let parts = crate::quantize::fixture::write_tiny_llama_split(&dir, "tiny");
         for given in &parts {
             let got = fetch(&ModelSource::Path(given.clone()), Want::Unquantized, &FetchOptions::default()).unwrap();
@@ -1045,22 +1163,25 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_local_file_is_unreadable() {
+    fn a_missing_local_file_is_unreadable()
+    {
         let err = fetch(&ModelSource::Path("/nonexistent/m.gguf".into()), Want::Unquantized, &FetchOptions::default()).unwrap_err();
         assert!(err.to_string().contains("cannot read the model at /nonexistent/m.gguf"), "{err}");
     }
 
     #[test]
-    fn options_never_print_the_token() {
+    fn options_never_print_the_token()
+    {
         let opts = FetchOptions { cache_dir: None, token: Some("hf_secret".into()) };
         assert!(!format!("{opts:?}").contains("hf_secret"));
     }
 
     #[test]
-    #[cfg(not(feature = "hub"))]
-    fn hub_source_is_refused_without_feature() {
+    #[cfg(not(feature = "hf-hub"))]
+    fn hub_source_is_refused_without_feature()
+    {
         let err = fetch(&hub(CODER, None, None), Want::Unquantized, &FetchOptions::default()).unwrap_err();
         assert_eq!(err, FetchError::NotBuilt { source: format!("https://huggingface.co/{CODER}") });
-        assert!(err.to_string().contains("`hub` cargo feature"), "{err}");
+        assert!(err.to_string().contains("`hf-hub` cargo feature"), "{err}");
     }
 }

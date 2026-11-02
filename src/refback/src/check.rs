@@ -19,7 +19,11 @@ use crate::{quant, Check, Outcome};
 ///
 /// Outputs: one [`Check::Align`] outcome per entry; views, which own no memory and have
 /// alignment 1, are skipped.
-pub fn alignment(memory: &Memory, plan: &Plan) -> Vec<Outcome> {
+pub fn alignment(
+    memory: &Memory,
+    plan: &Plan,
+) -> Vec<Outcome>
+{
     let mut out = Vec::new();
     for e in plan.entries.iter().filter(|e| !matches!(e.role, Role::View { .. })) {
         let o = match memory.base(e.region) {
@@ -55,7 +59,11 @@ pub fn alignment(memory: &Memory, plan: &Plan) -> Vec<Outcome> {
 ///
 /// Outputs: one [`Check::Bytes`] outcome per weight, and one [`Check::Matvec`] outcome
 /// per 2-D weight of type F32, F16, Q8_0 or Q4_0.
-pub fn weights(memory: &Memory, plan: &Plan) -> Vec<Outcome> {
+pub fn weights(
+    memory: &Memory,
+    plan: &Plan,
+) -> Vec<Outcome>
+{
     let mut out = Vec::new();
     for e in plan.entries.iter().filter(|e| e.role == Role::Weight) {
         let file_bytes = match read_file(memory, e) {
@@ -101,7 +109,11 @@ pub fn weights(memory: &Memory, plan: &Plan) -> Vec<Outcome> {
 /// - `e`: the weight's entry.
 ///
 /// Outputs: the bytes, or a message saying why they cannot be read.
-fn read_file(memory: &Memory, e: &AddressEntry) -> Result<Vec<u8>, String> {
+fn read_file(
+    memory: &Memory,
+    e: &AddressEntry,
+) -> Result<Vec<u8>, String>
+{
     let Source::File { part, file_offset } = e.source else {
         return Err("a weight should come from the file, and its entry has no file source".into());
     };
@@ -119,7 +131,10 @@ fn read_file(memory: &Memory, e: &AddressEntry) -> Result<Vec<u8>, String> {
 /// - `e`: the weight's entry.
 ///
 /// Outputs: `(columns, rows)` for a 2-D weight of a covered type, else `None`.
-fn matvec_shape(e: &AddressEntry) -> Option<(usize, usize)> {
+fn matvec_shape(
+    e: &AddressEntry,
+) -> Option<(usize, usize)>
+{
     if !quant::covered(e.ggml_type) || e.dims.len() < 2 || e.dims[2..].iter().any(|d| *d != 1) {
         return None;
     }
@@ -140,7 +155,14 @@ fn matvec_shape(e: &AddressEntry) -> Option<(usize, usize)> {
 /// - `file_bytes`: the weight's bytes, read from the file.
 ///
 /// Outputs: the [`Check::Matvec`] outcome.
-fn matvec(memory: &Memory, e: &AddressEntry, cols: usize, rows: usize, file_bytes: &[u8]) -> Outcome {
+fn matvec(
+    memory: &Memory,
+    e: &AddressEntry,
+    cols: usize,
+    rows: usize,
+    file_bytes: &[u8],
+) -> Outcome
+{
     let ty = dovata::gguf::ggml_type_name(e.ggml_type);
     let rb = quant::row_bytes(e.ggml_type, cols).unwrap_or(0);
     if file_bytes.len() < rows * rb {
@@ -173,7 +195,14 @@ fn matvec(memory: &Memory, e: &AddressEntry, cols: usize, rows: usize, file_byte
 /// - `x`: the input vector.
 ///
 /// Outputs: y and where it ran, or a message saying why it could not run.
-fn kernel(memory: &Memory, e: &AddressEntry, cols: usize, rows: usize, x: &[f32]) -> Result<(Vec<f32>, &'static str), String> {
+fn kernel(
+    memory: &Memory,
+    e: &AddressEntry,
+    cols: usize,
+    rows: usize,
+    x: &[f32],
+) -> Result<(Vec<f32>, &'static str), String>
+{
     #[cfg(all(feature = "metal", target_os = "macos"))]
     if let Some(gpu) = memory.gpu() {
         let buffer = memory.buffer(e.region).ok_or_else(|| format!("region {} has no Metal buffer", e.region))?;

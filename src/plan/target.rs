@@ -48,7 +48,11 @@ impl Target {
     /// - `max_buffer_bytes`: the largest single GPU buffer.
     ///
     /// Outputs: a [`Target::Apple`].
-    pub fn apple(unified_bytes: u64, max_buffer_bytes: u64) -> Target {
+    pub fn apple(
+        unified_bytes: u64,
+        max_buffer_bytes: u64,
+    ) -> Target
+    {
         Target::Apple { unified_bytes, max_buffer_bytes, page_bytes: 16 * 1024 }
     }
 
@@ -58,7 +62,10 @@ impl Target {
     /// - `ram_bytes`: the host memory the plan may allocate.
     ///
     /// Outputs: a [`Target::Cpu`].
-    pub fn cpu(ram_bytes: u64) -> Target {
+    pub fn cpu(
+        ram_bytes: u64,
+    ) -> Target
+    {
         Target::Cpu { ram_bytes, page_bytes: 4096 }
     }
 
@@ -68,7 +75,10 @@ impl Target {
     /// - `vram_bytes`: the VRAM the plan may use.
     ///
     /// Outputs: a [`Target::Cuda`].
-    pub fn cuda(vram_bytes: u64) -> Target {
+    pub fn cuda(
+        vram_bytes: u64,
+    ) -> Target
+    {
         Target::Cuda { vram_bytes }
     }
 
@@ -77,7 +87,8 @@ impl Target {
     /// Inputs: none.
     ///
     /// Outputs: Metal, CPU or CUDA.
-    pub fn site(&self) -> ExecSite {
+    pub fn site(&self) -> ExecSite
+    {
         match self {
             Target::Apple { .. } => ExecSite::Metal,
             Target::Cpu { .. } => ExecSite::Cpu,
@@ -123,7 +134,8 @@ impl RegionKind {
     ///
     /// Outputs: 256 for VRAM and unified memory, 64 for host memory, and 1 for a mapped
     /// window.
-    pub fn alloc_align(self) -> u64 {
+    pub fn alloc_align(self) -> u64
+    {
         match self {
             RegionKind::Vram | RegionKind::Unified => 256,
             RegionKind::Host => 64,
@@ -137,14 +149,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn each_target_runs_ops_where_its_memory_is() {
+    fn each_target_runs_ops_where_its_memory_is()
+    {
         assert_eq!(Target::apple(1, 1).site(), ExecSite::Metal);
         assert_eq!(Target::cpu(1).site(), ExecSite::Cpu);
         assert_eq!(Target::cuda(1).site(), ExecSite::Cuda);
     }
 
     #[test]
-    fn targets_serialize_with_their_kind() {
+    fn targets_serialize_with_their_kind()
+    {
         let json = serde_json::to_string(&Target::cuda(24)).unwrap();
         assert_eq!(json, r#"{"kind":"cuda","vram_bytes":24}"#);
     }

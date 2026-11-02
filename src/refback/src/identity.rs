@@ -18,7 +18,11 @@ use crate::{Check, Outcome, StartError};
 ///
 /// Outputs: one passing [`Outcome`] per part, or [`StartError::Identity`] naming the first
 /// part whose size or header hash differs from the plan's.
-pub fn check(parts: &[PathBuf], plan: &Plan) -> Result<Vec<Outcome>, StartError> {
+pub fn check(
+    parts: &[PathBuf],
+    plan: &Plan,
+) -> Result<Vec<Outcome>, StartError>
+{
     if parts.len() != plan.model.parts.len() {
         return Err(StartError::Identity(format!("the plan is for {} part files and {} were given", plan.model.parts.len(), parts.len())));
     }

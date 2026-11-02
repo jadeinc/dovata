@@ -20,7 +20,11 @@ use crate::{Check, Outcome};
 ///
 /// Outputs: one failing [`Check::Sharing`] outcome per tensor found overwritten or
 /// misplaced, or one passing outcome for the whole walk.
-pub fn walk(memory: &mut Memory, plan: &Plan) -> Vec<Outcome> {
+pub fn walk(
+    memory: &mut Memory,
+    plan: &Plan,
+) -> Vec<Outcome>
+{
     let Some(step) = &plan.step else {
         return vec![Outcome::fail(Check::Sharing, "the step", "the plan has no ops, so there is nothing to walk")];
     };
@@ -97,7 +101,11 @@ impl Walk<'_> {
     /// Outputs: the owner's index, `None` for a weight or a view of one, which lives in
     /// the model file and is covered by the weight check, or a message when the name or
     /// the tensor it views has no entry.
-    fn owner(&self, name: &str) -> Result<Option<usize>, String> {
+    fn owner(
+        &self,
+        name: &str,
+    ) -> Result<Option<usize>, String>
+    {
         let i = *self.index.get(name).ok_or_else(|| format!("it names {name}, which has no entry"))?;
         let root = match &self.entries[i].role {
             Role::View { of, .. } => {
@@ -120,7 +128,13 @@ impl Walk<'_> {
     /// - `detail`: what was wrong.
     ///
     /// Outputs: none.
-    fn fail_once(&mut self, entry: Option<usize>, subject: &str, detail: String) {
+    fn fail_once(
+        &mut self,
+        entry: Option<usize>,
+        subject: &str,
+        detail: String,
+    )
+    {
         if let Some(i) = entry {
             if std::mem::replace(&mut self.reported[i], true) {
                 return;
@@ -137,7 +151,13 @@ impl Walk<'_> {
     /// - `at`: when it is written, for a message.
     ///
     /// Outputs: none; a range outside its region is recorded as a failure.
-    fn fill(&mut self, memory: &mut Memory, i: usize, at: &str) {
+    fn fill(
+        &mut self,
+        memory: &mut Memory,
+        i: usize,
+        at: &str,
+    )
+    {
         let e = &self.entries[i];
         self.filled[i] = true;
         match memory.bytes_mut(e.region, e.offset, e.bytes) {
@@ -154,7 +174,13 @@ impl Walk<'_> {
     /// - `at`: which op reads it, for a message.
     ///
     /// Outputs: none; a broken pattern is recorded as a failure.
-    fn read(&mut self, memory: &Memory, name: &str, at: &str) {
+    fn read(
+        &mut self,
+        memory: &Memory,
+        name: &str,
+        at: &str,
+    )
+    {
         let root = match self.owner(name) {
             Ok(Some(r)) => r,
             Ok(None) => return,
@@ -211,7 +237,11 @@ impl Walk<'_> {
 ///
 /// Outputs: each `(offset, length)` span, adjacent spans merged, or a message for a type
 /// whose size is unknown or a shape that is not whole blocks.
-fn spans(e: &AddressEntry, nb: [u64; 4]) -> Result<Vec<(u64, u64)>, String> {
+fn spans(
+    e: &AddressEntry,
+    nb: [u64; 4],
+) -> Result<Vec<(u64, u64)>, String>
+{
     let (blck, tsize) = ggml_type_layout(e.ggml_type).ok_or_else(|| format!("ggml_type {} has no known size", e.ggml_type))?;
     let mut ne = [1u64; 4];
     for (n, d) in ne.iter_mut().zip(&e.dims) {
@@ -246,7 +276,10 @@ fn spans(e: &AddressEntry, nb: [u64; 4]) -> Result<Vec<(u64, u64)>, String> {
 /// - `name`: the tensor's name.
 ///
 /// Outputs: a 64-bit FNV-1a hash of the name.
-fn seed(name: &str) -> u64 {
+fn seed(
+    name: &str,
+) -> u64
+{
     name.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
 }
 
@@ -258,7 +291,11 @@ fn seed(name: &str) -> u64 {
 ///
 /// Outputs: the word, from the splitmix64 finalizer, so neighbouring words and
 /// neighbouring tensors share no structure.
-fn word(seed: u64, word: u64) -> u64 {
+fn word(
+    seed: u64,
+    word: u64,
+) -> u64
+{
     let mut z = (seed ^ word.wrapping_mul(0x9e37_79b9_7f4a_7c15)).wrapping_add(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
@@ -272,7 +309,11 @@ fn word(seed: u64, word: u64) -> u64 {
 /// - `pos`: the byte's position in the tensor.
 ///
 /// Outputs: the byte.
-fn byte(seed: u64, pos: u64) -> u8 {
+fn byte(
+    seed: u64,
+    pos: u64,
+) -> u8
+{
     word(seed, pos / 8).to_le_bytes()[(pos % 8) as usize]
 }
 
@@ -284,7 +325,12 @@ fn byte(seed: u64, pos: u64) -> u8 {
 /// - `start`: the position in the tensor of `buf`'s first byte.
 ///
 /// Outputs: none.
-fn fill(buf: &mut [u8], seed: u64, start: u64) {
+fn fill(
+    buf: &mut [u8],
+    seed: u64,
+    start: u64,
+)
+{
     for (k, b) in buf.iter_mut().enumerate() {
         *b = byte(seed, start + k as u64);
     }
@@ -299,7 +345,12 @@ fn fill(buf: &mut [u8], seed: u64, start: u64) {
 /// - `start`: the position in the tensor of `got`'s first byte.
 ///
 /// Outputs: the index of the first differing byte, or `None` when all match.
-fn mismatch(got: &[u8], seed: u64, start: u64) -> Option<usize> {
+fn mismatch(
+    got: &[u8],
+    seed: u64,
+    start: u64,
+) -> Option<usize>
+{
     let mut k = 0usize;
     while k < got.len() {
         let pos = start + k as u64;
@@ -319,7 +370,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_pattern_checks_from_any_start_and_differs_between_tensors() {
+    fn a_pattern_checks_from_any_start_and_differs_between_tensors()
+    {
         let mut buf = vec![0u8; 100];
         fill(&mut buf, seed("a"), 0);
         assert_eq!(mismatch(&buf, seed("a"), 0), None);
@@ -331,7 +383,8 @@ mod tests {
     }
 
     #[test]
-    fn a_permuted_view_is_one_span_per_row_and_a_packed_one_merges() {
+    fn a_permuted_view_is_one_span_per_row_and_a_packed_one_merges()
+    {
         let mut e = AddressEntry {
             tensor: "v".into(),
             role: Role::View { of: "t".into(), byte_offset: 0, nb: [4, 16, 64, 64] },

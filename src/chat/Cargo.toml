@@ -10,8 +10,8 @@ description = "Optional tokenizer and chat-template helpers for models planned w
 # `from_hub` is on by default because a Jade user who reaches for this package usually
 # has a model id, not a tokenizer.json on disk. Off, the package is file-only and makes
 # no network calls.
-default = ["hub"]
-hub = ["dep:hf-hub", "dep:ureq"]
+default = ["hf-hub"]
+hf-hub = ["dep:hf-hub", "dep:ureq"]
 # Keep a `serde_json::Value`'s keys in insertion order, so tools built with `json!`
 # print through `tojson` in the order they were written, as under Python. Off by
 # default because it is serde_json's feature, not ours: it changes key order for every

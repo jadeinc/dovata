@@ -1,12 +1,13 @@
 //! Author: Joe Ricks
-//! File: src/hub/fetch.rs
+//! File: src/hf_hub/fetch.rs
 //! Description: Downloads one model from the Hugging Face Hub into the shared Hugging
 //! Face cache.
 
 use std::path::{Path, PathBuf};
 
-use hf_hub::api::sync::{ApiBuilder, ApiError};
-use hf_hub::{Cache, Repo, RepoType};
+// The leading `::` names the hf-hub library, not this module, which has the same name.
+use ::hf_hub::api::sync::{ApiBuilder, ApiError};
+use ::hf_hub::{Cache, Repo, RepoType};
 
 use super::{fetched, is_repo_id, levels, select, select_file, FetchError, FetchOptions, Fetched, Level, Want};
 use crate::load::Model;
@@ -15,7 +16,7 @@ use crate::load::Model;
 /// repo's file list at one commit.
 struct Listing {
     /// The hf-hub client.
-    api: hf_hub::api::sync::Api,
+    api: ::hf_hub::api::sync::Api,
     /// The hf-hub cache directory.
     cache: PathBuf,
     /// The commit the revision resolved to.
@@ -33,17 +34,29 @@ struct Listing {
 /// - `opts`: the cache directory and the access token.
 ///
 /// Outputs: the [`Listing`], or an error.
-fn list(endpoint: &str, repo: &str, revision: Option<&str>, opts: &FetchOptions) -> Result<Listing, FetchError> {
+fn list(
+    endpoint: &str,
+    repo: &str,
+    revision: Option<&str>,
+    opts: &FetchOptions,
+) -> Result<Listing, FetchError>
+{
+    // `ModelSource::parse` already checks both of these, but a program can build a
+    // `ModelSource::Hub` by hand, so they are checked again here. The endpoint must be
+    // `https` because the access token is sent to it.
     if !is_repo_id(repo) {
         return Err(FetchError::BadSource(format!("{repo:?} is not a Hub repo id; one looks like org/repo")));
     }
     if !endpoint.starts_with("https://") {
         return Err(FetchError::BadSource(format!("the Hub endpoint {endpoint:?} is not an https:// link")));
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let cache = cache_dir(opts, env, home.as_deref()).ok_or_else(|| {
-        FetchError::BadSource("there is no cache directory: set HF_HUB_CACHE or HOME, or pass FetchOptions::cache_dir".into())
-    })?;
+    // The user's home folder, such as /Users/joericks, or `None` when HOME is not set.
+    let home: Option<PathBuf> = std::env::var_os("HOME").map(PathBuf::from);
+    let Some(cache) = cache_dir(opts, env, home.as_deref()) else {
+        return Err(FetchError::BadSource(
+            "there is no cache directory: set HF_HUB_CACHE or HOME, or pass FetchOptions::cache_dir".into(),
+        ));
+    };
     let api = ApiBuilder::from_cache(Cache::new(cache.clone()))
         .with_token(token(opts, env, read_token_file, home.as_deref()))
         .with_endpoint(endpoint.trim_end_matches('/').to_owned())
@@ -68,7 +81,13 @@ fn list(endpoint: &str, repo: &str, revision: Option<&str>, opts: &FetchOptions)
 /// - `opts`: the cache directory and the access token.
 ///
 /// Outputs: one [`Level`] per model, most precise first, or an error.
-pub(super) fn offered(endpoint: &str, repo: &str, revision: Option<&str>, opts: &FetchOptions) -> Result<Vec<Level>, FetchError> {
+pub(super) fn offered(
+    endpoint: &str,
+    repo: &str,
+    revision: Option<&str>,
+    opts: &FetchOptions,
+) -> Result<Vec<Level>, FetchError>
+{
     Ok(levels(&list(endpoint, repo, revision, opts)?.names))
 }
 
@@ -90,7 +109,8 @@ pub(super) fn from_hub(
     file: Option<&str>,
     want: Want,
     opts: &FetchOptions,
-) -> Result<Fetched, FetchError> {
+) -> Result<Fetched, FetchError>
+{
     let Listing { api, cache, sha, names } = list(endpoint, repo, revision, opts)?;
     let level = match file {
         Some(f) => select_file(&names, f),
@@ -126,7 +146,10 @@ pub(super) fn from_hub(
 /// - `key`: the variable's name.
 ///
 /// Outputs: the value, or `None`.
-fn env(key: &str) -> Option<String> {
+fn env(
+    key: &str,
+) -> Option<String>
+{
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
@@ -136,7 +159,10 @@ fn env(key: &str) -> Option<String> {
 /// - `path`: the file.
 ///
 /// Outputs: the file's text, or `None`.
-fn read_token_file(path: &Path) -> Option<String> {
+fn read_token_file(
+    path: &Path,
+) -> Option<String>
+{
     std::fs::read_to_string(path).ok()
 }
 
@@ -147,11 +173,22 @@ fn read_token_file(path: &Path) -> Option<String> {
 /// - `home`: the home directory, if known.
 ///
 /// Outputs: the directory, or `None`.
-fn hf_home(env: impl Fn(&str) -> Option<String>, home: Option<&Path>) -> Option<PathBuf> {
-    env("HF_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env("XDG_CACHE_HOME").map(|x| PathBuf::from(x).join("huggingface")))
-        .or_else(|| home.map(|h| h.join(".cache").join("huggingface")))
+fn hf_home(
+    env: impl Fn(&str) -> Option<String>,
+    home: Option<&Path>,
+) -> Option<PathBuf>
+{
+    // The first of these that is set wins.
+    if let Some(dir) = env("HF_HOME") {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(xdg) = env("XDG_CACHE_HOME") {
+        return Some(PathBuf::from(xdg).join("huggingface"));
+    }
+    if let Some(home) = home {
+        return Some(home.join(".cache").join("huggingface"));
+    }
+    None
 }
 
 /// Purpose: This function finds the Hugging Face cache directory.
@@ -162,11 +199,24 @@ fn hf_home(env: impl Fn(&str) -> Option<String>, home: Option<&Path>) -> Option<
 /// - `home`: the home directory, if known.
 ///
 /// Outputs: the directory, or `None`.
-fn cache_dir(opts: &FetchOptions, env: impl Fn(&str) -> Option<String>, home: Option<&Path>) -> Option<PathBuf> {
-    opts.cache_dir
-        .clone()
-        .or_else(|| env("HF_HUB_CACHE").map(PathBuf::from))
-        .or_else(|| hf_home(&env, home).map(|h| h.join("hub")))
+fn cache_dir(
+    opts: &FetchOptions,
+    env: impl Fn(&str) -> Option<String>,
+    home: Option<&Path>,
+) -> Option<PathBuf>
+{
+    // The first of these that is set wins, in the order Hugging Face's Python library
+    // uses, so both find the same folder.
+    if let Some(dir) = &opts.cache_dir {
+        return Some(dir.clone());
+    }
+    if let Some(dir) = env("HF_HUB_CACHE") {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(hf_home) = hf_home(&env, home) {
+        return Some(hf_home.join("hub"));
+    }
+    None
 }
 
 /// Purpose: This function finds the Hub access token.
@@ -183,7 +233,8 @@ fn token(
     env: impl Fn(&str) -> Option<String>,
     read: impl Fn(&Path) -> Option<String>,
     home: Option<&Path>,
-) -> Option<String> {
+) -> Option<String>
+{
     let clean = |t: String| Some(t.trim().to_owned()).filter(|t| !t.is_empty());
     opts.token
         .clone()
@@ -204,7 +255,12 @@ fn token(
 /// - `e`: the hf-hub error.
 ///
 /// Outputs: the fetch error.
-fn hub_error(repo: &str, what: &str, e: &ApiError) -> FetchError {
+fn hub_error(
+    repo: &str,
+    what: &str,
+    e: &ApiError,
+) -> FetchError
+{
     let msg = e.to_string();
     let hint = match status_code(&msg) {
         Some(401 | 403) => {
@@ -224,7 +280,10 @@ fn hub_error(repo: &str, what: &str, e: &ApiError) -> FetchError {
 /// - `msg`: the message.
 ///
 /// Outputs: the status, or `None`.
-fn status_code(msg: &str) -> Option<u16> {
+fn status_code(
+    msg: &str,
+) -> Option<u16>
+{
     let (_, rest) = msg.rsplit_once("status code ")?;
     rest.get(..3)?.parse().ok()
 }
@@ -232,7 +291,7 @@ fn status_code(msg: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hub::{fetch, ModelSource};
+    use crate::hf_hub::{fetch, ModelSource};
     use crate::quantize::Ftype;
 
     /// Purpose: This function builds a stand-in environment from fixed pairs.
@@ -241,12 +300,16 @@ mod tests {
     /// - `set`: the variables and their values.
     ///
     /// Outputs: a lookup function.
-    fn vars<'a>(set: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+    fn vars<'a>(
+        set: &'a [(&'a str, &'a str)],
+    ) -> impl Fn(&str) -> Option<String> + 'a
+    {
         move |k| set.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_owned())
     }
 
     #[test]
-    fn the_cache_follows_huggingface_hub() {
+    fn the_cache_follows_huggingface_hub()
+    {
         let home = Some(Path::new("/home/u"));
         let none = FetchOptions::default();
         assert_eq!(cache_dir(&none, vars(&[]), home), Some("/home/u/.cache/huggingface/hub".into()));
@@ -259,7 +322,8 @@ mod tests {
     }
 
     #[test]
-    fn the_token_follows_huggingface_hub() {
+    fn the_token_follows_huggingface_hub()
+    {
         let home = Some(Path::new("/home/u"));
         let file = |p: &Path| (p == Path::new("/home/u/.cache/huggingface/token")).then(|| "hf_file\n".to_owned());
         let none = FetchOptions::default();
@@ -276,7 +340,8 @@ mod tests {
     }
 
     #[test]
-    fn statuses_are_read_from_ureq_messages() {
+    fn statuses_are_read_from_ureq_messages()
+    {
         assert_eq!(status_code("request error: https://huggingface.co/api/models/x/y/revision/main: status code 401"), Some(401));
         assert_eq!(status_code("request error: https://h/x: status code 404 (redirected from https://h/y)"), Some(404));
         assert_eq!(status_code("I/O error connection refused"), None);
@@ -289,18 +354,24 @@ mod tests {
     /// - `repo`: the repo id.
     ///
     /// Outputs: the source.
-    fn source(endpoint: &str, repo: &str) -> ModelSource {
+    fn source(
+        endpoint: &str,
+        repo: &str,
+    ) -> ModelSource
+    {
         ModelSource::Hub { endpoint: endpoint.into(), repo: repo.into(), revision: None, file: None }
     }
 
     #[test]
-    fn a_malformed_repo_id_is_refused_before_the_network() {
+    fn a_malformed_repo_id_is_refused_before_the_network()
+    {
         let err = fetch(&source("https://huggingface.co", "not a repo"), Want::Unquantized, &FetchOptions::default()).unwrap_err();
         assert!(matches!(err, FetchError::BadSource(_)), "{err:?}");
     }
 
     #[test]
-    fn an_endpoint_that_is_not_https_is_refused_before_the_network() {
+    fn an_endpoint_that_is_not_https_is_refused_before_the_network()
+    {
         for endpoint in ["", "http://huggingface.co", "huggingface.co"] {
             let err = fetch(&source(endpoint, "org/repo"), Want::Unquantized, &FetchOptions::default()).unwrap_err();
             assert!(matches!(&err, FetchError::BadSource(m) if m.contains("https://")), "{endpoint:?}: {err:?}");
@@ -310,8 +381,9 @@ mod tests {
     /// Run with `cargo test -p dovata --lib -- --ignored fetches_a_small_public_gguf`.
     #[test]
     #[ignore = "downloads about 28 MB from huggingface.co"]
-    fn fetches_a_small_public_gguf() {
-        let dir = crate::quantize::fixture::scratch_dir("hub-network");
+    fn fetches_a_small_public_gguf()
+    {
+        let dir = crate::quantize::fixture::scratch_dir("hf-hub-network");
         let opts = FetchOptions { cache_dir: Some(dir.join("hub")), token: None };
 
         // A named file: exactly that one, at the commit main points to.

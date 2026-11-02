@@ -3,8 +3,8 @@
 //! Description: Tests `Chat` itself and lists the other test files.
 
 mod fixture;
-#[cfg(feature = "hub")]
-mod hub;
+#[cfg(feature = "hf-hub")]
+mod hf_hub;
 mod real;
 mod template;
 mod vocab;
@@ -15,7 +15,8 @@ use crate::{Chat, ChatError, Message};
 use fixture::{Header, Scratch, BOS_ID, CHATML, EOS_ID};
 
 #[test]
-fn encode_decode_round_trip() {
+fn encode_decode_round_trip()
+{
     let dir = Scratch::new();
     let gguf = dir.write("model.gguf", Header::chatml().bytes());
     let tok = dir.write("tokenizer.json", fixture::tokenizer_json());
@@ -34,14 +35,16 @@ fn encode_decode_round_trip() {
 }
 
 #[test]
-fn add_special_runs_the_post_processor() {
+fn add_special_runs_the_post_processor()
+{
     let chat = fixture::chat();
     assert_eq!(chat.encode("hello", true).unwrap(), [BOS_ID, 4]);
     assert_eq!(chat.encode("hello", false).unwrap(), [4]);
 }
 
 #[test]
-fn chatml_renders_exactly() {
+fn chatml_renders_exactly()
+{
     let chat = fixture::chat();
     let messages = [Message::system("Be brief."), Message::user("Hi"), Message::assistant("hello world")];
     assert_eq!(
@@ -52,7 +55,8 @@ fn chatml_renders_exactly() {
 }
 
 #[test]
-fn generation_prompt_appended() {
+fn generation_prompt_appended()
+{
     let chat = fixture::chat();
     let messages = [Message::user("Hi")];
     let without = chat.render(&messages, false).unwrap();
@@ -62,7 +66,8 @@ fn generation_prompt_appended() {
 }
 
 #[test]
-fn missing_template_is_a_clear_error() {
+fn missing_template_is_a_clear_error()
+{
     let header = Header::chatml()
         .without("tokenizer.chat_template")
         .str("tokenizer.chat_template.tool_use", CHATML)
@@ -76,7 +81,8 @@ fn missing_template_is_a_clear_error() {
 }
 
 #[test]
-fn bos_and_eos_come_from_the_header() {
+fn bos_and_eos_come_from_the_header()
+{
     let chat = fixture::chat();
     assert_eq!(chat.bos(), Some("<s>"));
     assert_eq!(chat.eos(), Some("<|im_end|>"));
@@ -90,7 +96,8 @@ fn bos_and_eos_come_from_the_header() {
 }
 
 #[test]
-fn absent_bos_is_none_and_undefined_in_template() {
+fn absent_bos_is_none_and_undefined_in_template()
+{
     // Qwen ships no BOS id. transformers then leaves `bos_token` undefined, and a
     // template that prints it prints nothing.
     let header = Header::chatml().without("tokenizer.ggml.bos_token_id").parse();
@@ -101,14 +108,16 @@ fn absent_bos_is_none_and_undefined_in_template() {
 }
 
 #[test]
-fn out_of_range_eos_is_refused() {
+fn out_of_range_eos_is_refused()
+{
     let header = Header::chatml().u32("tokenizer.ggml.eos_token_id", 99).parse();
     let err = Chat::from_gguf(&header, fixture::tokenizer()).unwrap_err();
     assert!(matches!(err, ChatError::BadTokenId { id: 99, vocab: 12, .. }), "{err:?}");
 }
 
 #[test]
-fn from_files_reads_a_header_only_file() {
+fn from_files_reads_a_header_only_file()
+{
     // A range-fetched prefix: metadata and nothing after it. Also proves the reader
     // stops at the end of a short file instead of asking for more.
     let dir = Scratch::new();
@@ -120,7 +129,8 @@ fn from_files_reads_a_header_only_file() {
 }
 
 #[test]
-fn metadata_longer_than_the_first_read_is_read_whole() {
+fn metadata_longer_than_the_first_read_is_read_whole()
+{
     // Metadata that ends past the first 8 MiB read, as a 250k-token vocabulary can.
     let dir = Scratch::new();
     let padding = "x".repeat(usize::try_from(crate::header::FIRST_READ).unwrap() + 4096);
@@ -131,7 +141,8 @@ fn metadata_longer_than_the_first_read_is_read_whole() {
 }
 
 #[test]
-fn truncated_metadata_is_a_header_error() {
+fn truncated_metadata_is_a_header_error()
+{
     let dir = Scratch::new();
     let bytes = Header::chatml().bytes();
     let gguf = dir.write("cut.gguf", &bytes[..bytes.len() / 2]);
@@ -141,7 +152,8 @@ fn truncated_metadata_is_a_header_error() {
 }
 
 #[test]
-fn missing_files_name_the_path() {
+fn missing_files_name_the_path()
+{
     let dir = Scratch::new();
     let missing = dir.path().join("nope.gguf");
     let tok = dir.write("tokenizer.json", fixture::tokenizer_json());
@@ -154,7 +166,8 @@ fn missing_files_name_the_path() {
 }
 
 #[test]
-fn extra_reaches_the_template_and_overrides_defaults() {
+fn extra_reaches_the_template_and_overrides_defaults()
+{
     let template = "{{ tools | length }} {{ enable_thinking }} {{ bos_token }}";
     let chat = Chat::new(template.into(), fixture::tokenizer(), Some("<s>".into()), None).unwrap();
     let extra = json!({ "tools": [{"name": "a"}, {"name": "b"}], "enable_thinking": false, "bos_token": "B" });
@@ -163,7 +176,8 @@ fn extra_reaches_the_template_and_overrides_defaults() {
 }
 
 #[test]
-fn extra_must_be_a_map() {
+fn extra_must_be_a_map()
+{
     let chat = fixture::chat();
     let err = chat.render_with(&[], false, &json!([1, 2])).unwrap_err();
     assert!(matches!(&err, ChatError::BadInput(m) if m.contains("map")), "{err:?}");
@@ -172,7 +186,8 @@ fn extra_must_be_a_map() {
 }
 
 #[test]
-fn extra_cannot_override_the_arguments() {
+fn extra_cannot_override_the_arguments()
+{
     let chat = fixture::chat();
     for key in ["messages", "add_generation_prompt"] {
         let err = chat.render_with(&[], false, &json!({ key: true })).unwrap_err();
@@ -181,7 +196,8 @@ fn extra_cannot_override_the_arguments() {
 }
 
 #[test]
-fn message_shadowing_a_field_is_refused() {
+fn message_shadowing_a_field_is_refused()
+{
     let chat = fixture::chat();
     let bad = Message::user("Hi").with("content", json!("other"));
     let err = chat.render(&[bad], false).unwrap_err();
@@ -189,7 +205,8 @@ fn message_shadowing_a_field_is_refused() {
 }
 
 #[test]
-fn tool_call_message_has_null_content_and_its_calls() {
+fn tool_call_message_has_null_content_and_its_calls()
+{
     // DeepSeek V3 renders tool calls only for `content is none`.
     let template = "{% for m in messages %}{{ m.content is none }} {{ m.tool_calls[0].function.name }}{% endfor %}";
     let chat = Chat::new(template.into(), fixture::tokenizer(), None, None).unwrap();
@@ -198,7 +215,8 @@ fn tool_call_message_has_null_content_and_its_calls() {
 }
 
 #[test]
-fn message_reads_openai_json() {
+fn message_reads_openai_json()
+{
     let messages: Vec<Message> = serde_json::from_value(json!([
         { "role": "user", "content": "Hi" },
         { "role": "assistant", "content": null, "tool_calls": [{ "id": "c1" }] },
@@ -214,14 +232,16 @@ fn message_reads_openai_json() {
 }
 
 #[test]
-fn chat_is_debug_without_dumping_the_vocabulary() {
+fn chat_is_debug_without_dumping_the_vocabulary()
+{
     let shown = format!("{:?}", fixture::chat());
     assert!(shown.contains("vocab_size: 12"), "{shown}");
     assert!(shown.len() < 200, "{shown}");
 }
 
 #[test]
-fn bos_and_eos_ids_match_the_fixture() {
+fn bos_and_eos_ids_match_the_fixture()
+{
     // Guards the fixture itself: the header's ids point at the strings tests expect.
     assert_eq!(fixture::WORDS[BOS_ID as usize], "<s>");
     assert_eq!(fixture::WORDS[EOS_ID as usize], "<|im_end|>");

@@ -25,7 +25,12 @@ pub use exec::quantize;
 ///
 /// Outputs: always [`QuantError::NotBuilt`].
 #[cfg(not(feature = "quantize"))]
-pub fn quantize(input: &Path, output: &Path, spec: &QuantSpec) -> Result<QuantReport, QuantError> {
+pub fn quantize(
+    input: &Path,
+    output: &Path,
+    spec: &QuantSpec,
+) -> Result<QuantReport, QuantError>
+{
     let _ = (input, output, spec);
     Err(QuantError::NotBuilt)
 }
@@ -128,7 +133,8 @@ impl Ftype {
     /// Inputs: none.
     ///
     /// Outputs: a name such as `Q4_K_M`.
-    pub fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str
+    {
         match self {
             Ftype::F32 => "F32",
             Ftype::F16 => "F16",
@@ -174,7 +180,8 @@ impl Ftype {
     /// Inputs: none.
     ///
     /// Outputs: the number, such as 15 for `Q4_K_M`.
-    pub fn value(self) -> u32 {
+    pub fn value(self) -> u32
+    {
         self as u32
     }
 
@@ -184,7 +191,8 @@ impl Ftype {
     /// Inputs: none.
     ///
     /// Outputs: the position; higher is more precise.
-    pub fn rank(self) -> usize {
+    pub fn rank(self) -> usize
+    {
         Ftype::ALL.iter().position(|f| *f == self).unwrap_or(0)
     }
 
@@ -193,7 +201,8 @@ impl Ftype {
     /// Inputs: none.
     ///
     /// Outputs: `false` for F32, F16 and BF16, and `true` for the rest.
-    pub fn is_quantized(self) -> bool {
+    pub fn is_quantized(self) -> bool
+    {
         !matches!(self, Ftype::F32 | Ftype::F16 | Ftype::BF16)
     }
 
@@ -203,7 +212,8 @@ impl Ftype {
     /// Inputs: none.
     ///
     /// Outputs: `true` for every type but NVFP4.
-    pub fn is_target(self) -> bool {
+    pub fn is_target(self) -> bool
+    {
         self != Ftype::NVFP4
     }
 
@@ -214,7 +224,8 @@ impl Ftype {
     ///
     /// Outputs: `true` for IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ2_M, IQ3_XXS and
     /// Q2_K_S.
-    pub fn needs_imatrix(self) -> bool {
+    pub fn needs_imatrix(self) -> bool
+    {
         matches!(
             self,
             Ftype::IQ1_S
@@ -234,7 +245,10 @@ impl Ftype {
     /// - `s`: the name, such as `q4_k_m` or the alias `Q4_K`.
     ///
     /// Outputs: the type, or an [`UnknownFtype`] error.
-    pub fn parse(s: &str) -> Result<Ftype, UnknownFtype> {
+    pub fn parse(
+        s: &str,
+    ) -> Result<Ftype, UnknownFtype>
+    {
         let up = s.trim().to_ascii_uppercase();
         let alias = match up.as_str() {
             "Q3_K" => Some(Ftype::Q3_K_M),
@@ -253,7 +267,10 @@ impl Ftype {
     /// - `value`: the `llama_ftype` number from a GGUF file.
     ///
     /// Outputs: the type, or `None` for an unknown number.
-    pub fn from_file_type(value: u32) -> Option<Ftype> {
+    pub fn from_file_type(
+        value: u32,
+    ) -> Option<Ftype>
+    {
         Ftype::ALL.iter().copied().find(|f| f.value() == value)
     }
 }
@@ -265,7 +282,11 @@ impl fmt::Display for Ftype {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         f.write_str(self.name())
     }
 }
@@ -278,7 +299,10 @@ impl std::str::FromStr for Ftype {
     /// - `s`: the name.
     ///
     /// Outputs: the type, or an [`UnknownFtype`] error.
-    fn from_str(s: &str) -> Result<Ftype, UnknownFtype> {
+    fn from_str(
+        s: &str,
+    ) -> Result<Ftype, UnknownFtype>
+    {
         Ftype::parse(s)
     }
 }
@@ -295,7 +319,11 @@ impl fmt::Display for UnknownFtype {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         let names: Vec<&str> = Ftype::ALL.iter().rev().map(|t| t.name()).collect();
         write!(f, "unknown quantization type {:?}; the types are {}", self.0, names.join(", "))
     }
@@ -328,7 +356,10 @@ impl QuantSpec {
     /// - `ftype`: the file type to make.
     ///
     /// Outputs: the [`QuantSpec`].
-    pub fn new(ftype: Ftype) -> QuantSpec {
+    pub fn new(
+        ftype: Ftype,
+    ) -> QuantSpec
+    {
         QuantSpec { ftype, allow_requantize: false, nthread: 0, keep_split: true }
     }
 }
@@ -384,7 +415,11 @@ impl fmt::Display for QuantError {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             QuantError::NotBuilt => write!(
                 f,
@@ -425,7 +460,11 @@ impl std::error::Error for QuantError {}
 /// - `ftype`: the file type the copy will be.
 ///
 /// Outputs: the output path, `<stem>.<FTYPE>.gguf`.
-pub fn default_output(input_first_part: &Path, ftype: Ftype) -> PathBuf {
+pub fn default_output(
+    input_first_part: &Path,
+    ftype: Ftype,
+) -> PathBuf
+{
     let name = input_first_part.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let file = format!("{}.{}.gguf", model_stem(&name), ftype.name());
     match hub_cache_place(input_first_part) {
@@ -441,7 +480,10 @@ pub fn default_output(input_first_part: &Path, ftype: Ftype) -> PathBuf {
 /// - `name`: the file name.
 ///
 /// Outputs: the base name.
-pub(crate) fn model_stem(name: &str) -> &str {
+pub(crate) fn model_stem(
+    name: &str,
+) -> &str
+{
     let stem = strip_suffix_ignore_case(name, ".gguf").unwrap_or(name);
     split_suffix(stem).map_or(stem, |(prefix, _, _)| prefix)
 }
@@ -453,7 +495,10 @@ pub(crate) fn model_stem(name: &str) -> &str {
 /// - `stem`: a file name without `.gguf`.
 ///
 /// Outputs: the name before the suffix, the part number and the part count, or `None`.
-pub(crate) fn split_suffix(stem: &str) -> Option<(&str, u16, u16)> {
+pub(crate) fn split_suffix(
+    stem: &str,
+) -> Option<(&str, u16, u16)>
+{
     // "-00001-of-00003" is 15 bytes.
     let cut = stem.len().checked_sub(15)?;
     if !stem.is_char_boundary(cut) {
@@ -475,7 +520,11 @@ pub(crate) fn split_suffix(stem: &str) -> Option<(&str, u16, u16)> {
 /// - `suffix`: the suffix.
 ///
 /// Outputs: the string without the suffix, or `None` when it does not end with it.
-pub(crate) fn strip_suffix_ignore_case<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
+pub(crate) fn strip_suffix_ignore_case<'a>(
+    s: &'a str,
+    suffix: &str,
+) -> Option<&'a str>
+{
     let cut = s.len().checked_sub(suffix.len())?;
     (s.is_char_boundary(cut) && s[cut..].eq_ignore_ascii_case(suffix)).then(|| &s[..cut])
 }
@@ -487,7 +536,10 @@ pub(crate) fn strip_suffix_ignore_case<'a>(s: &'a str, suffix: &str) -> Option<&
 ///
 /// Outputs: the repo directory and the directories between its `snapshots/` or `blobs/`
 /// and the file, or `None`.
-fn hub_cache_place(path: &Path) -> Option<(PathBuf, PathBuf)> {
+fn hub_cache_place(
+    path: &Path,
+) -> Option<(PathBuf, PathBuf)>
+{
     let parts: Vec<_> = path.components().collect();
     let parent_len = parts.len().checked_sub(1)?;
     for i in 0..parent_len.saturating_sub(1) {
@@ -510,7 +562,10 @@ fn hub_cache_place(path: &Path) -> Option<(PathBuf, PathBuf)> {
 /// - `path`: the file's path.
 ///
 /// Outputs: `true` when it is.
-pub(crate) fn in_hub_cache(path: &Path) -> bool {
+pub(crate) fn in_hub_cache(
+    path: &Path,
+) -> bool
+{
     hub_cache_place(path).is_some()
 }
 
@@ -521,7 +576,10 @@ pub(crate) fn in_hub_cache(path: &Path) -> bool {
 ///
 /// Outputs: `false` for F32, F16, BF16, F64 and the integer types, and `true` for every
 /// other number.
-pub(crate) fn is_quantized_type(ggml_type: u32) -> bool {
+pub(crate) fn is_quantized_type(
+    ggml_type: u32,
+) -> bool
+{
     !matches!(ggml_type, 0 | 1 | 24..=28 | 30)
 }
 
@@ -550,7 +608,12 @@ struct Job {
 ///
 /// Outputs: the [`Job`] to run, or a [`QuantError`] saying why it cannot run.
 #[cfg_attr(not(feature = "quantize"), allow(dead_code))]
-fn prepare(model: &Model, output: &Path, spec: &QuantSpec) -> Result<Job, QuantError> {
+fn prepare(
+    model: &Model,
+    output: &Path,
+    spec: &QuantSpec,
+) -> Result<Job, QuantError>
+{
     let input = model.paths[0].clone();
     let to = spec.ftype;
     if !to.is_target() {
@@ -608,7 +671,10 @@ fn prepare(model: &Model, output: &Path, spec: &QuantSpec) -> Result<Job, QuantE
 /// - `path`: the refused output path.
 ///
 /// Outputs: the message.
-fn cache_refusal(path: &Path) -> String {
+fn cache_refusal(
+    path: &Path,
+) -> String
+{
     format!(
         "the output {} is inside a Hugging Face cache's snapshots or blobs, which hf-hub owns and may \
          overwrite. Write it elsewhere; quantize::default_output picks a place beside the snapshot",
@@ -623,7 +689,10 @@ fn cache_refusal(path: &Path) -> String {
 ///
 /// Outputs: the path without `.gguf` or its part suffix.
 #[cfg_attr(not(feature = "quantize"), allow(dead_code))]
-fn output_prefix(output: &Path) -> PathBuf {
+fn output_prefix(
+    output: &Path,
+) -> PathBuf
+{
     let name = output.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     output.with_file_name(model_stem(&name))
 }
@@ -635,7 +704,8 @@ mod tests {
     use crate::gguf::Value;
 
     #[test]
-    fn ftype_names_parse() {
+    fn ftype_names_parse()
+    {
         assert_eq!(Ftype::parse("Q4_K_M"), Ok(Ftype::Q4_K_M));
         assert_eq!(Ftype::parse("q4_k_m"), Ok(Ftype::Q4_K_M), "case is ignored");
         assert_eq!(Ftype::parse(" bf16 "), Ok(Ftype::BF16));
@@ -652,7 +722,8 @@ mod tests {
     }
 
     #[test]
-    fn file_type_maps_to_ftype() {
+    fn file_type_maps_to_ftype()
+    {
         assert_eq!(Ftype::from_file_type(0), Some(Ftype::F32));
         assert_eq!(Ftype::from_file_type(7), Some(Ftype::Q8_0));
         assert_eq!(Ftype::from_file_type(15), Some(Ftype::Q4_K_M));
@@ -671,7 +742,8 @@ mod tests {
     }
 
     #[test]
-    fn rank_orders_by_precision() {
+    fn rank_orders_by_precision()
+    {
         let r = Ftype::rank;
         assert!(r(Ftype::F32) > r(Ftype::BF16) && r(Ftype::BF16) > r(Ftype::F16));
         assert!(r(Ftype::F16) > r(Ftype::Q8_0) && r(Ftype::Q8_0) > r(Ftype::Q6_K));
@@ -684,7 +756,8 @@ mod tests {
     }
 
     #[test]
-    fn default_output_sits_beside_the_input() {
+    fn default_output_sits_beside_the_input()
+    {
         assert_eq!(
             default_output(Path::new("/m/Qwen3-Coder-30B-A3B-Instruct-BF16.gguf"), Ftype::Q4_K_M),
             Path::new("/m/Qwen3-Coder-30B-A3B-Instruct-BF16.Q4_K_M.gguf")
@@ -698,7 +771,8 @@ mod tests {
     }
 
     #[test]
-    fn default_output_never_writes_into_a_hub_snapshot() {
+    fn default_output_never_writes_into_a_hub_snapshot()
+    {
         let snap = "/home/u/.cache/huggingface/hub/models--unsloth--Qwen3-Coder-30B-A3B-Instruct-GGUF/snapshots/b17cb02dd882d5b6ab62fc777ad2995f19668350";
         let out = default_output(Path::new(&format!("{snap}/BF16/Qwen3-Coder-30B-A3B-Instruct-BF16-00001-of-00002.gguf")), Ftype::Q4_K_M);
         assert_eq!(
@@ -715,7 +789,8 @@ mod tests {
     }
 
     #[test]
-    fn split_suffixes_are_read() {
+    fn split_suffixes_are_read()
+    {
         assert_eq!(split_suffix("X-BF16-00002-of-00010"), Some(("X-BF16", 2, 10)));
         assert_eq!(split_suffix("X-BF16"), None);
         assert_eq!(split_suffix("-00001-of-00002"), None, "a part needs a name before it");
@@ -733,7 +808,11 @@ mod tests {
     /// - `ggml_type`: the type of the model's one tensor.
     ///
     /// Outputs: the [`Model`].
-    fn model_with(file_type: Option<Ftype>, ggml_type: u32) -> Model {
+    fn model_with(
+        file_type: Option<Ftype>,
+        ggml_type: u32,
+    ) -> Model
+    {
         let mut w = Writer::new();
         fixture::llama_metadata(&mut w);
         if let Some(f) = file_type {
@@ -745,7 +824,8 @@ mod tests {
     }
 
     #[test]
-    fn already_at_the_type_is_an_error_not_a_copy() {
+    fn already_at_the_type_is_an_error_not_a_copy()
+    {
         let m = model_with(Some(Ftype::F16), 1);
         let err = prepare(&m, Path::new("/m/out.gguf"), &QuantSpec::new(Ftype::F16)).unwrap_err();
         assert_eq!(err, QuantError::AlreadyAt { input: "/m/in.gguf".into(), ftype: Ftype::F16 });
@@ -753,7 +833,8 @@ mod tests {
     }
 
     #[test]
-    fn requantizing_needs_the_flag() {
+    fn requantizing_needs_the_flag()
+    {
         let m = model_with(Some(Ftype::Q8_0), 8);
         let spec = QuantSpec::new(Ftype::Q4_K_M);
         let err = prepare(&m, Path::new("/m/out.gguf"), &spec).unwrap_err();
@@ -771,7 +852,8 @@ mod tests {
     }
 
     #[test]
-    fn types_llama_cpp_cannot_make_are_refused_up_front() {
+    fn types_llama_cpp_cannot_make_are_refused_up_front()
+    {
         let m = model_with(Some(Ftype::BF16), 30);
         for (to, says) in [(Ftype::NVFP4, "cannot write NVFP4"), (Ftype::IQ2_XXS, "importance matrix"), (Ftype::Q2_K_S, "importance matrix")] {
             let err = prepare(&m, Path::new("/m/o.gguf"), &QuantSpec::new(to)).unwrap_err();
@@ -780,7 +862,8 @@ mod tests {
     }
 
     #[test]
-    fn the_output_may_not_be_the_input_or_in_the_cache() {
+    fn the_output_may_not_be_the_input_or_in_the_cache()
+    {
         let m = model_with(Some(Ftype::BF16), 30);
         let spec = QuantSpec::new(Ftype::Q8_0);
         assert!(matches!(prepare(&m, Path::new("/m/in.gguf"), &spec), Err(QuantError::BadInput(d)) if d.contains("in place")));
@@ -792,7 +875,8 @@ mod tests {
     }
 
     #[test]
-    fn a_split_output_is_named_by_llama_cpps_rule() {
+    fn a_split_output_is_named_by_llama_cpps_rule()
+    {
         let (p0, p1) = fixture::split_headers();
         let m = Model::from_headers(&[("/m/in-00001-of-00002.gguf".into(), p0), ("/m/in-00002-of-00002.gguf".into(), p1)]).unwrap();
         let job = prepare(&m, Path::new("/o/in.Q8_0.gguf"), &QuantSpec::new(Ftype::Q8_0)).unwrap();
@@ -806,7 +890,8 @@ mod tests {
 
     #[test]
     #[cfg(not(feature = "quantize"))]
-    fn quant_request_is_refused_without_feature() {
+    fn quant_request_is_refused_without_feature()
+    {
         let err = quantize(Path::new("in.gguf"), Path::new("out.gguf"), &QuantSpec::new(Ftype::Q4_K_M)).unwrap_err();
         assert_eq!(err, QuantError::NotBuilt);
         assert!(err.to_string().contains("`quantize` cargo feature"), "{err}");

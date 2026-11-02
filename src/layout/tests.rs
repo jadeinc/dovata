@@ -19,7 +19,10 @@ const Q8_0: u32 = 8;
 /// - `kv`: the KV cache type.
 ///
 /// Outputs: the options.
-fn opts(kv: KvType) -> BindOptions {
+fn opts(
+    kv: KvType,
+) -> BindOptions
+{
     BindOptions { n_ctx: 256, n_tokens: 8, n_outputs: 1, kv_k: kv, kv_v: kv }
 }
 
@@ -31,7 +34,12 @@ fn opts(kv: KvType) -> BindOptions {
 /// - `kv`: the KV cache type.
 ///
 /// Outputs: the bound graph. It panics on an error.
-fn bind(arch: &str, h: &Header, kv: KvType) -> BoundGraph {
+fn bind(
+    arch: &str,
+    h: &Header,
+    kv: KvType,
+) -> BoundGraph
+{
     let model = h.model();
     builtin(arch).unwrap().bind(&model, &opts(kv)).unwrap_or_else(|e| panic!("{arch} binds: {e}"))
 }
@@ -43,7 +51,11 @@ fn bind(arch: &str, h: &Header, kv: KvType) -> BoundGraph {
 /// - `op`: the op name.
 ///
 /// Outputs: the matching ops.
-fn ops_named<'a>(g: &'a BoundGraph, op: &'a str) -> impl Iterator<Item = &'a BoundOp> + 'a {
+fn ops_named<'a>(
+    g: &'a BoundGraph,
+    op: &'a str,
+) -> impl Iterator<Item = &'a BoundOp> + 'a
+{
     g.ops.iter().filter(move |o| o.op == op)
 }
 
@@ -54,7 +66,10 @@ fn ops_named<'a>(g: &'a BoundGraph, op: &'a str) -> impl Iterator<Item = &'a Bou
 /// - `g`: the bound graph.
 ///
 /// Outputs: none.
-fn check_invariants(g: &BoundGraph) {
+fn check_invariants(
+    g: &BoundGraph,
+)
+{
     let names: HashSet<&str> = g.tensors.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names.len(), g.tensors.len(), "tensor names are unique");
     let mut produced = vec![false; g.tensors.len()];
@@ -84,7 +99,8 @@ fn check_invariants(g: &BoundGraph) {
 }
 
 #[test]
-fn every_op_name_exists_in_ggml() {
+fn every_op_name_exists_in_ggml()
+{
     // The enums, not the API functions: a layout op is one graph node type, and ggml's
     // node types are the `ggml_op` values, with unary and glu nodes named by their
     // sub-op. See the docs in ops.rs for why function names would not do. The names
@@ -125,7 +141,8 @@ fn every_op_name_exists_in_ggml() {
 }
 
 #[test]
-fn builtin_layouts_parse() {
+fn builtin_layouts_parse()
+{
     for arch in SUPPORTED {
         let layout = builtin(arch).unwrap_or_else(|| panic!("{arch} is in SUPPORTED but has no layout"));
         assert_eq!(layout.arch(), *arch);
@@ -143,7 +160,8 @@ fn builtin_layouts_parse() {
 }
 
 #[test]
-fn builtin_qwen3moe_binds() {
+fn builtin_qwen3moe_binds()
+{
     let g = bind("qwen3moe", &testutil::qwen3moe(&SMALL, F16, false), KvType::F16);
     check_invariants(&g);
     assert_eq!(g.n_layer, 2);
@@ -172,7 +190,8 @@ fn builtin_qwen3moe_binds() {
 }
 
 #[test]
-fn builtin_qwen3_binds() {
+fn builtin_qwen3_binds()
+{
     let g = bind("qwen3", &testutil::qwen3(&SMALL, F16, false), KvType::F16);
     check_invariants(&g);
     assert_eq!(ops_named(&g, "mul_mat_id").count(), 0);
@@ -186,7 +205,8 @@ fn builtin_qwen3_binds() {
 }
 
 #[test]
-fn builtin_llama_binds() {
+fn builtin_llama_binds()
+{
     let g = bind("llama", &testutil::llama(&SMALL, F16, false, false), KvType::F16);
     check_invariants(&g);
     let rope = ops_named(&g, "rope").next().unwrap();
@@ -199,7 +219,8 @@ fn builtin_llama_binds() {
 }
 
 #[test]
-fn builtin_llama_moe_variant_binds() {
+fn builtin_llama_moe_variant_binds()
+{
     // Mixtral loads as llama with experts: the same layout takes its expert path.
     let g = bind("llama", &testutil::llama(&SMALL, F16, false, true), KvType::F16);
     check_invariants(&g);
@@ -217,7 +238,8 @@ fn builtin_llama_moe_variant_binds() {
 /// Inputs: none.
 ///
 /// Outputs: the shape.
-fn llama4_shape() -> Shape {
+fn llama4_shape() -> Shape
+{
     Shape { n_layer: 4, ..SMALL }
 }
 
@@ -228,7 +250,11 @@ fn llama4_shape() -> Shape {
 /// - `name`: the tensor's bound name.
 ///
 /// Outputs: the layers, in order, each once; empty when the graph has no such tensor.
-fn layers_reading(g: &BoundGraph, name: &str) -> Vec<u32> {
+fn layers_reading(
+    g: &BoundGraph,
+    name: &str,
+) -> Vec<u32>
+{
     let Some(id) = g.find(name) else { return Vec::new() };
     let mut layers: Vec<u32> = g.ops.iter().filter(|o| o.inputs.contains(&id)).filter_map(|o| o.layer).collect();
     layers.dedup();
@@ -242,13 +268,18 @@ fn layers_reading(g: &BoundGraph, name: &str) -> Vec<u32> {
 /// - `name`: the tensor's bound name.
 ///
 /// Outputs: the op. It panics when no op produces the tensor.
-fn producer<'a>(g: &'a BoundGraph, name: &str) -> &'a BoundOp {
+fn producer<'a>(
+    g: &'a BoundGraph,
+    name: &str,
+) -> &'a BoundOp
+{
     let id = g.find(name).unwrap_or_else(|| panic!("no tensor {name}"));
     g.ops.iter().find(|o| o.outputs.contains(&id)).unwrap_or_else(|| panic!("no op produces {name}"))
 }
 
 #[test]
-fn builtin_llama4_binds_scout_like() {
+fn builtin_llama4_binds_scout_like()
+{
     // Scout: experts on every layer, the Q/K L2 norm, and rope frequency factors.
     let mut h = testutil::llama4(&llama4_shape(), F16, 1, false);
     h.tensor("rope_freqs.weight", &[32], F32);
@@ -285,7 +316,8 @@ fn builtin_llama4_binds_scout_like() {
 }
 
 #[test]
-fn llama4_interleaves_dense_and_expert_layers() {
+fn llama4_interleaves_dense_and_expert_layers()
+{
     // Maverick: 128 experts on every second layer, a dense FFN between, and no Q/K norm.
     let s = Shape { n_expert: 128, ..llama4_shape() };
     let g = bind("llama4", &testutil::llama4(&s, F16, 2, false), KvType::F16);
@@ -301,7 +333,8 @@ fn llama4_interleaves_dense_and_expert_layers() {
 }
 
 #[test]
-fn llama4_without_chunked_attention_has_one_cache() {
+fn llama4_without_chunked_attention_has_one_cache()
+{
     // attention.sliding_window = 0, as for MobileLLM: no chunked layers, so no SWA
     // inputs, and n_no_rope_layer_step is n_layer, so only the last layer has no rope.
     let s = Shape { n_layer: 6, ..SMALL };
@@ -319,7 +352,8 @@ fn llama4_without_chunked_attention_has_one_cache() {
 }
 
 #[test]
-fn llama4_chunking_and_rope_follow_their_own_patterns() {
+fn llama4_chunking_and_rope_follow_their_own_patterns()
+{
     // A sliding_window_pattern of 2 makes layers 0 and 2 chunked, while NoPE stays on
     // every fourth layer. Chunked layers rope with freq_base_swa, the others with
     // freq_base.
@@ -334,7 +368,8 @@ fn llama4_chunking_and_rope_follow_their_own_patterns() {
 }
 
 #[test]
-fn llama4_rotates_each_cache_with_its_own_matrices() {
+fn llama4_rotates_each_cache_with_its_own_matrices()
+{
     // A quantized cache rotates Q, K and V; each of the two caches has its own matrices.
     // With a fused QKV weight, K on the NoPE layer is still a strided view of the QKV
     // rows, so it is copied before its rotation, as V is on every layer.
@@ -351,7 +386,8 @@ fn llama4_rotates_each_cache_with_its_own_matrices() {
 }
 
 #[test]
-fn llama4_symbols_are_refused_for_other_architectures() {
+fn llama4_symbols_are_refused_for_other_architectures()
+{
     let src = TINY.replace(r#"out = "x"
 "#, "out = \"x\"\nwhen = \"is_swa\"\n");
     let err = Layout::from_toml(&src).unwrap().bind(&tiny(), &opts(KvType::F16)).unwrap_err().to_string();
@@ -359,7 +395,8 @@ fn llama4_symbols_are_refused_for_other_architectures() {
 }
 
 #[test]
-fn llama_rope_reads_the_frequency_factors_when_present() {
+fn llama_rope_reads_the_frequency_factors_when_present()
+{
     let mut h = testutil::llama(&SMALL, F16, false, false);
     h.tensor("rope_freqs.weight", &[32], F32);
     let g = bind("llama", &h, KvType::F16);
@@ -374,7 +411,8 @@ fn llama_rope_reads_the_frequency_factors_when_present() {
 const QWEN2_SHAPE: Shape = Shape { n_embd: 128, ..SMALL };
 
 #[test]
-fn builtin_qwen2_binds() {
+fn builtin_qwen2_binds()
+{
     let g = bind("qwen2", &testutil::qwen2(&QWEN2_SHAPE, F16, false), KvType::F16);
     check_invariants(&g);
     let rope = ops_named(&g, "rope").next().unwrap();
@@ -388,7 +426,8 @@ fn builtin_qwen2_binds() {
 }
 
 #[test]
-fn qwen2_adds_the_output_bias_when_the_file_has_one() {
+fn qwen2_adds_the_output_bias_when_the_file_has_one()
+{
     let mut h = testutil::qwen2(&QWEN2_SHAPE, F16, true);
     h.tensor("output.bias", &[32], F32);
     let g = bind("qwen2", &h, KvType::F16);
@@ -400,7 +439,8 @@ fn qwen2_adds_the_output_bias_when_the_file_has_one() {
 }
 
 #[test]
-fn builtin_nemotron_binds() {
+fn builtin_nemotron_binds()
+{
     let g = bind("nemotron", &testutil::nemotron(&QWEN2_SHAPE, F16, false), KvType::F16);
     check_invariants(&g);
     // LayerNorm everywhere, with f_norm_eps: two a layer and the output norm.
@@ -423,7 +463,8 @@ fn builtin_nemotron_binds() {
 }
 
 #[test]
-fn nemotron_requires_its_output_weight() {
+fn nemotron_requires_its_output_weight()
+{
     // Unlike llama and qwen2, nemotron's LM head does not fall back to the embeddings.
     let err = builtin("nemotron").unwrap().bind(&testutil::nemotron(&QWEN2_SHAPE, F16, true).model(), &opts(KvType::F16)).unwrap_err();
     assert_eq!(err, LayoutError::MissingWeight { name: "output.weight".into() });
@@ -435,7 +476,8 @@ fn nemotron_requires_its_output_weight() {
 const DECI_LAYERS: &[(u64, u64, u64)] = &[(2, 1, 96), (2, 0, 96), (0, 0, 96), (0, 0, 0), (2, 2, 64)];
 
 #[test]
-fn builtin_deci_binds_every_kind_of_layer() {
+fn builtin_deci_binds_every_kind_of_layer()
+{
     let g = bind("deci", &testutil::deci(&SMALL, F16, false, DECI_LAYERS), KvType::F16);
     check_invariants(&g);
     assert_eq!(g.n_layer, 5);
@@ -462,7 +504,8 @@ fn builtin_deci_binds_every_kind_of_layer() {
 }
 
 #[test]
-fn deci_ropes_and_rotates_only_where_it_attends() {
+fn deci_ropes_and_rotates_only_where_it_attends()
+{
     let mut h = testutil::deci(&SMALL, F16, false, DECI_LAYERS);
     h.tensor("rope_freqs.weight", &[32], F32);
     let g = bind("deci", &h, KvType::Q8_0);
@@ -476,7 +519,8 @@ fn deci_ropes_and_rotates_only_where_it_attends() {
 }
 
 #[test]
-fn block_ops_expand_per_layer() {
+fn block_ops_expand_per_layer()
+{
     let shape = Shape { n_layer: 4, ..SMALL };
     let g = bind("qwen3", &testutil::qwen3(&shape, F16, false), KvType::F16);
     let per_layer: Vec<usize> = (0..4).map(|l| g.layer_ops(l).count()).collect();
@@ -511,7 +555,8 @@ fn block_ops_expand_per_layer() {
 }
 
 #[test]
-fn quantized_file_binds_same_layout() {
+fn quantized_file_binds_same_layout()
+{
     let f16 = bind("qwen3moe", &testutil::qwen3moe(&SMALL, F16, false), KvType::F16);
     let q8 = bind("qwen3moe", &testutil::qwen3moe(&SMALL, Q8_0, false), KvType::F16);
     assert_eq!(f16.ops, q8.ops, "the same ops, inputs, outputs and params");
@@ -533,7 +578,8 @@ fn quantized_file_binds_same_layout() {
 }
 
 #[test]
-fn tied_output_falls_back_to_token_embd() {
+fn tied_output_falls_back_to_token_embd()
+{
     let g = bind("qwen3", &testutil::qwen3(&SMALL, F16, true), KvType::F16);
     assert!(g.find("output.weight").is_none());
     let embd = g.find("token_embd.weight").unwrap();
@@ -545,7 +591,8 @@ fn tied_output_falls_back_to_token_embd() {
 }
 
 #[test]
-fn unsupported_arch_is_refused_with_the_list() {
+fn unsupported_arch_is_refused_with_the_list()
+{
     let model = Header::new("mamba2", 8).u32("block_count", 1).u32("context_length", 16).u32("embedding_length", 8).u32("attention.head_count", 1).model();
     let err = for_model(&model, None).unwrap_err();
     assert_eq!(err, LayoutError::NoLayout { architecture: "mamba2".into(), supported: SUPPORTED });
@@ -560,7 +607,8 @@ fn unsupported_arch_is_refused_with_the_list() {
 }
 
 #[test]
-fn caller_layout_for_wrong_arch_refused() {
+fn caller_layout_for_wrong_arch_refused()
+{
     let model = testutil::qwen3(&SMALL, F16, false).model();
     let err = for_model(&model, builtin("llama")).unwrap_err();
     assert_eq!(err, LayoutError::WrongArch { layout: "llama".into(), model: "qwen3".into() });
@@ -576,7 +624,8 @@ fn caller_layout_for_wrong_arch_refused() {
 /// Inputs: none.
 ///
 /// Outputs: the model.
-fn tiny() -> crate::load::Model {
+fn tiny() -> crate::load::Model
+{
     let mut h = Header::new("tiny", 16);
     h.u32("block_count", 1).u32("context_length", 16).u32("embedding_length", 32).u32("attention.head_count", 1);
     h.tensor("token_embd.weight", &[32, 16], F32);
@@ -606,7 +655,8 @@ out = "x"
 "#;
 
 #[test]
-fn table_syntax_binds() {
+fn table_syntax_binds()
+{
     // The `[[block]]` form and the one-op-per-line form are the same TOML data.
     let g = Layout::from_toml(TINY).unwrap().bind(&tiny(), &opts(KvType::F16)).unwrap();
     check_invariants(&g);
@@ -615,7 +665,8 @@ fn table_syntax_binds() {
 }
 
 #[test]
-fn unknown_tensor_rejected() {
+fn unknown_tensor_rejected()
+{
     let src = TINY.replace(r#"in = ["blk.{L}.w.weight", "x"]"#, r#"in = ["blk.{L}.w.weight", "y"]"#);
     match Layout::from_toml(&src).unwrap_err() {
         LayoutError::UnknownTensor { name, at } => {
@@ -630,7 +681,8 @@ fn unknown_tensor_rejected() {
 }
 
 #[test]
-fn use_before_produce_rejected() {
+fn use_before_produce_rejected()
+{
     // `z` is produced, but only after the op that reads it.
     let src = format!("{TINY}\n[[block]]\nop = \"mul\"\nin = [\"x\", \"z\"]\nout = \"x\"\n\n[[block]]\nop = \"silu\"\nin = [\"x\"]\nout = \"z\"\n");
     let err = Layout::from_toml(&src).unwrap().bind(&tiny(), &opts(KvType::F16)).unwrap_err();
@@ -642,7 +694,8 @@ fn use_before_produce_rejected() {
 }
 
 #[test]
-fn unreferenced_gguf_tensor_rejected() {
+fn unreferenced_gguf_tensor_rejected()
+{
     let mut h = testutil::qwen3(&SMALL, F16, false);
     h.tensor("blk.0.mystery.weight", &[64], F32);
     let err = builtin("qwen3").unwrap().bind(&h.model(), &opts(KvType::F16)).unwrap_err();
@@ -657,7 +710,8 @@ fn unreferenced_gguf_tensor_rejected() {
 }
 
 #[test]
-fn a_missing_weight_and_a_wrong_shape_are_refused() {
+fn a_missing_weight_and_a_wrong_shape_are_refused()
+{
     // The header says two layers and holds tensors for one.
     let err = builtin("qwen3").unwrap().bind(&lie_about_layers(), &opts(KvType::F16)).unwrap_err();
     assert_eq!(err, LayoutError::MissingWeight { name: "blk.1.attn_norm.weight".into() });
@@ -673,7 +727,8 @@ fn a_missing_weight_and_a_wrong_shape_are_refused() {
 /// Inputs: none.
 ///
 /// Outputs: the model.
-fn lie_about_layers() -> crate::load::Model {
+fn lie_about_layers() -> crate::load::Model
+{
     let s = Shape { n_layer: 1, ..SMALL };
     let mut h = Header::new("qwen3", s.n_vocab);
     h.u32("block_count", 2)
@@ -705,7 +760,8 @@ fn lie_about_layers() -> crate::load::Model {
 }
 
 #[test]
-fn optional_biases_add_their_ops() {
+fn optional_biases_add_their_ops()
+{
     // qwen2-style Q, K and V biases are optional in create_tensor_qkv.
     let plain = bind("qwen3", &testutil::qwen3(&SMALL, F16, false), KvType::F16);
     let mut h = testutil::qwen3(&SMALL, F16, false);
@@ -720,7 +776,8 @@ fn optional_biases_add_their_ops() {
 }
 
 #[test]
-fn a_fused_qkv_file_takes_the_view_path() {
+fn a_fused_qkv_file_takes_the_view_path()
+{
     let s = SMALL;
     let mut h = Header::new("llama", s.n_vocab);
     h.u32("block_count", 1)
@@ -748,7 +805,8 @@ fn a_fused_qkv_file_takes_the_view_path() {
 }
 
 #[test]
-fn a_quantized_kv_cache_adds_the_rotation() {
+fn a_quantized_kv_cache_adds_the_rotation()
+{
     let f16 = bind("qwen3", &testutil::qwen3(&SMALL, F16, false), KvType::F16);
     let q8 = bind("qwen3", &testutil::qwen3(&SMALL, F16, false), KvType::Q8_0);
     check_invariants(&q8);
@@ -764,7 +822,8 @@ fn a_quantized_kv_cache_adds_the_rotation() {
 }
 
 #[test]
-fn an_f32_cache_is_cast_for_flash_attention() {
+fn an_f32_cache_is_cast_for_flash_attention()
+{
     let g = bind("qwen3", &testutil::qwen3(&SMALL, F16, false), KvType::F32);
     let casts: Vec<&BoundOp> = ops_named(&g, "cpy").collect();
     assert_eq!(casts.len(), 2 * 2);
@@ -772,7 +831,8 @@ fn an_f32_cache_is_cast_for_flash_attention() {
 }
 
 #[test]
-fn kv_writes_and_reads_are_views_of_the_cache() {
+fn kv_writes_and_reads_are_views_of_the_cache()
+{
     let g = bind("qwen3moe", &testutil::qwen3moe(&SMALL, F16, false), KvType::Q8_0);
     let cache = g.find("cache_k_l1").unwrap();
     let write = ops_named(&g, "set_rows").find(|o| o.inputs[0] == cache).unwrap();
@@ -790,7 +850,8 @@ fn kv_writes_and_reads_are_views_of_the_cache() {
 }
 
 #[test]
-fn impossible_options_are_refused() {
+fn impossible_options_are_refused()
+{
     let model = testutil::qwen3(&SMALL, F16, false).model();
     let layout = builtin("qwen3").unwrap();
     for bad in [
@@ -806,7 +867,8 @@ fn impossible_options_are_refused() {
 }
 
 #[test]
-fn binding_is_deterministic() {
+fn binding_is_deterministic()
+{
     let h = testutil::qwen3moe(&SMALL, Q8_0, true);
     let a = serde_json::to_string(&bind("qwen3moe", &h, KvType::Q4_0)).unwrap();
     let b = serde_json::to_string(&bind("qwen3moe", &h, KvType::Q4_0)).unwrap();
@@ -815,7 +877,8 @@ fn binding_is_deterministic() {
 }
 
 #[test]
-fn layout_mistakes_name_the_place() {
+fn layout_mistakes_name_the_place()
+{
     let bad_op = TINY.replace(r#"op = "mul_mat""#, r#"op = "matmul""#);
     let err = Layout::from_toml(&bad_op).unwrap_err().to_string();
     assert!(err.contains("block op 0") && err.contains("mul_mat"), "{err}");
@@ -836,7 +899,8 @@ fn layout_mistakes_name_the_place() {
 }
 
 #[test]
-fn the_readme_documents_every_symbol_and_op() {
+fn the_readme_documents_every_symbol_and_op()
+{
     let readme = include_str!("README.md");
     for (name, _) in SYMBOLS {
         assert!(readme.contains(&format!("`{name}`")), "README does not mention symbol {name}");
@@ -850,7 +914,8 @@ fn the_readme_documents_every_symbol_and_op() {
 /// file, or the first tens of megabytes of one fetched with an HTTP range request, as
 /// long as its tensor index is complete.
 #[test]
-fn a_real_header_binds_its_builtin_layout() {
+fn a_real_header_binds_its_builtin_layout()
+{
     let Ok(path) = std::env::var("DOVATA_TEST_HEADER") else {
         eprintln!("skipped: set DOVATA_TEST_HEADER to a GGUF header to bind a real model");
         return;
@@ -918,7 +983,11 @@ fn a_real_header_binds_its_builtin_layout() {
 ///
 /// Outputs: the KV bytes, or `None` when the header gives one head count for every
 /// layer, which `ModelDims` prices.
-fn per_layer_kv_bytes(model: &crate::load::Model, opts: &BindOptions) -> Option<u64> {
+fn per_layer_kv_bytes(
+    model: &crate::load::Model,
+    opts: &BindOptions,
+) -> Option<u64>
+{
     use crate::gguf::Value;
     use crate::load::dims::kv_elem_bytes_x32;
     let meta = model.meta();
@@ -957,7 +1026,12 @@ use super::testutil::{Deepseek2, DEEPSEEK_V3, DS2_EMBD, DS2_HEAD, DS2_KV_LORA, D
 /// - `op`: the op name.
 ///
 /// Outputs: the count.
-fn layer_count(g: &BoundGraph, layer: u32, op: &str) -> usize {
+fn layer_count(
+    g: &BoundGraph,
+    layer: u32,
+    op: &str,
+) -> usize
+{
     g.layer_ops(layer).filter(|o| o.op == op).count()
 }
 
@@ -971,14 +1045,20 @@ fn layer_count(g: &BoundGraph, layer: u32, op: &str) -> usize {
 ///
 /// Outputs: the bound graph, checked for the facts every bound graph must have. It
 /// panics on an error.
-fn bind_deepseek2(v: &Deepseek2, ty: u32, kv: KvType) -> BoundGraph {
+fn bind_deepseek2(
+    v: &Deepseek2,
+    ty: u32,
+    kv: KvType,
+) -> BoundGraph
+{
     let g = bind("deepseek2", &testutil::deepseek2(v, ty), kv);
     check_invariants(&g);
     g
 }
 
 #[test]
-fn builtin_deepseek2_binds_dense_then_moe_layers() {
+fn builtin_deepseek2_binds_dense_then_moe_layers()
+{
     let g = bind_deepseek2(&DEEPSEEK_V3, F16, KvType::F16);
     assert_eq!(g.n_layer, 3);
     // Layer 0 is dense: one SwiGLU FFN and no experts.
@@ -1006,7 +1086,8 @@ fn builtin_deepseek2_binds_dense_then_moe_layers() {
 }
 
 #[test]
-fn deepseek2_mla_keeps_one_k_cache_and_reads_v_from_it() {
+fn deepseek2_mla_keeps_one_k_cache_and_reads_v_from_it()
+{
     let g = bind_deepseek2(&DEEPSEEK_V3, F16, KvType::Q8_0);
     // One cache per layer, K only, with a row of kv_lora_rank + n_rot values per cell.
     assert!(g.find("cache_v_l0").is_none() && g.find("inp_v_idxs").is_none());
@@ -1037,7 +1118,8 @@ fn deepseek2_mla_keeps_one_k_cache_and_reads_v_from_it() {
 }
 
 #[test]
-fn deepseek2_low_rank_q_is_optional() {
+fn deepseek2_low_rank_q_is_optional()
+{
     let pair = bind_deepseek2(&DEEPSEEK_V3, F16, KvType::F16);
     let lite = bind_deepseek2(&Deepseek2 { n_layer: 26, q_lora_rank: 0, ..DEEPSEEK_V3 }, F16, KvType::F16);
     let reads_q = |g: &BoundGraph| -> Vec<String> {
@@ -1057,7 +1139,8 @@ fn deepseek2_low_rank_q_is_optional() {
 }
 
 #[test]
-fn deepseek2_legacy_kv_b_file_takes_the_kv_path() {
+fn deepseek2_legacy_kv_b_file_takes_the_kv_path()
+{
     // An older file, with attn_kv_b whole and no MLA head widths, in Q8_0.
     let g = bind_deepseek2(&Deepseek2 { mla: false, ..DEEPSEEK_V3 }, Q8_0, KvType::Q8_0);
     // An ordinary K and V cache, with n_head heads each.
@@ -1074,7 +1157,8 @@ fn deepseek2_legacy_kv_b_file_takes_the_kv_path() {
 }
 
 #[test]
-fn deepseek2_v2_files_default_to_softmax() {
+fn deepseek2_v2_files_default_to_softmax()
+{
     // A DeepSeek V2 file: no gating key, no bias, no normalization, a scale of 1.
     let v2 = Deepseek2 { gating: None, probs_bias: false, weights_norm: false, weights_scale: 1.0, ..DEEPSEEK_V3 };
     let g = bind_deepseek2(&v2, F16, KvType::F16);
@@ -1087,7 +1171,8 @@ fn deepseek2_v2_files_default_to_softmax() {
 }
 
 #[test]
-fn deepseek2_expert_groups_mask_the_unchosen_groups() {
+fn deepseek2_expert_groups_mask_the_unchosen_groups()
+{
     for bias in [true, false] {
         let g = bind_deepseek2(&Deepseek2 { n_expert_groups: 4, probs_bias: bias, ..DEEPSEEK_V3 }, F16, KvType::F16);
         assert_eq!(ops_named(&g, "fill").count(), 2, "one per MoE layer");
@@ -1106,7 +1191,8 @@ fn deepseek2_expert_groups_mask_the_unchosen_groups() {
 }
 
 #[test]
-fn deepseek2_fused_gate_up_experts_split_by_views() {
+fn deepseek2_fused_gate_up_experts_split_by_views()
+{
     let g = bind_deepseek2(&Deepseek2 { gate_up: true, ..DEEPSEEK_V3 }, F16, KvType::F16);
     assert_eq!(layer_count(&g, 1, "mul_mat_id"), 2);
     let fused = g.find("ffn_moe_gate_up-1").unwrap();
@@ -1115,7 +1201,8 @@ fn deepseek2_fused_gate_up_experts_split_by_views() {
 }
 
 #[test]
-fn deepseek2_yarn_scales_kq_and_mistral_scales_q_by_temperature() {
+fn deepseek2_yarn_scales_kq_and_mistral_scales_q_by_temperature()
+{
     let g = bind_deepseek2(&Deepseek2 { temp_scale: 0.1, ..DEEPSEEK_V3 }, F16, KvType::F16);
     // YaRN factor 40 with DeepSeek V3's yarn_log_multiplier: rope's attn_factor cancels
     // the YaRN magnitude, and kq_scale applies mscale = 1 + 0.1 ln 40 twice instead.

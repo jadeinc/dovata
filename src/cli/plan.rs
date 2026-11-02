@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use dovata::hub::{self, FetchError, FetchOptions, Fetched, Level, ModelSource, SelectError, Want};
+use dovata::hf_hub::{self, FetchError, FetchOptions, Fetched, Level, ModelSource, SelectError, Want};
 use dovata::layout::{self, BindOptions, Layout};
 use dovata::load::{KvType, Model};
 use dovata::plan::{Backing, Plan, Role, Target};
@@ -95,7 +95,10 @@ struct Opts {
 ///
 /// Outputs: `Ok(())`, or a [`Fail`] for a bad command line or a model that cannot be
 /// planned.
-pub(crate) fn main(args: &[String]) -> Result<(), Fail> {
+pub(crate) fn main(
+    args: &[String],
+) -> Result<(), Fail>
+{
     if args.is_empty() || args.iter().any(|a| matches!(a.as_str(), "help" | "--help" | "-h")) {
         out(HELP);
         return Ok(());
@@ -110,7 +113,10 @@ pub(crate) fn main(args: &[String]) -> Result<(), Fail> {
 /// - `args`: the arguments after `plan`, such as `["model.gguf", "--ctx", "8192"]`.
 ///
 /// Outputs: the [`Opts`], or a message saying what is wrong with the arguments.
-fn parse(args: &[String]) -> Result<Opts, String> {
+fn parse(
+    args: &[String],
+) -> Result<Opts, String>
+{
     let mut o = Opts {
         model: String::new(),
         quant: None,
@@ -196,7 +202,11 @@ fn parse(args: &[String]) -> Result<Opts, String> {
 /// - `flag`: the option it came from, for the message.
 ///
 /// Outputs: the page size, or a message.
-fn page(p: u64, flag: &str) -> Result<u64, String> {
+fn page(
+    p: u64,
+    flag: &str,
+) -> Result<u64, String>
+{
     if p.is_power_of_two() {
         Ok(p)
     } else {
@@ -210,7 +220,10 @@ fn page(p: u64, flag: &str) -> Result<u64, String> {
 /// - `o`: the command line's options.
 ///
 /// Outputs: `Ok(())`, or a [`Fail`] saying why the model cannot be planned.
-fn run(o: &Opts) -> Result<(), Fail> {
+fn run(
+    o: &Opts,
+) -> Result<(), Fail>
+{
     let target = target(o).map_err(Fail::Run)?;
     let parts = model_files(o)?;
     let model = Model::from_parts(&parts).map_err(|e| Fail::Run(format!("{}: {e}", parts[0].display())))?;
@@ -238,7 +251,10 @@ fn run(o: &Opts) -> Result<(), Fail> {
 /// - `o`: the command line's options.
 ///
 /// Outputs: the [`Target`], or a message saying why it cannot be built.
-fn target(o: &Opts) -> Result<Target, String> {
+fn target(
+    o: &Opts,
+) -> Result<Target, String>
+{
     if let (Some(memory), Some(kind)) = (o.memory, o.kind) {
         return Ok(match kind {
             Kind::Apple => Target::Apple {
@@ -272,31 +288,34 @@ fn target(o: &Opts) -> Result<Target, String> {
 /// - `o`: the command line's options.
 ///
 /// Outputs: the files to plan, part 1 first, or a [`Fail`].
-fn model_files(o: &Opts) -> Result<Vec<PathBuf>, Fail> {
+fn model_files(
+    o: &Opts,
+) -> Result<Vec<PathBuf>, Fail>
+{
     let source = ModelSource::parse(&o.model).map_err(|e| Fail::Usage(e.to_string()))?;
     let fopts = FetchOptions::default();
     let run = |e: FetchError| Fail::Run(e.to_string());
     let fetched = match (&source, o.quant) {
         // A repo, and no type asked for: plan its only model, or stop and list them.
         (ModelSource::Hub { file: None, .. }, None) => {
-            let offered = hub::offered(&source, &fopts).map_err(run)?;
+            let offered = hf_hub::offered(&source, &fopts).map_err(run)?;
             match offered.as_slice() {
                 [only] => fetch_level(&source, only, &fopts)?,
-                [] => hub::fetch(&source, Want::Unquantized, &fopts).map_err(run)?,
+                [] => hf_hub::fetch(&source, Want::Unquantized, &fopts).map_err(run)?,
                 several => return Err(Fail::Usage(choose(&source, several))),
             }
         }
         // A repo and a type: that type's file, or the unquantized model to quantize.
-        (ModelSource::Hub { file: None, repo, .. }, Some(want)) => match hub::fetch(&source, Want::Ftype(want), &fopts) {
+        (ModelSource::Hub { file: None, repo, .. }, Some(want)) => match hf_hub::fetch(&source, Want::Ftype(want), &fopts) {
             Ok(f) => f,
             Err(FetchError::Select { error: SelectError::NotOffered { .. }, .. }) => {
                 eprintln!("dovata: {repo} has no {want} file, so dovata makes one from its unquantized model");
-                hub::fetch(&source, Want::Unquantized, &fopts).map_err(run)?
+                hf_hub::fetch(&source, Want::Unquantized, &fopts).map_err(run)?
             }
             Err(e) => return Err(run(e)),
         },
         // A local file, or a link to one file.
-        _ => hub::fetch(&source, Want::Unquantized, &fopts).map_err(run)?,
+        _ => hf_hub::fetch(&source, Want::Unquantized, &fopts).map_err(run)?,
     };
     match o.quant {
         Some(want) if fetched.ftype != Some(want) => quantized(&fetched, want, o.allow_requantize).map(|p| vec![p]),
@@ -308,16 +327,21 @@ fn model_files(o: &Opts) -> Result<Vec<PathBuf>, Fail> {
 ///
 /// Inputs:
 /// - `source`: the repo.
-/// - `level`: the model, from [`hub::offered`].
+/// - `level`: the model, from [`hf_hub::offered`].
 /// - `fopts`: the cache directory and the access token.
 ///
 /// Outputs: the downloaded files, or a [`Fail`].
-fn fetch_level(source: &ModelSource, level: &Level, fopts: &FetchOptions) -> Result<Fetched, Fail> {
+fn fetch_level(
+    source: &ModelSource,
+    level: &Level,
+    fopts: &FetchOptions,
+) -> Result<Fetched, Fail>
+{
     let ModelSource::Hub { endpoint, repo, revision, .. } = source else {
         return Err(Fail::Run("a level comes from a Hub repo".into()));
     };
     let one = ModelSource::Hub { endpoint: endpoint.clone(), repo: repo.clone(), revision: revision.clone(), file: Some(level.files[0].clone()) };
-    hub::fetch(&one, Want::Unquantized, fopts).map_err(|e| Fail::Run(e.to_string()))
+    hf_hub::fetch(&one, Want::Unquantized, fopts).map_err(|e| Fail::Run(e.to_string()))
 }
 
 /// Purpose: This function writes the message that asks for `--quant` when a repo offers
@@ -328,7 +352,11 @@ fn fetch_level(source: &ModelSource, level: &Level, fopts: &FetchOptions) -> Res
 /// - `offered`: its models, most precise first.
 ///
 /// Outputs: the message.
-fn choose(source: &ModelSource, offered: &[Level]) -> String {
+fn choose(
+    source: &ModelSource,
+    offered: &[Level],
+) -> String
+{
     let mut s = format!("{source} offers {} models. Choose one with --quant, or link to its file:\n", offered.len());
     for l in offered {
         s += &format!("  {:<12} {}\n", l.label, l.files[0]);
@@ -345,7 +373,12 @@ fn choose(source: &ModelSource, offered: &[Level]) -> String {
 /// - `allow_requantize`: whether an already quantized model may be quantized again.
 ///
 /// Outputs: the quantized file, or a [`Fail`].
-fn quantized(fetched: &Fetched, want: Ftype, allow_requantize: bool) -> Result<PathBuf, Fail> {
+fn quantized(
+    fetched: &Fetched,
+    want: Ftype,
+    allow_requantize: bool,
+) -> Result<PathBuf, Fail>
+{
     let input = &fetched.parts[0];
     let output = quantize::default_output(input, want);
     if declares(&output, want) {
@@ -369,7 +402,11 @@ fn quantized(fetched: &Fetched, want: Ftype, allow_requantize: bool) -> Result<P
 /// - `ftype`: the type.
 ///
 /// Outputs: `true` when the file opens as a model whose header declares `ftype`.
-fn declares(path: &Path, ftype: Ftype) -> bool {
+fn declares(
+    path: &Path,
+    ftype: Ftype,
+) -> bool
+{
     path.exists() && Model::open(path).is_ok_and(|m| m.meta().file_type() == Some(ftype.value()))
 }
 
@@ -381,7 +418,11 @@ fn declares(path: &Path, ftype: Ftype) -> bool {
 /// - `plan`: its plan.
 ///
 /// Outputs: the text, one item per line.
-fn summary(model: &Model, plan: &Plan) -> String {
+fn summary(
+    model: &Model,
+    plan: &Plan,
+) -> String
+{
     let meta = model.meta();
     let ftype = meta.file_type().and_then(Ftype::from_file_type).map(|f| format!(", {f}")).unwrap_or_default();
     let mut s = format!("{}, {}{ftype}\n", meta.name().unwrap_or("unnamed model"), model.architecture());
@@ -418,7 +459,10 @@ fn summary(model: &Model, plan: &Plan) -> String {
 /// - `r`: the region.
 ///
 /// Outputs: a name such as `mmap` or `unified`.
-fn kind(r: &dovata::plan::Region) -> &'static str {
+fn kind(
+    r: &dovata::plan::Region,
+) -> &'static str
+{
     use dovata::plan::RegionKind;
     match r.kind {
         RegionKind::Mmap => "mmap",
@@ -435,7 +479,11 @@ fn kind(r: &dovata::plan::Region) -> &'static str {
 /// - `r`: one of its regions.
 ///
 /// Outputs: a phrase such as `weights, part 1 from byte 0` or `KV cache`.
-fn holds(plan: &Plan, r: &dovata::plan::Region) -> String {
+fn holds(
+    plan: &Plan,
+    r: &dovata::plan::Region,
+) -> String
+{
     if let Backing::File { part, file_start } = r.backing {
         return format!("weights, part {} from byte {file_start}", part + 1);
     }
@@ -465,12 +513,16 @@ mod tests {
     /// - `line`: the arguments after `plan`, separated by spaces.
     ///
     /// Outputs: what [`parse`] returns for them.
-    fn p(line: &str) -> Result<Opts, String> {
+    fn p(
+        line: &str,
+    ) -> Result<Opts, String>
+    {
         parse(&line.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
     }
 
     #[test]
-    fn a_model_alone_takes_the_defaults() {
+    fn a_model_alone_takes_the_defaults()
+    {
         let o = p("m.gguf").unwrap();
         assert_eq!(o.model, "m.gguf");
         assert_eq!((o.step.n_ctx, o.step.n_tokens, o.step.n_outputs), (4096, 512, 1));
@@ -479,7 +531,8 @@ mod tests {
     }
 
     #[test]
-    fn options_parse() {
+    fn options_parse()
+    {
         let o = p("m.gguf --quant q4_k_m --target apple --memory 64G --max-buffer 48G --ctx 32768 --kv q8_0 --kv-v q4_0 --json").unwrap();
         assert_eq!(o.quant, Some(Ftype::Q4_K_M));
         assert_eq!(o.kind, Some(Kind::Apple));
@@ -494,7 +547,8 @@ mod tests {
     }
 
     #[test]
-    fn bad_command_lines_are_refused() {
+    fn bad_command_lines_are_refused()
+    {
         for bad in [
             "",
             "--json",
@@ -515,7 +569,8 @@ mod tests {
     }
 
     #[test]
-    fn several_models_are_listed_for_a_choice() {
+    fn several_models_are_listed_for_a_choice()
+    {
         let source = ModelSource::parse("https://huggingface.co/org/repo").unwrap();
         let level = |label: &str| Level { label: label.into(), ftype: Ftype::parse(label).ok(), files: vec![format!("m-{label}.gguf")] };
         let msg = choose(&source, &[level("BF16"), level("Q8_0"), level("Q4_K_M")]);

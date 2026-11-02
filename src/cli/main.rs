@@ -31,7 +31,8 @@ pub(crate) enum Fail {
 /// Inputs: none; it reads the command-line arguments.
 ///
 /// Outputs: success, 1 when a command fails, or 2 for a bad command line.
-fn main() -> ExitCode {
+fn main() -> ExitCode
+{
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         None | Some("help" | "--help" | "-h") => {
@@ -62,7 +63,10 @@ fn main() -> ExitCode {
 /// - `text`: the text.
 ///
 /// Outputs: none.
-pub(crate) fn out(text: &str) {
+pub(crate) fn out(
+    text: &str,
+)
+{
     // Rust ignores SIGPIPE, so a closed pipe shows up here as a write error. The reader
     // has all it wanted, so there is nothing to report.
     let mut stdout = std::io::stdout().lock();
@@ -75,7 +79,10 @@ pub(crate) fn out(text: &str) {
 /// - `v`: a machine, a usage reading, a planner target or a plan.
 ///
 /// Outputs: the JSON text.
-pub(crate) fn json<T: serde::Serialize>(v: &T) -> String {
+pub(crate) fn json<T: serde::Serialize>(
+    v: &T,
+) -> String
+{
     serde_json::to_string_pretty(v).expect("machine and plan types always serialize")
 }
 
@@ -85,7 +92,10 @@ pub(crate) fn json<T: serde::Serialize>(v: &T) -> String {
 /// - `bytes`: the count.
 ///
 /// Outputs: text such as `24.0 GiB`, `512.0 MiB` or `16 KiB`.
-pub(crate) fn size(bytes: u64) -> String {
+pub(crate) fn size(
+    bytes: u64,
+) -> String
+{
     const KIB: u64 = 1 << 10;
     const MIB: u64 = 1 << 20;
     const GIB: u64 = 1 << 30;
@@ -105,7 +115,10 @@ pub(crate) fn size(bytes: u64) -> String {
 ///   bytes.
 ///
 /// Outputs: the byte count, or a message saying what is wrong with `s`.
-pub(crate) fn parse_size(s: &str) -> Result<u64, String> {
+pub(crate) fn parse_size(
+    s: &str,
+) -> Result<u64, String>
+{
     let bad = || format!("{s:?} is not a size; write one such as 64G, 512M or 16K");
     let t = s.trim();
     let digits = t.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(t.len());
@@ -132,7 +145,10 @@ pub(crate) fn parse_size(s: &str) -> Result<u64, String> {
 /// - `t`: the target.
 ///
 /// Outputs: the phrase, such as `apple target, 17.8 GiB, buffers up to 13.3 GiB`.
-pub(crate) fn target_text(t: &dovata::plan::Target) -> String {
+pub(crate) fn target_text(
+    t: &dovata::plan::Target,
+) -> String
+{
     use dovata::plan::Target;
     match t {
         Target::Apple { unified_bytes, max_buffer_bytes, .. } => {
@@ -148,7 +164,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sizes_use_binary_units() {
+    fn sizes_use_binary_units()
+    {
         assert_eq!(size(24 << 30), "24.0 GiB");
         assert_eq!(size(512 << 20), "512.0 MiB");
         assert_eq!(size(16384), "16 KiB");
@@ -156,7 +173,8 @@ mod tests {
     }
 
     #[test]
-    fn sizes_parse_with_binary_units() {
+    fn sizes_parse_with_binary_units()
+    {
         assert_eq!(parse_size("64G"), Ok(64 << 30));
         assert_eq!(parse_size("64GiB"), Ok(64 << 30));
         assert_eq!(parse_size("16k"), Ok(16384));

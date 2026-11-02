@@ -11,12 +11,16 @@ use crate::{vocab, Chat, ChatError, Mismatch};
 /// - `header`: the test header.
 ///
 /// Outputs: the `Chat`, or the error the vocabulary check returned.
-fn build(header: Header) -> Result<Chat, ChatError> {
+fn build(
+    header: Header,
+) -> Result<Chat, ChatError>
+{
     Chat::from_gguf(&header.parse(), fixture::tokenizer())
 }
 
 #[test]
-fn vocab_mismatch_refused() {
+fn vocab_mismatch_refused()
+{
     // Two ordinary words trade places: same size, same strings, wrong ids. This is the
     // shape of a sibling model's tokenizer, and the reason the check compares strings.
     let mut swapped = WORDS.to_vec();
@@ -34,7 +38,8 @@ fn vocab_mismatch_refused() {
 }
 
 #[test]
-fn special_token_mismatch_refused() {
+fn special_token_mismatch_refused()
+{
     let mut renamed = WORDS.to_vec();
     renamed[2] = "<|endoftext|>";
     let err = build(Header::chatml().tokens(&renamed)).unwrap_err();
@@ -42,7 +47,8 @@ fn special_token_mismatch_refused() {
 }
 
 #[test]
-fn shorter_gguf_vocab_refused() {
+fn shorter_gguf_vocab_refused()
+{
     // The tokenizer has ids the model has no embedding row for.
     let err = build(Header::chatml().tokens(&WORDS[..10])).unwrap_err();
     let ChatError::VocabMismatch { gguf: 10, tokenizer: 12, count: 2, examples } = &err else {
@@ -52,7 +58,8 @@ fn shorter_gguf_vocab_refused() {
 }
 
 #[test]
-fn padded_gguf_vocab_accepted() {
+fn padded_gguf_vocab_accepted()
+{
     // convert_hf_to_gguf.py sizes the vocabulary to the embedding table and fills the
     // tail with `[PAD<id>]` of type UNUSED, as Qwen3's 151,936 tokens over 151,665 show.
     let mut padded: Vec<String> = WORDS.iter().map(|s| (*s).to_owned()).collect();
@@ -68,7 +75,8 @@ fn padded_gguf_vocab_accepted() {
 }
 
 #[test]
-fn extra_gguf_tokens_that_are_not_padding_refused() {
+fn extra_gguf_tokens_that_are_not_padding_refused()
+{
     let mut extended = WORDS.to_vec();
     extended.push("<|extra|>");
     let err = build(Header::chatml().tokens(&extended)).unwrap_err();
@@ -84,7 +92,8 @@ fn extra_gguf_tokens_that_are_not_padding_refused() {
 }
 
 #[test]
-fn check_is_callable_on_its_own() {
+fn check_is_callable_on_its_own()
+{
     // For a caller who built with Chat::new and still has a GGUF.
     let tokenizer = fixture::tokenizer();
     assert!(vocab::check(WORDS, None, &tokenizer).is_ok());
@@ -92,7 +101,8 @@ fn check_is_callable_on_its_own() {
 }
 
 #[test]
-fn missing_vocab_is_a_clear_error() {
+fn missing_vocab_is_a_clear_error()
+{
     let err = build(Header::chatml().without("tokenizer.ggml.tokens")).unwrap_err();
     assert!(matches!(err, ChatError::MissingVocab(_)), "{err:?}");
     assert!(err.to_string().contains("Chat::new"), "{err}");

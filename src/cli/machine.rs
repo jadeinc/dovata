@@ -50,7 +50,10 @@ enum Cmd {
 /// - `args`: the arguments after `machine`, such as `["usage", "--json"]`.
 ///
 /// Outputs: `Ok(())`, or a [`Fail`] for a bad command line or a failed reading.
-pub(crate) fn main(args: &[String]) -> Result<(), Fail> {
+pub(crate) fn main(
+    args: &[String],
+) -> Result<(), Fail>
+{
     let cmd = parse(args).map_err(|msg| Fail::Usage(format!("{msg}\n\n{HELP}")))?;
     run(cmd).map_err(Fail::Run)
 }
@@ -61,7 +64,10 @@ pub(crate) fn main(args: &[String]) -> Result<(), Fail> {
 /// - `args`: the arguments after `machine`, such as `["usage", "--json"]`.
 ///
 /// Outputs: the [`Cmd`], or a message saying what is wrong with the arguments.
-fn parse(args: &[String]) -> Result<Cmd, String> {
+fn parse(
+    args: &[String],
+) -> Result<Cmd, String>
+{
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let (command, rest) = match words.as_slice() {
         [] | ["help" | "--help" | "-h", ..] => return Ok(Cmd::Help),
@@ -116,7 +122,10 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
 /// - `cmd`: the command to run.
 ///
 /// Outputs: `Ok(())`, or the message to print when reading the machine fails.
-fn run(cmd: Cmd) -> Result<(), String> {
+fn run(
+    cmd: Cmd,
+) -> Result<(), String>
+{
     match cmd {
         Cmd::Help => out(HELP),
         Cmd::Info { json: as_json } => {
@@ -157,7 +166,11 @@ fn run(cmd: Cmd) -> Result<(), String> {
 ///
 /// Outputs: `Ok(())` once its output is closed, as when piped into `head`, or the message
 /// to print when reading the machine fails.
-fn watch(every: Duration, process: Option<&str>) -> Result<(), String> {
+fn watch(
+    every: Duration,
+    process: Option<&str>,
+) -> Result<(), String>
+{
     let m = machine::current().map_err(|e| e.to_string())?;
     let terminal = std::io::stdout().is_terminal();
     let start = Instant::now();
@@ -190,7 +203,10 @@ fn watch(every: Duration, process: Option<&str>) -> Result<(), String> {
 /// - `m`: the machine.
 ///
 /// Outputs: the text, one item per line.
-fn info_text(m: &Machine) -> String {
+fn info_text(
+    m: &Machine,
+) -> String
+{
     let mut s = format!("{}, {}\n", m.chip.as_deref().unwrap_or("unknown processor"), m.os);
     s += &format!("  memory      {}, {} pages\n", size(m.memory_bytes), size(m.page_bytes));
     if let Some(metal) = m.metal {
@@ -215,7 +231,10 @@ fn info_text(m: &Machine) -> String {
 /// - `t`: the target.
 ///
 /// Outputs: the text, the kind of target first and then one limit per line.
-fn target_block(t: &dovata::plan::Target) -> String {
+fn target_block(
+    t: &dovata::plan::Target,
+) -> String
+{
     use dovata::plan::Target;
     match t {
         Target::Apple { unified_bytes, max_buffer_bytes, page_bytes } => format!(
@@ -242,7 +261,11 @@ fn target_block(t: &dovata::plan::Target) -> String {
 /// - `process`: the program name that was asked about, if any.
 ///
 /// Outputs: the text, one item per line.
-fn usage_text(u: &Usage, process: Option<&str>) -> String {
+fn usage_text(
+    u: &Usage,
+    process: Option<&str>,
+) -> String
+{
     let m = &u.memory;
     let mut s = format!(
         "  memory     {} used of {}, {} available\n",
@@ -282,7 +305,10 @@ fn usage_text(u: &Usage, process: Option<&str>) -> String {
 /// - `u`: the reading.
 ///
 /// Outputs: the line.
-fn usage_line(u: &Usage) -> String {
+fn usage_line(
+    u: &Usage,
+) -> String
+{
     let m = &u.memory;
     let mut s = format!("used {} of {}, swap {}", size(m.used_bytes), size(m.total_bytes), size(m.swap_used_bytes));
     if let Some(p) = m.pressure {
@@ -303,7 +329,10 @@ fn usage_line(u: &Usage) -> String {
 /// - `g`: the GPU.
 ///
 /// Outputs: the text; values `nvidia-smi` could not read are left out.
-fn gpu_text(g: &Gpu) -> String {
+fn gpu_text(
+    g: &Gpu,
+) -> String
+{
     let mut parts = vec![match g.memory_used_bytes {
         Some(used) => format!("{} used of {}", size(used), size(g.memory_total_bytes)),
         None => format!("{} total", size(g.memory_total_bytes)),
@@ -321,7 +350,10 @@ fn gpu_text(g: &Gpu) -> String {
 /// - `p`: the reading.
 ///
 /// Outputs: text such as `55% free` or `1.2% of the last 10 s stalled`.
-fn pressure_text(p: Pressure) -> String {
+fn pressure_text(
+    p: Pressure,
+) -> String
+{
     match p {
         Pressure::FreePercent(v) => format!("{v}% free"),
         Pressure::StallPercent(v) => format!("{v:.1}% of the last 10 s stalled waiting for memory"),
@@ -338,12 +370,16 @@ mod tests {
     /// - `line`: the arguments, separated by spaces.
     ///
     /// Outputs: what [`parse`] returns for them.
-    fn p(line: &str) -> Result<Cmd, String> {
+    fn p(
+        line: &str,
+    ) -> Result<Cmd, String>
+    {
         parse(&line.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
     }
 
     #[test]
-    fn commands_and_options_parse() {
+    fn commands_and_options_parse()
+    {
         assert_eq!(p(""), Ok(Cmd::Help));
         assert_eq!(p("help"), Ok(Cmd::Help));
         assert_eq!(p("info"), Ok(Cmd::Info { json: false }));
@@ -355,14 +391,16 @@ mod tests {
     }
 
     #[test]
-    fn bad_command_lines_are_refused() {
+    fn bad_command_lines_are_refused()
+    {
         for bad in ["nope", "info --cpu", "usage --process", "watch --every soon", "watch --every 0", "info --verbose"] {
             assert!(p(bad).is_err(), "{bad:?} should be refused");
         }
     }
 
     #[test]
-    fn target_text_shows_units() {
+    fn target_text_shows_units()
+    {
         let apple = dovata::plan::Target::Apple { unified_bytes: 19_069_665_280, max_buffer_bytes: 14_302_248_960, page_bytes: 16384 };
         assert_eq!(
             target_block(&apple),
@@ -373,7 +411,8 @@ mod tests {
     }
 
     #[test]
-    fn usage_text_shows_every_reading() {
+    fn usage_text_shows_every_reading()
+    {
         let u = Usage {
             memory: machine::parse_vm_stat(include_str!("../machine/testdata/macos-vm_stat.txt"), 24 << 30).unwrap(),
             nvidia: machine::parse_nvidia_smi(include_str!("../machine/testdata/nvidia-smi.csv")).unwrap(),

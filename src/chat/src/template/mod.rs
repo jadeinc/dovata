@@ -18,7 +18,11 @@ pub(crate) mod pyjson;
 /// - `now`: the time `strftime_now` reports, or `None` for the system clock.
 ///
 /// Outputs: the environment, or an error if the template does not compile.
-pub(crate) fn environment(template: String, now: Option<SystemTime>) -> Result<Environment<'static>, Error> {
+pub(crate) fn environment(
+    template: String,
+    now: Option<SystemTime>,
+) -> Result<Environment<'static>, Error>
+{
     let mut env = Environment::new();
     env.set_syntax(SyntaxConfig::builder().trim_blocks(true).lstrip_blocks(true).build()?);
     // A prompt is not HTML. The name has no extension, so escaping would be off anyway;
@@ -40,7 +44,11 @@ pub(crate) fn environment(template: String, now: Option<SystemTime>) -> Result<E
 /// - `now`: the time to report, or `None` for the system clock.
 ///
 /// Outputs: none.
-pub(crate) fn set_clock(env: &mut Environment<'static>, now: Option<SystemTime>) {
+pub(crate) fn set_clock(
+    env: &mut Environment<'static>,
+    now: Option<SystemTime>,
+)
+{
     env.add_function("strftime_now", move |format: &str| -> String {
         clock::strftime(format, unix_seconds(now.unwrap_or_else(SystemTime::now)))
     });
@@ -52,7 +60,10 @@ pub(crate) fn set_clock(env: &mut Environment<'static>, now: Option<SystemTime>)
 /// - `t`: the time.
 ///
 /// Outputs: the seconds, negative before 1970.
-fn unix_seconds(t: SystemTime) -> i64 {
+fn unix_seconds(
+    t: SystemTime,
+) -> i64
+{
     match t.duration_since(UNIX_EPOCH) {
         Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
         Err(before) => -i64::try_from(before.duration().as_secs()).unwrap_or(i64::MAX),
@@ -65,7 +76,10 @@ fn unix_seconds(t: SystemTime) -> i64 {
 /// - `value`: the value to test.
 ///
 /// Outputs: `true` if iterable, and `false` for none.
-fn is_iterable(value: &Value) -> bool {
+fn is_iterable(
+    value: &Value,
+) -> bool
+{
     !value.is_none() && value.try_iter().is_ok()
 }
 
@@ -80,7 +94,11 @@ impl std::fmt::Display for Raised {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result
+    {
         f.write_str(&self.0)
     }
 }
@@ -93,6 +111,9 @@ impl std::error::Error for Raised {}
 /// - `message`: the template's message.
 ///
 /// Outputs: always an error that carries the message.
-fn raise_exception(message: String) -> Result<String, Error> {
+fn raise_exception(
+    message: String,
+) -> Result<String, Error>
+{
     Err(Error::new(ErrorKind::InvalidOperation, message.clone()).with_source(Raised(message)))
 }

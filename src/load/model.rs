@@ -58,7 +58,11 @@ impl PartIdentity {
     /// - `g`: the same bytes, parsed.
     ///
     /// Outputs: the [`PartIdentity`].
-    fn of(bytes: &[u8], g: &Gguf) -> PartIdentity {
+    fn of(
+        bytes: &[u8],
+        g: &Gguf,
+    ) -> PartIdentity
+    {
         let data = g.data_offset.unwrap_or(bytes.len() as u64);
         let header = &bytes[..usize::try_from(data).unwrap_or(bytes.len()).min(bytes.len())];
         let digest = Sha256::digest(header);
@@ -79,7 +83,10 @@ impl Model {
     ///
     /// Outputs: the [`Model`], or an [`Error`] when a file is unreadable or does not
     /// belong.
-    pub fn open(path: &Path) -> Result<Model, Error> {
+    pub fn open(
+        path: &Path,
+    ) -> Result<Model, Error>
+    {
         let first = read_head(path).map_err(|detail| preflight::Error::Unreadable { path: path.display().to_string(), detail })?;
         let preflight = Preflight::evaluate(&first)?;
         let paths = match preflight.split {
@@ -95,7 +102,10 @@ impl Model {
     /// - `paths`: every part file, first part first.
     ///
     /// Outputs: the [`Model`], or an [`Error`].
-    pub fn from_parts(paths: &[PathBuf]) -> Result<Model, Error> {
+    pub fn from_parts(
+        paths: &[PathBuf],
+    ) -> Result<Model, Error>
+    {
         let path = paths.first().ok_or(Error::NoParts)?;
         let first = read_head(path).map_err(|detail| preflight::Error::Unreadable { path: path.display().to_string(), detail })?;
         let preflight = Preflight::evaluate(&first)?;
@@ -111,7 +121,12 @@ impl Model {
     /// - `paths`: every part's path, first part first.
     ///
     /// Outputs: the [`Model`], or an [`Error`].
-    fn read_rest(preflight: Preflight, first: &[u8], paths: Vec<PathBuf>) -> Result<Model, Error> {
+    fn read_rest(
+        preflight: Preflight,
+        first: &[u8],
+        paths: Vec<PathBuf>,
+    ) -> Result<Model, Error>
+    {
         let mut identity = vec![PartIdentity::of(first, &preflight.gguf)];
         let mut rest = Vec::new();
         for p in &paths[1..] {
@@ -130,7 +145,10 @@ impl Model {
     /// - `parts`: each part's path and header bytes, first part first.
     ///
     /// Outputs: the [`Model`], or an [`Error`].
-    pub fn from_headers(parts: &[(PathBuf, Vec<u8>)]) -> Result<Model, Error> {
+    pub fn from_headers(
+        parts: &[(PathBuf, Vec<u8>)],
+    ) -> Result<Model, Error>
+    {
         let (first_path, first) = parts.first().ok_or(Error::NoParts)?;
         let preflight = Preflight::evaluate(first)?;
         let mut identity = vec![PartIdentity::of(first, &preflight.gguf)];
@@ -155,7 +173,13 @@ impl Model {
     /// - `identity`: every part's identity.
     ///
     /// Outputs: the [`Model`], or an [`Error`] naming the first failed check.
-    fn assemble(preflight: Preflight, paths: Vec<PathBuf>, rest: Vec<Gguf>, identity: Vec<PartIdentity>) -> Result<Model, Error> {
+    fn assemble(
+        preflight: Preflight,
+        paths: Vec<PathBuf>,
+        rest: Vec<Gguf>,
+        identity: Vec<PartIdentity>,
+    ) -> Result<Model, Error>
+    {
         let expected = preflight.split.map_or(1, |s| usize::from(s.count));
         if paths.len() != expected {
             return Err(Error::PartCount { expected, found: paths.len() });
@@ -194,7 +218,8 @@ impl Model {
     /// Inputs: none.
     ///
     /// Outputs: the `general.architecture` string.
-    pub fn architecture(&self) -> &str {
+    pub fn architecture(&self) -> &str
+    {
         &self.preflight.architecture
     }
 
@@ -204,7 +229,8 @@ impl Model {
     /// Inputs: none.
     ///
     /// Outputs: the header.
-    pub fn meta(&self) -> &Gguf {
+    pub fn meta(&self) -> &Gguf
+    {
         &self.preflight.gguf
     }
 
@@ -213,7 +239,8 @@ impl Model {
     /// Inputs: none.
     ///
     /// Outputs: the part count.
-    pub fn part_count(&self) -> usize {
+    pub fn part_count(&self) -> usize
+    {
         1 + self.rest.len()
     }
 
@@ -223,7 +250,11 @@ impl Model {
     /// - `i`: the part's index, from 0.
     ///
     /// Outputs: the header; panics when `i` is not below [`Model::part_count`].
-    pub fn part(&self, i: usize) -> &Gguf {
+    pub fn part(
+        &self,
+        i: usize,
+    ) -> &Gguf
+    {
         if i == 0 { &self.preflight.gguf } else { &self.rest[i - 1] }
     }
 
@@ -232,7 +263,8 @@ impl Model {
     /// Inputs: none.
     ///
     /// Outputs: each tensor with its part and file offset.
-    pub fn tensors(&self) -> impl Iterator<Item = TensorRef<'_>> {
+    pub fn tensors(&self) -> impl Iterator<Item = TensorRef<'_>>
+    {
         (0..self.part_count()).flat_map(move |i| {
             let g = self.part(i);
             // A complete header always has a data offset; preflight and `assemble` both
@@ -252,7 +284,11 @@ impl Model {
     /// - `name`: the tensor's name.
     ///
     /// Outputs: the tensor, or `None`.
-    pub fn tensor(&self, name: &str) -> Option<TensorRef<'_>> {
+    pub fn tensor(
+        &self,
+        name: &str,
+    ) -> Option<TensorRef<'_>>
+    {
         self.tensors().find(|t| t.info.name == name)
     }
 
@@ -261,7 +297,8 @@ impl Model {
     /// Inputs: none.
     ///
     /// Outputs: one [`PartIdentity`] per part, first part first.
-    pub fn identity(&self) -> &[PartIdentity] {
+    pub fn identity(&self) -> &[PartIdentity]
+    {
         &self.identity
     }
 }
@@ -273,7 +310,10 @@ impl Model {
 /// - `path`: the file.
 ///
 /// Outputs: the bytes, or the I/O error's text.
-fn read_head(path: &Path) -> Result<Vec<u8>, String> {
+fn read_head(
+    path: &Path,
+) -> Result<Vec<u8>, String>
+{
     use std::io::Read;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
@@ -289,7 +329,11 @@ fn read_head(path: &Path) -> Result<Vec<u8>, String> {
 /// - `count`: how many parts the model has.
 ///
 /// Outputs: every part's path, or `None` when the name does not follow the rule.
-pub fn split_paths(path: &Path, count: u16) -> Option<Vec<PathBuf>> {
+pub fn split_paths(
+    path: &Path,
+    count: u16,
+) -> Option<Vec<PathBuf>>
+{
     let name = path.file_name()?.to_str()?;
     let stem = name.strip_suffix(".gguf")?;
     // "-00001-of-00003" is 15 bytes.
@@ -336,7 +380,10 @@ impl From<preflight::Error> for Error {
     /// - `e`: the preflight error.
     ///
     /// Outputs: an [`Error::Preflight`].
-    fn from(e: preflight::Error) -> Self {
+    fn from(
+        e: preflight::Error,
+    ) -> Self
+    {
         Error::Preflight(e)
     }
 }
@@ -348,7 +395,11 @@ impl fmt::Display for Error {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             Error::Preflight(e) => write!(f, "{e}"),
             Error::NoParts => write!(f, "no model files were given"),
@@ -383,7 +434,11 @@ mod tests {
     /// - `tensors`: each tensor as `(name, shape, ggml_type, offset)`.
     ///
     /// Outputs: the header with its tensor index.
-    fn with_tensors(mut b: Vec<u8>, tensors: &[(&str, &[u64], u32, u64)]) -> Vec<u8> {
+    fn with_tensors(
+        mut b: Vec<u8>,
+        tensors: &[(&str, &[u64], u32, u64)],
+    ) -> Vec<u8>
+    {
         b[8..16].copy_from_slice(&(tensors.len() as u64).to_le_bytes());
         for (name, dims, kind, offset) in tensors {
             b.extend_from_slice(&(name.len() as u64).to_le_bytes());
@@ -406,7 +461,12 @@ mod tests {
     /// - `total`: the tensor count across all parts.
     ///
     /// Outputs: the entries, as `(key, type tag, encoded value)`.
-    fn split_kv(no: u16, count: u16, total: i32) -> Vec<(&'static str, u32, Vec<u8>)> {
+    fn split_kv(
+        no: u16,
+        count: u16,
+        total: i32,
+    ) -> Vec<(&'static str, u32, Vec<u8>)>
+    {
         vec![
             ("split.no", 2, no.to_le_bytes().to_vec()),
             ("split.count", 2, count.to_le_bytes().to_vec()),
@@ -424,7 +484,13 @@ mod tests {
     /// - `tensors`: this part's tensors as `(name, shape, ggml_type, offset)`.
     ///
     /// Outputs: the header bytes.
-    fn later_part(no: u16, count: u16, total: i32, tensors: &[(&str, &[u64], u32, u64)]) -> Vec<u8> {
+    fn later_part(
+        no: u16,
+        count: u16,
+        total: i32,
+        tensors: &[(&str, &[u64], u32, u64)],
+    ) -> Vec<u8>
+    {
         let kvs = split_kv(no, count, total);
         let mut b = b"GGUF".to_vec();
         b.extend_from_slice(&3u32.to_le_bytes());
@@ -440,7 +506,8 @@ mod tests {
     }
 
     #[test]
-    fn a_one_file_model_has_one_part() {
+    fn a_one_file_model_has_one_part()
+    {
         let b = with_tensors(header_with("llama", None, &[]), &[("token_embd.weight", &[64, 8], 0, 0)]);
         let m = Model::from_headers(&[("m.gguf".into(), b)]).unwrap();
         assert_eq!(m.part_count(), 1);
@@ -450,7 +517,8 @@ mod tests {
     }
 
     #[test]
-    fn split_parts_are_one_model_with_per_part_offsets() {
+    fn split_parts_are_one_model_with_per_part_offsets()
+    {
         let p0 = with_tensors(header_with("llama", None, &split_kv(0, 2, 3)), &[("a", &[32], 0, 0), ("b", &[32], 0, 128)]);
         let p1 = later_part(1, 2, 3, &[("c", &[32], 0, 0)]);
         let m = Model::from_headers(&[("m-00001-of-00002.gguf".into(), p0), ("m-00002-of-00002.gguf".into(), p1)]).unwrap();
@@ -462,14 +530,16 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_part_is_refused() {
+    fn a_missing_part_is_refused()
+    {
         let p0 = with_tensors(header_with("llama", None, &split_kv(0, 2, 2)), &[("a", &[32], 0, 0)]);
         let err = Model::from_headers(&[("m-00001-of-00002.gguf".into(), p0)]).unwrap_err();
         assert_eq!(err, Error::PartCount { expected: 2, found: 1 });
     }
 
     #[test]
-    fn parts_in_the_wrong_order_are_refused() {
+    fn parts_in_the_wrong_order_are_refused()
+    {
         let p0 = with_tensors(header_with("llama", None, &split_kv(0, 3, 3)), &[("a", &[32], 0, 0)]);
         let p2 = later_part(2, 3, 3, &[("c", &[32], 0, 0)]);
         let p1 = later_part(1, 3, 3, &[("b", &[32], 0, 0)]);
@@ -478,7 +548,8 @@ mod tests {
     }
 
     #[test]
-    fn tensor_counts_must_add_up() {
+    fn tensor_counts_must_add_up()
+    {
         let p0 = with_tensors(header_with("llama", None, &split_kv(0, 2, 5)), &[("a", &[32], 0, 0)]);
         let p1 = later_part(1, 2, 5, &[("b", &[32], 0, 0)]);
         let err = Model::from_headers(&[("0".into(), p0), ("1".into(), p1)]).unwrap_err();
@@ -486,7 +557,8 @@ mod tests {
     }
 
     #[test]
-    fn a_tensor_in_two_parts_is_refused() {
+    fn a_tensor_in_two_parts_is_refused()
+    {
         let p0 = with_tensors(header_with("llama", None, &split_kv(0, 2, 2)), &[("a", &[32], 0, 0)]);
         let p1 = later_part(1, 2, 2, &[("a", &[32], 0, 0)]);
         let err = Model::from_headers(&[("0".into(), p0), ("1".into(), p1)]).unwrap_err();
@@ -494,7 +566,8 @@ mod tests {
     }
 
     #[test]
-    fn identity_changes_with_the_header_and_predicts_the_file_size() {
+    fn identity_changes_with_the_header_and_predicts_the_file_size()
+    {
         let a = with_tensors(header_with("llama", None, &[]), &[("t", &[64], 0, 0)]);
         let b = with_tensors(header_with("llama", None, &[]), &[("t", &[64], 1, 0)]);
         let ma = Model::from_headers(&[("a".into(), a)]).unwrap();
@@ -506,7 +579,8 @@ mod tests {
     }
 
     #[test]
-    fn split_paths_follow_llama_cpps_rule() {
+    fn split_paths_follow_llama_cpps_rule()
+    {
         let got = split_paths(Path::new("/m/Qwen3-235B-BF16-00002-of-00003.gguf"), 3).unwrap();
         assert_eq!(
             got,
@@ -526,7 +600,8 @@ mod tests {
     /// tensor's size, padded to the file's alignment, must end exactly where the next
     /// tensor's data starts, which the index alone records.
     #[test]
-    fn a_real_headers_tensors_sit_end_to_end() {
+    fn a_real_headers_tensors_sit_end_to_end()
+    {
         let Ok(path) = std::env::var("DOVATA_TEST_HEADER") else {
             eprintln!("skipped: set DOVATA_TEST_HEADER to a GGUF header to check type sizes on a real model");
             return;

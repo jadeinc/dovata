@@ -34,7 +34,10 @@ impl KvType {
     /// - `s`: the name, such as `q4_0`.
     ///
     /// Outputs: the type, or `None` for an unknown name.
-    pub fn parse(s: &str) -> Option<Self> {
+    pub fn parse(
+        s: &str,
+    ) -> Option<Self>
+    {
         Self::ALL.into_iter().find(|k| k.name().eq_ignore_ascii_case(s))
     }
 
@@ -43,7 +46,8 @@ impl KvType {
     /// Inputs: none.
     ///
     /// Outputs: a name such as `q8_0`.
-    pub fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str
+    {
         match self {
             KvType::F32 => "f32",
             KvType::F16 => "f16",
@@ -61,7 +65,8 @@ impl KvType {
     /// Inputs: none.
     ///
     /// Outputs: the `ggml_type` number, such as 8 for `Q8_0`.
-    pub fn ggml_type(self) -> u32 {
+    pub fn ggml_type(self) -> u32
+    {
         match self {
             KvType::F32 => 0,
             KvType::F16 => 1,
@@ -79,7 +84,8 @@ impl KvType {
     /// Inputs: none.
     ///
     /// Outputs: `false` for F32, F16 and BF16, and `true` for the rest.
-    pub fn is_quantized(self) -> bool {
+    pub fn is_quantized(self) -> bool
+    {
         !matches!(self, KvType::F16 | KvType::BF16 | KvType::F32)
     }
 }
@@ -93,7 +99,10 @@ impl ModelDims {
     ///
     /// Outputs: the [`ModelDims`], or `None` when a required key is missing.
     #[must_use]
-    pub fn from_gguf(model: &crate::gguf::Gguf) -> Option<Self> {
+    pub fn from_gguf(
+        model: &crate::gguf::Gguf,
+    ) -> Option<Self>
+    {
         let arch = model.architecture()?;
         let u32_key = |suffix: &str| -> Option<u32> {
             model.u64(&format!("{arch}.{suffix}")).and_then(|v| u32::try_from(v).ok())
@@ -117,7 +126,10 @@ impl ModelDims {
 ///
 /// Outputs: the bytes per 32 elements, such as 18 for `Q4_0`.
 #[must_use]
-pub fn kv_elem_bytes_x32(kv: KvType) -> u64 {
+pub fn kv_elem_bytes_x32(
+    kv: KvType,
+) -> u64
+{
     match kv {
         KvType::F32 => 4 * 32,
         KvType::F16 | KvType::BF16 => 2 * 32,
@@ -166,7 +178,8 @@ impl ModelDims {
     ///
     /// Outputs: the estimated width, or 0 when there are no heads.
     #[must_use]
-    pub fn derived_head_dim(&self) -> u32 {
+    pub fn derived_head_dim(&self) -> u32
+    {
         if self.heads == 0 {
             return 0;
         }
@@ -179,7 +192,8 @@ impl ModelDims {
     ///
     /// Outputs: the width the header states, or the estimate when it states none.
     #[must_use]
-    pub fn key_dim(&self) -> u32 {
+    pub fn key_dim(&self) -> u32
+    {
         self.key_length.unwrap_or_else(|| self.derived_head_dim())
     }
 
@@ -189,7 +203,8 @@ impl ModelDims {
     ///
     /// Outputs: the width the header states, or the estimate when it states none.
     #[must_use]
-    pub fn value_dim(&self) -> u32 {
+    pub fn value_dim(&self) -> u32
+    {
         self.value_length.unwrap_or_else(|| self.derived_head_dim())
     }
 
@@ -202,7 +217,12 @@ impl ModelDims {
     ///
     /// Outputs: the bytes per token.
     #[must_use]
-    pub fn kv_bytes_per_token(&self, kv_k: KvType, kv_v: KvType) -> u64 {
+    pub fn kv_bytes_per_token(
+        &self,
+        kv_k: KvType,
+        kv_v: KvType,
+    ) -> u64
+    {
         let heads = u64::from(self.layers) * u64::from(self.kv_heads);
         // x32 numerator and denominator cancel; integer arithmetic throughout.
         let k = heads * u64::from(self.key_dim()) * kv_elem_bytes_x32(kv_k);
@@ -221,7 +241,8 @@ mod tests {
     /// Inputs: none.
     ///
     /// Outputs: the [`ModelDims`].
-    fn qwen() -> ModelDims {
+    fn qwen() -> ModelDims
+    {
         ModelDims {
             layers: 48,
             heads: 32,
@@ -233,13 +254,15 @@ mod tests {
     }
 
     #[test]
-    fn head_width_is_read_not_derived() {
+    fn head_width_is_read_not_derived()
+    {
         assert_eq!(qwen().key_dim(), 128);
         assert_eq!(qwen().derived_head_dim(), 64);
     }
 
     #[test]
-    fn grouped_query_attention_is_not_ignored() {
+    fn grouped_query_attention_is_not_ignored()
+    {
         // Using query heads in place of KV heads would overstate the per-token cost
         // 8x for this model, and the planner would reserve 8x the KV memory.
         let gqa = qwen();
@@ -251,7 +274,8 @@ mod tests {
     }
 
     #[test]
-    fn kv_bytes_per_token_is_the_documented_formula() {
+    fn kv_bytes_per_token_is_the_documented_formula()
+    {
         // 2 caches * 48 layers * 4 kv heads * 128 head_dim = 49152 elements, f16 = 2 bytes.
         assert_eq!(qwen().kv_bytes_per_token(KvType::F16, KvType::F16), 49_152 * 2);
         // q4_0 is 18 bytes per 32 elements.
@@ -259,7 +283,8 @@ mod tests {
     }
 
     #[test]
-    fn dims_come_out_of_a_real_gguf_header() {
+    fn dims_come_out_of_a_real_gguf_header()
+    {
         // Built the way preflight's own fixtures build one, so the key names here are
         // the key names a real file carries.
         let bytes = crate::load::preflight::tests::header("qwen3moe", Some("Qwen3-Coder-30B"));
@@ -287,7 +312,8 @@ mod tests {
     /// model declares 128. Being off by a clean factor of two is what made it
     /// findable; a subtler error would have looked plausible.
     #[test]
-    fn the_per_token_cost_matches_llama_cpps_own_kv_buffer() {
+    fn the_per_token_cost_matches_llama_cpps_own_kv_buffer()
+    {
         const OBSERVED_KV_BYTES: u64 = 864 * 1024 * 1024;
         const OBSERVED_CTX: u64 = 32768;
         assert_eq!(
@@ -297,7 +323,8 @@ mod tests {
     }
 
     #[test]
-    fn keys_and_values_are_costed_separately() {
+    fn keys_and_values_are_costed_separately()
+    {
         // K and V are typed independently, and a common deployment quantizes the
         // values harder than the keys. Doubling one type would misprice that case in
         // both directions.
@@ -311,14 +338,16 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_header_does_not_divide_by_zero() {
+    fn a_malformed_header_does_not_divide_by_zero()
+    {
         let dims = ModelDims { layers: 0, heads: 0, kv_heads: 0, embedding_length: 0, key_length: None, value_length: None };
         assert_eq!(dims.key_dim(), 0);
         assert_eq!(dims.kv_bytes_per_token(KvType::F16, KvType::F16), 0);
     }
 
     #[test]
-    fn kv_types_parse_by_name_and_refuse_typos() {
+    fn kv_types_parse_by_name_and_refuse_typos()
+    {
         assert_eq!(KvType::parse("Q4_0"), Some(KvType::Q4_0));
         assert_eq!(KvType::parse("bf16"), Some(KvType::BF16));
         assert_eq!(KvType::parse("q4_O"), None, "a typo must not fall back silently");
@@ -328,7 +357,8 @@ mod tests {
     }
 
     #[test]
-    fn kv_element_cost_matches_the_gguf_type_table() {
+    fn kv_element_cost_matches_the_gguf_type_table()
+    {
         // Two tables describe the same block formats; they must agree.
         for k in KvType::ALL {
             let (elems, bytes) = crate::gguf::ggml_type_layout(k.ggml_type()).unwrap();

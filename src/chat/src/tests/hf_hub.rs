@@ -1,23 +1,25 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/tests/hub.rs
+//! File: src/chat/src/tests/hf_hub.rs
 //! Description: Tests how `from_hub` picks its files, plus two network tests that are
 //! off by default.
 
 use serde_json::json;
 
 use super::fixture::Header;
-use crate::hub::{base_repo, pick_gguf, RepoInfo};
+use crate::hf_hub::{base_repo, pick_gguf, RepoInfo};
 use crate::{Chat, Message};
 
 #[test]
-fn picks_a_cached_gguf_first_then_the_first_by_name() {
+fn picks_a_cached_gguf_first_then_the_first_by_name()
+{
     let files = ["README.md", "Model-Q8_0.gguf", "Model-BF16.gguf", "Model-Q4_K_M.gguf"];
     assert_eq!(pick_gguf(&files, |_| false), Some("Model-BF16.gguf"));
     assert_eq!(pick_gguf(&files, |f| f == "Model-Q4_K_M.gguf"), Some("Model-Q4_K_M.gguf"));
 }
 
 #[test]
-fn skips_projectors_imatrix_and_later_split_parts() {
+fn skips_projectors_imatrix_and_later_split_parts()
+{
     let files = [
         "mmproj-Model-F16.gguf",
         "Model.imatrix.gguf",
@@ -30,7 +32,8 @@ fn skips_projectors_imatrix_and_later_split_parts() {
 }
 
 #[test]
-fn base_repo_comes_from_the_header_url() {
+fn base_repo_comes_from_the_header_url()
+{
     let with_url = |url: &str| Header::chatml().str("general.base_model.0.repo_url", url).parse();
     assert_eq!(
         base_repo(&with_url("https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct")).as_deref(),
@@ -44,7 +47,8 @@ fn base_repo_comes_from_the_header_url() {
 }
 
 #[test]
-fn base_model_comes_from_the_model_card_otherwise() {
+fn base_model_comes_from_the_model_card_otherwise()
+{
     let card = |base: serde_json::Value| -> Option<String> {
         let info: RepoInfo =
             serde_json::from_value(json!({ "siblings": [], "cardData": { "base_model": base } })).unwrap();
@@ -65,7 +69,8 @@ fn base_model_comes_from_the_model_card_otherwise() {
 /// `base_model`, `Qwen/Qwen3-0.6B`. Downloads 8 MB of header and 11 MB of tokenizer.
 #[test]
 #[ignore = "network: fetches from huggingface.co"]
-fn from_hub_small_repo() {
+fn from_hub_small_repo()
+{
     let chat = Chat::from_hub("Qwen/Qwen3-0.6B-GGUF", None).unwrap();
     assert_eq!(chat.eos(), Some("<|im_end|>"));
     let prompt = chat.render(&[Message::user("Hi")], true).unwrap();
@@ -79,7 +84,8 @@ fn from_hub_small_repo() {
 /// `general.base_model.0.repo_url`. Also a repo with many quants and a subfolder.
 #[test]
 #[ignore = "network: fetches from huggingface.co"]
-fn from_hub_reads_base_model_from_the_header() {
+fn from_hub_reads_base_model_from_the_header()
+{
     let chat = Chat::from_hub("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF", None).unwrap();
     assert!(chat.template().contains("Unsloth Chat template fixes"));
     let prompt = chat.render(&[Message::user("Hi")], true).unwrap();

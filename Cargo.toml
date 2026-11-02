@@ -37,7 +37,7 @@ doc = false
 # Every capability is on by default, so a plain `cargo build` is the whole library.
 # The features exist to make each capability's boundary explicit and checkable: if a
 # capability can't be switched off, its edges aren't real.
-default = ["moe", "quantize", "hub", "machine"]
+default = ["moe", "quantize", "hf-hub", "machine"]
 
 # MoE expert ranking: the `expert_order` loader that says which experts are hot. The
 # planner will use it to decide which experts stay resident in VRAM.
@@ -50,7 +50,7 @@ quantize = []
 
 # Fetching a GGUF from the Hugging Face Hub into the shared hf-hub cache. Off, a Hub
 # source is refused with an error naming this feature; local paths still work.
-hub = ["dep:hf-hub"]
+hf-hub = ["dep:hf-hub"]
 
 # Reading the current machine's memory and GPUs, for the `dovata machine` commands. It
 # runs the system's own tools, and on macOS reads Metal's limits through objc2-metal.

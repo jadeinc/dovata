@@ -77,7 +77,7 @@ into the program. `Chat::with_time` pins the clock so two builds match.
 ### The four constructors
 
 - `Chat::from_files` is for a GGUF file and a `tokenizer.json` that are both on disk.
-- `Chat::from_hub` fetches both from a Hugging Face repo, and needs the `hub` feature.
+- `Chat::from_hub` fetches both from a Hugging Face repo, and needs the `hf-hub` feature.
 - `Chat::from_gguf` takes a GGUF header that is already parsed, for a program that read
   it with dovata already, such as the Jade compiler after preflight, so the file is not
   read twice.
@@ -191,7 +191,7 @@ and need no GGUF at all. It was rejected because the GGUF is what the program ru
 GGUF publishers do fix templates: the Unsloth Qwen3-Coder GGUF carries a corrected one,
 so the base repo's would be the older template.
 
-The repo's file list and model card come from one request that `src/hub.rs` makes itself,
+The repo's file list and model card come from one request that `src/hf_hub.rs` makes itself,
 because hf-hub's own repo info keeps only the file list and the commit. The header is
 fetched with HTTP range requests through `ureq`, the client hf-hub is built on, because
 hf-hub has no range API of its own. The token goes along on redirects within the Hub and
@@ -298,9 +298,9 @@ out in `src/template/README.md`.
 
 ## Features
 
-- `hub`, on by default: `Chat::from_hub`. It uses hf-hub 0.4.3 over `ureq`, the same pin
+- `hf-hub`, on by default: `Chat::from_hub`. It uses hf-hub 0.4.3 over `ureq`, the same pin
   dovata uses. Its TLS stack, `ring`, compiles C and assembly; `tokenizers` compiles none.
-  Built without `hub`, this package compiles no C at all.
+  Built without `hf-hub`, this package compiles no C at all.
 - `preserve_order`, off by default: keep the key order of a `serde_json::Value`, as
   described above.
 
@@ -314,12 +314,12 @@ out in `src/template/README.md`.
 - `src/vocab.rs`: the check that a `tokenizer.json` and a GGUF agree.
 - `src/template/`: the minijinja environment, set up like `transformers`, with `tojson`
   as Python's `json.dumps` and `strftime_now` in UTC. Its own README describes each file.
-- `src/hub.rs`: `from_hub`, behind the `hub` feature.
+- `src/hf_hub.rs`: `from_hub`, behind the `hf-hub` feature.
 - `src/error.rs`: `ChatError`.
 - `src/tests/`: the tests. They build a tiny GGUF header and a WordLevel
   `tokenizer.json` in the test. `real.rs` runs against real model files when
   `DOVATA_TEST_HEADER`, `DOVATA_TEST_TOKENIZER` or `DOVATA_CHAT_CASES` is set, and
-  `hub.rs` has two `#[ignore]` tests that use the network. Its own README describes each
+  `hf_hub.rs` has two `#[ignore]` tests that use the network. Its own README describes each
   file.
 - `jinja2_cases.py`: writes the cases for the jinja2 comparison.
 

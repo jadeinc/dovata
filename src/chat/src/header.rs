@@ -27,7 +27,10 @@ const KEY_EOS: &str = "tokenizer.ggml.eos_token_id";
 /// - `path`: the GGUF file, whole or just its first megabytes.
 ///
 /// Outputs: the parsed header, or an error if the file cannot be read or parsed.
-pub(crate) fn read(path: &Path) -> Result<Gguf, ChatError> {
+pub(crate) fn read(
+    path: &Path,
+) -> Result<Gguf, ChatError>
+{
     let io = |source| ChatError::Io { path: path.to_owned(), source };
     let mut file = File::open(path).map_err(io)?;
     grow(|buf, want| {
@@ -46,7 +49,10 @@ pub(crate) fn read(path: &Path) -> Result<Gguf, ChatError> {
 ///
 /// Outputs: the parsed header, or an error if it does not parse within dovata's
 /// `HEADER_BUDGET`.
-pub(crate) fn grow(mut more: impl FnMut(&mut Vec<u8>, u64) -> Result<bool, ChatError>) -> Result<Gguf, ChatError> {
+pub(crate) fn grow(
+    mut more: impl FnMut(&mut Vec<u8>, u64) -> Result<bool, ChatError>,
+) -> Result<Gguf, ChatError>
+{
     let mut buf = Vec::new();
     let mut want = FIRST_READ.min(HEADER_BUDGET);
     loop {
@@ -82,7 +88,10 @@ impl<'a> Pieces<'a> {
     ///
     /// Outputs: those pieces, or an error if the template or the token list is missing
     /// or a token id is out of range.
-    pub(crate) fn of(gguf: &'a Gguf) -> Result<Pieces<'a>, ChatError> {
+    pub(crate) fn of(
+        gguf: &'a Gguf,
+    ) -> Result<Pieces<'a>, ChatError>
+    {
         let template = match gguf.string(KEY_TEMPLATE) {
             Some(t) => t.to_owned(),
             None => {
@@ -132,7 +141,12 @@ impl<'a> Pieces<'a> {
 ///
 /// Outputs: the token's text, `None` if the key is absent, or an error if the id is out
 /// of range.
-fn special(gguf: &Gguf, key: &'static str, tokens: &[&str]) -> Result<Option<String>, ChatError> {
+fn special(
+    gguf: &Gguf,
+    key: &'static str,
+    tokens: &[&str],
+) -> Result<Option<String>, ChatError>
+{
     let Some(id) = gguf.u64(key) else {
         return Ok(None);
     };

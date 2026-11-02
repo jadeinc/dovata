@@ -28,7 +28,7 @@ The runtime has been removed. dovata now has these parts:
 | [`src/gguf/`](src/gguf/README.md) | GGUF header reader and the `gguf-inspect` CLI: metadata, the tensor index, each tensor's size and file offset, split parts. No llama.cpp. |
 | [`src/load/`](src/load/README.md) | preflight, which refuses a file that cannot be planned; `Model`, which treats a split GGUF as one model; the model's shape and KV cost |
 | [`src/layout/`](src/layout/README.md) | layouts: each architecture's compute graph as data in ggml's op names, and the binder that resolves one against a model. A built-in layout is one supported architecture. |
-| [`src/hub/`](src/hub/README.md) | getting a model: a local path, or one GGUF from the Hugging Face Hub, all parts of a split one. Never quantizes; the code default is the unquantized file. |
+| [`src/hf_hub/`](src/hf_hub/README.md) | getting a model: a local path, or one GGUF from the Hugging Face Hub, all parts of a split one. Never quantizes; the code default is the unquantized file. |
 | [`src/quantize/`](src/quantize/README.md) | quantizing by running llama.cpp's `llama-quantize` program, only when a program such as the Jade compiler asks |
 | [`src/plan/`](src/plan/README.md) | the planner: binds a layout, gives every tensor a region and offset on one target, checked and hashed, and carries the step's ops for the compiler |
 | [`src/moe/`](src/moe/README.md) | MoE expert ranking: which experts each layer uses most |
@@ -54,9 +54,9 @@ invites one question about each directory: why is it here, and not inside a neig
 - `gguf/` has no dependencies, because it has to run on a laptop against a model no GPU
   has touched. `load::preflight` reads every model through it, and `gguf-inspect`, a
   binary of this package, is its command-line tool.
-- `hub/` is a peer of `load/`, not part of it, because it is the one capability that
+- `hf_hub/` is a peer of `load/`, not part of it, because it is the one capability that
   talks to the network. Its pure half, which picks the file to download, always builds;
-  the download itself is behind the `hub` feature.
+  the download itself is behind the `hf-hub` feature.
 - `quantize/` is never called implicitly. Fetching and planning never quantize, so a
   program that wants a smaller model, such as the Jade compiler, calls it directly. The
   quant-type table always builds; running `llama-quantize` is behind the `quantize`

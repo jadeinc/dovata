@@ -87,7 +87,10 @@ pub const SYMBOLS: &[(&str, &str)] = &[
 /// - `name`: the name.
 ///
 /// Outputs: `true` when it is.
-pub(crate) fn is_symbol(name: &str) -> bool {
+pub(crate) fn is_symbol(
+    name: &str,
+) -> bool
+{
     SYMBOLS.iter().any(|(n, _)| *n == name)
 }
 
@@ -108,7 +111,11 @@ impl<'m> Hparams<'m> {
     /// - `opts`: the bind options.
     ///
     /// Outputs: the reader, or an error when the model has no block count.
-    pub(crate) fn new(model: &'m Model, opts: &BindOptions) -> Result<Self, String> {
+    pub(crate) fn new(
+        model: &'m Model,
+        opts: &BindOptions,
+    ) -> Result<Self, String>
+    {
         let meta = model.meta();
         let arch = model.architecture();
         let n_layer = meta
@@ -123,7 +130,8 @@ impl<'m> Hparams<'m> {
     /// Inputs: none.
     ///
     /// Outputs: the layer count.
-    pub(crate) fn n_layer(&self) -> u32 {
+    pub(crate) fn n_layer(&self) -> u32
+    {
         self.n_layer
     }
 
@@ -133,7 +141,11 @@ impl<'m> Hparams<'m> {
     /// - `suffix`: the key after the architecture name, such as `block_count`.
     ///
     /// Outputs: the full key, such as `qwen3.block_count`.
-    fn key(&self, suffix: &str) -> String {
+    fn key(
+        &self,
+        suffix: &str,
+    ) -> String
+    {
         format!("{}.{suffix}", self.arch)
     }
 
@@ -145,7 +157,12 @@ impl<'m> Hparams<'m> {
     /// - `layer`: the layer index, or `None` for layer 0.
     ///
     /// Outputs: the value, or `None` when the key is missing.
-    fn int_key(&self, suffix: &str, layer: Option<u32>) -> Option<i64> {
+    fn int_key(
+        &self,
+        suffix: &str,
+        layer: Option<u32>,
+    ) -> Option<i64>
+    {
         let v = match self.meta.get(&self.key(suffix))? {
             GValue::Array(items) => items.get(layer.unwrap_or(0) as usize)?.as_u64()?,
             other => other.as_u64()?,
@@ -160,7 +177,12 @@ impl<'m> Hparams<'m> {
     /// - `layer`: the layer index, or `None` for layer 0.
     ///
     /// Outputs: the value, or an error naming the missing key.
-    fn required_int(&self, suffix: &str, layer: Option<u32>) -> Result<i64, String> {
+    fn required_int(
+        &self,
+        suffix: &str,
+        layer: Option<u32>,
+    ) -> Result<i64, String>
+    {
         self.int_key(suffix, layer).ok_or_else(|| format!("the model has no `{}`", self.key(suffix)))
     }
 
@@ -170,7 +192,11 @@ impl<'m> Hparams<'m> {
     /// - `suffix`: the key after the architecture name, such as `block_count`.
     ///
     /// Outputs: the value, or `None` when the key is missing.
-    fn float_key(&self, suffix: &str) -> Option<f64> {
+    fn float_key(
+        &self,
+        suffix: &str,
+    ) -> Option<f64>
+    {
         match self.meta.get(&self.key(suffix))? {
             GValue::F32(v) => Some(f64::from(*v)),
             GValue::F64(v) => Some(*v),
@@ -185,7 +211,11 @@ impl<'m> Hparams<'m> {
     /// - `layer`: the layer index, or `None` for layer 0.
     ///
     /// Outputs: the head count, or 0 when the key is missing.
-    fn n_head(&self, layer: Option<u32>) -> i64 {
+    fn n_head(
+        &self,
+        layer: Option<u32>,
+    ) -> i64
+    {
         self.int_key("attention.head_count", layer).unwrap_or(0)
     }
 
@@ -195,7 +225,11 @@ impl<'m> Hparams<'m> {
     /// - `suffix`: the head width key to read.
     ///
     /// Outputs: the width, or an error.
-    fn head_dim(&self, suffix: &str) -> Result<i64, String> {
+    fn head_dim(
+        &self,
+        suffix: &str,
+    ) -> Result<i64, String>
+    {
         if let Some(v) = self.int_key(suffix, None) {
             return Ok(v);
         }
@@ -213,7 +247,11 @@ impl<'m> Hparams<'m> {
     /// - `layer`: the layer index, or `None` for layer 0.
     ///
     /// Outputs: the KV head count.
-    fn n_head_kv(&self, layer: Option<u32>) -> i64 {
+    fn n_head_kv(
+        &self,
+        layer: Option<u32>,
+    ) -> i64
+    {
         self.int_key("attention.head_count_kv", layer).unwrap_or_else(|| self.n_head(layer))
     }
 
@@ -222,7 +260,8 @@ impl<'m> Hparams<'m> {
     /// Inputs: none.
     ///
     /// Outputs: the type's name, `linear` when the key is missing.
-    fn rope_scaling(&self) -> &str {
+    fn rope_scaling(&self) -> &str
+    {
         self.meta.string(&self.key("rope.scaling.type")).unwrap_or("linear")
     }
 
@@ -231,7 +270,8 @@ impl<'m> Hparams<'m> {
     /// Inputs: none.
     ///
     /// Outputs: the scale.
-    fn freq_scale(&self) -> f32 {
+    fn freq_scale(&self) -> f32
+    {
         if self.rope_scaling() == "none" {
             return 1.0;
         }
@@ -245,7 +285,8 @@ impl<'m> Hparams<'m> {
     /// Inputs: none.
     ///
     /// Outputs: 1 for YaRN scaling, else 0.
-    fn ext_factor(&self) -> f32 {
+    fn ext_factor(&self) -> f32
+    {
         if self.rope_scaling() == "yarn" { 1.0 } else { 0.0 }
     }
 
@@ -254,7 +295,8 @@ impl<'m> Hparams<'m> {
     /// Inputs: none.
     ///
     /// Outputs: the factor.
-    fn attn_factor(&self) -> f32 {
+    fn attn_factor(&self) -> f32
+    {
         let mut f = 1.0f32;
         if self.ext_factor() != 0.0 {
             let factor = 1.0 / self.freq_scale();
@@ -285,7 +327,12 @@ impl<'m> Hparams<'m> {
     /// - `head`: the head width.
     ///
     /// Outputs: `true` when the rotation applies.
-    fn rot(&self, quantized: bool, head: i64) -> bool {
+    fn rot(
+        &self,
+        quantized: bool,
+        head: i64,
+    ) -> bool
+    {
         quantized && head > 0 && head % 64 == 0
     }
 
@@ -298,7 +345,11 @@ impl<'m> Hparams<'m> {
     /// - `suffix`: the key after the architecture name, such as `attention.sliding_window`.
     ///
     /// Outputs: the value, or `None` when the key is missing or is an array.
-    fn scalar_key(&self, suffix: &str) -> Option<i64> {
+    fn scalar_key(
+        &self,
+        suffix: &str,
+    ) -> Option<i64>
+    {
         match self.meta.get(&self.key(suffix))? {
             GValue::Array(_) => None,
             other => i64::try_from(other.as_u64()?).ok(),
@@ -312,7 +363,11 @@ impl<'m> Hparams<'m> {
     /// - `name`: the symbol.
     ///
     /// Outputs: `Ok(())` for a llama4 model, or an error naming what to port.
-    fn llama4_only(&self, name: &str) -> Result<(), String> {
+    fn llama4_only(
+        &self,
+        name: &str,
+    ) -> Result<(), String>
+    {
         if self.arch == "llama4" {
             return Ok(());
         }
@@ -325,7 +380,8 @@ impl<'m> Hparams<'m> {
     /// Inputs: none.
     ///
     /// Outputs: `true` for chunked attention, LLAMA_SWA_TYPE_CHUNKED in llama.cpp.
-    fn llama4_chunked(&self) -> bool {
+    fn llama4_chunked(&self) -> bool
+    {
         self.scalar_key("attention.sliding_window") != Some(0)
     }
 
@@ -335,7 +391,11 @@ impl<'m> Hparams<'m> {
     /// - `layer`: the layer index, or `None` for layer 0.
     ///
     /// Outputs: `true` for a chunked layer.
-    fn llama4_is_swa(&self, layer: Option<u32>) -> bool {
+    fn llama4_is_swa(
+        &self,
+        layer: Option<u32>,
+    ) -> bool
+    {
         if !self.llama4_chunked() {
             return false;
         }
@@ -352,7 +412,8 @@ impl<'m> Hparams<'m> {
     /// Inputs: none.
     ///
     /// Outputs: the scale.
-    fn rope_freq_scale_train(&self) -> f32 {
+    fn rope_freq_scale_train(&self) -> f32
+    {
         #[allow(clippy::cast_possible_truncation)]
         let factor = self.float_key("rope.scaling.factor").or_else(|| self.float_key("rope.scale_linear")).unwrap_or(0.0) as f32;
         if factor == 0.0 { 1.0 } else { 1.0 / factor }
@@ -365,7 +426,12 @@ impl<'m> Hparams<'m> {
     /// - `layer`: the layer index, or `None` outside the block.
     ///
     /// Outputs: the value, or an error.
-    pub(crate) fn value(&self, name: &str, layer: Option<u32>) -> Result<Value, String> {
+    pub(crate) fn value(
+        &self,
+        name: &str,
+        layer: Option<u32>,
+    ) -> Result<Value, String>
+    {
         let int = |v: i64| Ok(Value::Int(v));
         let float = |v: f64| Ok(Value::Float(v));
         let flag = |v: bool| Ok(Value::Bool(v));
@@ -500,7 +566,11 @@ impl Hparams<'_> {
     /// - `suffix`: the key after the architecture name, such as `expert_weights_norm`.
     ///
     /// Outputs: the value, or `None` when the key is missing or not a bool.
-    fn bool_key(&self, suffix: &str) -> Option<bool> {
+    fn bool_key(
+        &self,
+        suffix: &str,
+    ) -> Option<bool>
+    {
         match self.meta.get(&self.key(suffix))? {
             GValue::Bool(v) => Some(*v),
             _ => None,
@@ -513,7 +583,8 @@ impl Hparams<'_> {
     /// Inputs: none.
     ///
     /// Outputs: the vocabulary size, or 0 when the file states neither.
-    fn deepseek2_n_vocab(&self) -> i64 {
+    fn deepseek2_n_vocab(&self) -> i64
+    {
         self.int_key("vocab_size", None)
             .or_else(|| self.meta.get("tokenizer.ggml.tokens").and_then(GValue::len).and_then(|n| i64::try_from(n).ok()))
             .unwrap_or(0)
@@ -525,7 +596,8 @@ impl Hparams<'_> {
     /// Inputs: none.
     ///
     /// Outputs: `true` for 27 or 26 layers, or 48 layers with a vocabulary of 128256.
-    fn deepseek2_is_lite(&self) -> bool {
+    fn deepseek2_is_lite(&self) -> bool
+    {
         self.n_layer == 27 || self.n_layer == 26 || (self.n_layer == 48 && self.deepseek2_n_vocab() == 128_256)
     }
 
@@ -535,7 +607,8 @@ impl Hparams<'_> {
     ///
     /// Outputs: the rank, 0 for a deepseek2 lite variant, or an error when the key is
     /// missing.
-    fn q_lora_rank(&self) -> Result<i64, String> {
+    fn q_lora_rank(&self) -> Result<i64, String>
+    {
         // load_arch_hparams skips the key for the lite variants, so n_lora_q stays 0
         // even when the file has it.
         if self.arch == "deepseek2" && self.deepseek2_is_lite() {
@@ -550,7 +623,8 @@ impl Hparams<'_> {
     /// Inputs: none.
     ///
     /// Outputs: `true` when both MLA head widths are set and not 0.
-    fn is_mla(&self) -> bool {
+    fn is_mla(&self) -> bool
+    {
         let k = self.int_key("attention.key_length_mla", None).unwrap_or(0);
         let v = self.int_key("attention.value_length_mla", None).unwrap_or(0);
         k != 0 && v != 0
@@ -562,7 +636,8 @@ impl Hparams<'_> {
     /// Inputs: none.
     ///
     /// Outputs: 1 for softmax, 2 for sigmoid, or the file's value.
-    fn expert_gating_func(&self) -> i64 {
+    fn expert_gating_func(&self) -> i64
+    {
         let v = self.int_key("expert_gating_func", None).unwrap_or(0);
         if v != 0 || self.arch != "deepseek2" {
             return v;
@@ -578,7 +653,8 @@ impl Hparams<'_> {
     ///
     /// Outputs: deepseek2's `rope.scaling.yarn_log_multiplier` over 0.1, or 0 when the key
     /// is missing or the architecture is not deepseek2.
-    fn rope_yarn_log_mul(&self) -> f32 {
+    fn rope_yarn_log_mul(&self) -> f32
+    {
         if self.arch != "deepseek2" {
             return 0.0;
         }
@@ -592,7 +668,8 @@ impl Hparams<'_> {
     /// Inputs: none.
     ///
     /// Outputs: deepseek2.cpp's `mscale`, computed in f32 as llama.cpp computes it.
-    fn mscale(&self) -> f32 {
+    fn mscale(&self) -> f32
+    {
         // First undo the YaRN correction llama_context put into attn_factor, then apply
         // the model's own mscale_all_dim.
         let freq_scale = self.freq_scale();

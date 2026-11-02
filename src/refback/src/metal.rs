@@ -52,7 +52,8 @@ pub struct Gpu {
 /// Inputs: none.
 ///
 /// Outputs: the page size in bytes: 16 KiB on Apple silicon.
-pub fn page_bytes() -> usize {
+pub fn page_bytes() -> usize
+{
     NSPageSize()
 }
 
@@ -62,7 +63,10 @@ pub fn page_bytes() -> usize {
 /// - `b`: the buffer.
 ///
 /// Outputs: the address.
-pub fn contents(b: &Buffer) -> NonNull<u8> {
+pub fn contents(
+    b: &Buffer,
+) -> NonNull<u8>
+{
     b.contents().cast()
 }
 
@@ -74,7 +78,8 @@ impl Gpu {
     ///
     /// Outputs: the [`Gpu`], or a message saying what is missing or what failed to
     /// compile.
-    pub fn new() -> Result<Gpu, String> {
+    pub fn new() -> Result<Gpu, String>
+    {
         let device = MTLCreateSystemDefaultDevice().ok_or("this Mac has no Metal GPU")?;
         let queue = device.newCommandQueue().ok_or("Metal gave no command queue")?;
         let library = device
@@ -95,7 +100,11 @@ impl Gpu {
     /// - `len`: its size in bytes, at least 1.
     ///
     /// Outputs: the buffer, or a message when Metal cannot allocate it.
-    pub fn shared(&self, len: usize) -> Result<Buffer, String> {
+    pub fn shared(
+        &self,
+        len: usize,
+    ) -> Result<Buffer, String>
+    {
         self.device
             .newBufferWithLength_options(len, MTLResourceOptions::StorageModeShared)
             .ok_or_else(|| format!("Metal cannot allocate a shared buffer of {len} bytes"))
@@ -114,7 +123,12 @@ impl Gpu {
     ///
     /// `ptr..ptr + len` must be mapped memory that stays mapped, and unchanged, for as
     /// long as the buffer lives.
-    pub unsafe fn no_copy(&self, ptr: NonNull<u8>, len: usize) -> Result<Buffer, String> {
+    pub unsafe fn no_copy(
+        &self,
+        ptr: NonNull<u8>,
+        len: usize,
+    ) -> Result<Buffer, String>
+    {
         // SAFETY: this function's contract keeps the memory mapped while the buffer
         // lives. No deallocator is given, so Metal never frees memory refback owns.
         unsafe {
@@ -146,7 +160,16 @@ impl Gpu {
     /// - `x`: the input vector, `cols` long.
     ///
     /// Outputs: y, or a message when the range is outside the buffer or the GPU fails.
-    pub fn matvec(&self, w: &Buffer, offset: u64, ty: u32, cols: usize, rows: usize, x: &[f32]) -> Result<Vec<f32>, String> {
+    pub fn matvec(
+        &self,
+        w: &Buffer,
+        offset: u64,
+        ty: u32,
+        cols: usize,
+        rows: usize,
+        x: &[f32],
+    ) -> Result<Vec<f32>, String>
+    {
         let kernel = self.kernels.iter().find(|(t, _)| *t == ty).map(|(_, k)| k).ok_or("no Metal kernel for this type")?;
         let row_bytes = quant::row_bytes(ty, cols).ok_or("a row is not whole blocks")?;
         let offset = usize::try_from(offset).map_err(|_| "the offset does not fit in memory")?;

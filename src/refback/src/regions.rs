@@ -44,7 +44,8 @@ impl Drop for Area {
     /// Inputs: none.
     ///
     /// Outputs: none.
-    fn drop(&mut self) {
+    fn drop(&mut self)
+    {
         if let Owner::Host(layout) = self.owner {
             // SAFETY: `base` came from `alloc_zeroed` with exactly this layout, and an
             // area is dropped once, so it is freed once.
@@ -78,7 +79,11 @@ impl Memory {
     /// Outputs: the [`Memory`] and one [`Check::Region`] outcome per region, saying
     /// whether its base meets its alignment; or a [`StartError`] when a file cannot be
     /// mapped or a region cannot be set up as described.
-    pub fn set_up(parts: &[PathBuf], plan: &Plan) -> Result<(Memory, Vec<Outcome>), StartError> {
+    pub fn set_up(
+        parts: &[PathBuf],
+        plan: &Plan,
+    ) -> Result<(Memory, Vec<Outcome>), StartError>
+    {
         let apple = match plan.target {
             Target::Cpu { .. } => false,
             Target::Apple { .. } => true,
@@ -143,7 +148,12 @@ impl Memory {
     /// - `apple`: whether the plan is for Apple's Metal.
     ///
     /// Outputs: the [`Area`], or a [`StartError::Region`] saying why it cannot be set up.
-    fn area(&self, r: &Region, apple: bool) -> Result<Area, StartError> {
+    fn area(
+        &self,
+        r: &Region,
+        apple: bool,
+    ) -> Result<Area, StartError>
+    {
         let bad = |m: String| StartError::Region(format!("region {}: {m}", r.id));
         let len = usize::try_from(r.bytes).map_err(|_| bad(format!("{} bytes do not fit in memory", r.bytes)))?;
         match (r.backing, r.kind) {
@@ -190,7 +200,14 @@ impl Memory {
     ///
     /// Outputs: the [`Area`], whose base is the buffer's contents, or a [`StartError`].
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    fn no_copy(&self, r: &Region, base: NonNull<u8>, len: usize, rest: usize) -> Result<Area, StartError> {
+    fn no_copy(
+        &self,
+        r: &Region,
+        base: NonNull<u8>,
+        len: usize,
+        rest: usize,
+    ) -> Result<Area, StartError>
+    {
         let bad = |m: String| StartError::Region(format!("region {}: {m}", r.id));
         let gpu = self.gpu.as_ref().ok_or_else(|| bad("no GPU was set up".into()))?;
         // ggml_backend_metal_buffer_from_ptr, in ggml-metal-device.m, rounds a no-copy
@@ -223,7 +240,14 @@ impl Memory {
     /// Outputs: always a [`StartError::Unsupported`]; `set_up` refuses an Apple plan
     /// before it gets here.
     #[cfg(not(all(feature = "metal", target_os = "macos")))]
-    fn no_copy(&self, r: &Region, _base: NonNull<u8>, _len: usize, _rest: usize) -> Result<Area, StartError> {
+    fn no_copy(
+        &self,
+        r: &Region,
+        _base: NonNull<u8>,
+        _len: usize,
+        _rest: usize,
+    ) -> Result<Area, StartError>
+    {
         Err(StartError::Unsupported(format!("region {} needs Metal, and refback was built without it", r.id)))
     }
 
@@ -236,7 +260,12 @@ impl Memory {
     ///
     /// Outputs: the [`Area`], whose base is the buffer's contents, or a [`StartError`].
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    fn shared(&self, r: &Region, len: usize) -> Result<Area, StartError> {
+    fn shared(
+        &self,
+        r: &Region,
+        len: usize,
+    ) -> Result<Area, StartError>
+    {
         let bad = |m: String| StartError::Region(format!("region {}: {m}", r.id));
         let gpu = self.gpu.as_ref().ok_or_else(|| bad("no GPU was set up".into()))?;
         let buffer = gpu.shared(len.max(1)).map_err(bad)?;
@@ -251,7 +280,12 @@ impl Memory {
     ///
     /// Outputs: always a [`StartError::Unsupported`].
     #[cfg(not(all(feature = "metal", target_os = "macos")))]
-    fn shared(&self, r: &Region, _len: usize) -> Result<Area, StartError> {
+    fn shared(
+        &self,
+        r: &Region,
+        _len: usize,
+    ) -> Result<Area, StartError>
+    {
         Err(StartError::Unsupported(format!("region {} needs Metal, and refback was built without it", r.id)))
     }
 
@@ -261,7 +295,11 @@ impl Memory {
     /// - `region`: the region's id.
     ///
     /// Outputs: the address, or `None` for a region the plan does not have.
-    pub fn base(&self, region: u16) -> Option<u64> {
+    pub fn base(
+        &self,
+        region: u16,
+    ) -> Option<u64>
+    {
         self.areas.get(usize::from(region)).map(|a| a.base.as_ptr() as usize as u64)
     }
 
@@ -275,7 +313,13 @@ impl Memory {
     ///
     /// Outputs: the area and the range as `usize`, or a message saying why the range is
     /// not inside the region.
-    fn range(&self, region: u16, offset: u64, len: u64) -> Result<(&Area, usize, usize), String> {
+    fn range(
+        &self,
+        region: u16,
+        offset: u64,
+        len: u64,
+    ) -> Result<(&Area, usize, usize), String>
+    {
         let a = self.areas.get(usize::from(region)).ok_or_else(|| format!("region {region} does not exist"))?;
         let end = offset.checked_add(len).ok_or_else(|| format!("{offset} + {len} overflows"))?;
         if end > a.len as u64 {
@@ -293,7 +337,13 @@ impl Memory {
     /// - `len`: the length of the range.
     ///
     /// Outputs: the bytes, or a message saying why the range is not inside the region.
-    pub fn bytes(&self, region: u16, offset: u64, len: u64) -> Result<&[u8], String> {
+    pub fn bytes(
+        &self,
+        region: u16,
+        offset: u64,
+        len: u64,
+    ) -> Result<&[u8], String>
+    {
         let (a, off, len) = self.range(region, offset, len)?;
         // SAFETY: `off + len` is at most the area's length, checked by `range`, and the
         // area is valid memory for its length while `self` lives. Writes go only through
@@ -311,7 +361,13 @@ impl Memory {
     ///
     /// Outputs: the bytes, or a message saying why the range is not inside a writable
     /// region.
-    pub fn bytes_mut(&mut self, region: u16, offset: u64, len: u64) -> Result<&mut [u8], String> {
+    pub fn bytes_mut(
+        &mut self,
+        region: u16,
+        offset: u64,
+        len: u64,
+    ) -> Result<&mut [u8], String>
+    {
         let (a, off, len) = self.range(region, offset, len)?;
         if !a.writable {
             return Err(format!("region {region} is a mapped window of the model file, which nothing may write"));
@@ -328,7 +384,11 @@ impl Memory {
     /// - `part`: the part's index, from 0.
     ///
     /// Outputs: the open file, or `None` for a part the model does not have.
-    pub fn file(&self, part: u16) -> Option<&File> {
+    pub fn file(
+        &self,
+        part: u16,
+    ) -> Option<&File>
+    {
         self.files.get(usize::from(part))
     }
 
@@ -338,7 +398,8 @@ impl Memory {
     ///
     /// Outputs: the GPU, or `None` on a CPU plan.
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    pub fn gpu(&self) -> Option<&crate::metal::Gpu> {
+    pub fn gpu(&self) -> Option<&crate::metal::Gpu>
+    {
         self.gpu.as_ref()
     }
 
@@ -350,7 +411,11 @@ impl Memory {
     /// Outputs: the buffer, or `None` on a CPU plan or for a region the plan does not
     /// have.
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    pub fn buffer(&self, region: u16) -> Option<&crate::metal::Buffer> {
+    pub fn buffer(
+        &self,
+        region: u16,
+    ) -> Option<&crate::metal::Buffer>
+    {
         match &self.areas.get(usize::from(region))?.owner {
             Owner::Buffer(b) => Some(b),
             _ => None,
@@ -364,7 +429,10 @@ impl Memory {
 /// - `r`: the region.
 ///
 /// Outputs: a phrase such as `a window of part 1 from byte 0` or `host memory`.
-fn describe(r: &Region) -> String {
+fn describe(
+    r: &Region,
+) -> String
+{
     match (r.backing, r.kind) {
         (Backing::File { part, file_start }, _) => format!("a window of part {} from byte {file_start}", part + 1),
         (Backing::Alloc, RegionKind::Host) => "host memory".into(),

@@ -89,7 +89,11 @@ impl fmt::Display for Section {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         f.write_str(match self {
             Section::Prologue => "prologue",
             Section::Block => "block",
@@ -145,7 +149,8 @@ impl OpSpec {
     /// Inputs: none.
     ///
     /// Outputs: the section, the op's index in it, and the op's name.
-    pub(crate) fn site(&self) -> String {
+    pub(crate) fn site(&self) -> String
+    {
         format!("{} op {} ({})", self.section, self.index, self.def.name)
     }
 }
@@ -221,7 +226,10 @@ impl Layout {
     ///
     /// Outputs: the checked layout, or an error naming the first mistake and its place in
     /// the file.
-    pub fn from_toml(src: &str) -> Result<Layout, LayoutError> {
+    pub fn from_toml(
+        src: &str,
+    ) -> Result<Layout, LayoutError>
+    {
         let raw: RawLayout = toml::from_str(src).map_err(|e| LayoutError::Toml(e.to_string()))?;
         let bad = |at: &str, detail: String| LayoutError::Invalid { at: at.to_owned(), detail };
 
@@ -392,7 +400,8 @@ impl Layout {
     /// Inputs: none.
     ///
     /// Outputs: the architecture name, such as `qwen3moe`.
-    pub fn arch(&self) -> &str {
+    pub fn arch(&self) -> &str
+    {
         &self.arch
     }
 
@@ -401,7 +410,8 @@ impl Layout {
     /// Inputs: none.
     ///
     /// Outputs: the description, or `None` when the layout has none.
-    pub fn description(&self) -> Option<&str> {
+    pub fn description(&self) -> Option<&str>
+    {
         self.description.as_deref()
     }
 }
@@ -427,7 +437,12 @@ const SRC_NAMES: [&str; 8] = ["src.ne0", "src.ne1", "src.ne2", "src.ne3", "src.n
 /// - `at`: the place in the layout file, for the error.
 ///
 /// Outputs: `Ok(())`, or an error naming the first name that is not allowed.
-fn check_names(e: &Expr, ctx: &Ctx<'_>, at: &str) -> Result<(), LayoutError> {
+fn check_names(
+    e: &Expr,
+    ctx: &Ctx<'_>,
+    at: &str,
+) -> Result<(), LayoutError>
+{
     let mut names = Vec::new();
     e.names(&mut names);
     for n in names {
@@ -457,7 +472,12 @@ fn check_names(e: &Expr, ctx: &Ctx<'_>, at: &str) -> Result<(), LayoutError> {
 /// - `at`: the place in the layout file, for the error.
 ///
 /// Outputs: the parsed expression, or an error.
-fn parse_expr(src: &str, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutError> {
+fn parse_expr(
+    src: &str,
+    ctx: &Ctx<'_>,
+    at: &str,
+) -> Result<Expr, LayoutError>
+{
     let e = Expr::parse(src).map_err(|detail| LayoutError::Invalid { at: at.to_owned(), detail })?;
     check_names(&e, ctx, at)?;
     let mut has = Vec::new();
@@ -476,7 +496,12 @@ fn parse_expr(src: &str, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutError> {
 /// - `at`: the place in the layout file, for the error.
 ///
 /// Outputs: the parsed expression, or an error.
-fn cond_expr(src: &str, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutError> {
+fn cond_expr(
+    src: &str,
+    ctx: &Ctx<'_>,
+    at: &str,
+) -> Result<Expr, LayoutError>
+{
     let e = Expr::parse(src).map_err(|detail| LayoutError::Invalid { at: at.to_owned(), detail })?;
     check_names(&e, ctx, at)?;
     Ok(e)
@@ -490,7 +515,12 @@ fn cond_expr(src: &str, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutError> {
 /// - `at`: the place in the layout file, for the error.
 ///
 /// Outputs: the expression, or an error for any other kind of value.
-fn value_expr(v: &toml::Value, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutError> {
+fn value_expr(
+    v: &toml::Value,
+    ctx: &Ctx<'_>,
+    at: &str,
+) -> Result<Expr, LayoutError>
+{
     match v {
         toml::Value::Integer(i) => Ok(Expr::Int(*i)),
         toml::Value::Float(f) => Ok(Expr::Float(*f)),
@@ -507,7 +537,12 @@ fn value_expr(v: &toml::Value, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutEr
 /// - `at`: the place in the layout file, for the error.
 ///
 /// Outputs: the expression, or an error.
-fn dim_expr(v: &toml::Value, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutError> {
+fn dim_expr(
+    v: &toml::Value,
+    ctx: &Ctx<'_>,
+    at: &str,
+) -> Result<Expr, LayoutError>
+{
     value_expr(v, ctx, at)
 }
 
@@ -523,7 +558,14 @@ fn dim_expr(v: &toml::Value, ctx: &Ctx<'_>, at: &str) -> Result<Expr, LayoutErro
 ///
 /// Outputs: the parameter, or an error when the op does not take it or the value is the
 /// wrong kind.
-fn param(def: &OpDef, name: &str, v: &toml::Value, ctx: &Ctx<'_>, at: &str) -> Result<RawParam, LayoutError> {
+fn param(
+    def: &OpDef,
+    name: &str,
+    v: &toml::Value,
+    ctx: &Ctx<'_>,
+    at: &str,
+) -> Result<RawParam, LayoutError>
+{
     let bad = |detail: String| LayoutError::Invalid { at: at.to_owned(), detail };
     let pd = def.params.iter().find(|p| p.name == name).ok_or_else(|| {
         let known: Vec<&str> = def.params.iter().map(|p| p.name).collect();
@@ -569,7 +611,8 @@ fn op_spec(
     table: &toml::Table,
     defaults: &BTreeMap<&'static str, BTreeMap<String, RawParam>>,
     has_names: &HashSet<&str>,
-) -> Result<OpSpec, LayoutError> {
+) -> Result<OpSpec, LayoutError>
+{
     let at0 = format!("{section} op {index}");
     let bad = |at: &str, detail: String| LayoutError::Invalid { at: at.to_owned(), detail };
     let op_name = table.get("op").and_then(toml::Value::as_str).ok_or_else(|| bad(&at0, "missing `op`".into()))?;
@@ -679,7 +722,12 @@ fn op_spec(
 /// - `at`: the place in the layout file, for the error.
 ///
 /// Outputs: the loop, or an error when the text is not a valid loop.
-fn parse_loop(s: &str, layer: bool, at: &str) -> Result<Loop, LayoutError> {
+fn parse_loop(
+    s: &str,
+    layer: bool,
+    at: &str,
+) -> Result<Loop, LayoutError>
+{
     let bad = |detail: String| LayoutError::Invalid { at: at.to_owned(), detail };
     let (var, range) = s.split_once(" in ").ok_or_else(|| bad(format!("`for = \"{s}\"` should read like \"e in 1..n_expert_used\"")))?;
     let var = var.trim();
@@ -699,7 +747,12 @@ fn parse_loop(s: &str, layer: bool, at: &str) -> Result<Loop, LayoutError> {
 /// - `at`: the place in the layout file, for the error.
 ///
 /// Outputs: `true` when the name uses `{L}`, or an error for a bad placeholder.
-fn check_template(name: &str, vars: &[&str], at: &str) -> Result<bool, LayoutError> {
+fn check_template(
+    name: &str,
+    vars: &[&str],
+    at: &str,
+) -> Result<bool, LayoutError>
+{
     let bad = |detail: String| LayoutError::Invalid { at: at.to_owned(), detail };
     if name.is_empty() {
         return Err(bad("an empty tensor name".into()));
@@ -728,7 +781,10 @@ fn check_template(name: &str, vars: &[&str], at: &str) -> Result<bool, LayoutErr
 /// - `name`: the op name the layout used.
 ///
 /// Outputs: the error text, which lists the known ops.
-fn unknown_op(name: &str) -> String {
+fn unknown_op(
+    name: &str,
+) -> String
+{
     format!(
         "`{name}` is not an op dovata knows. Ops are ggml graph node types in lower case (GGML_OP_MUL_MAT is mul_mat; \
          unary and glu ops by their sub-op, such as silu and swiglu). Known: {}. If `{name}` is a ggml op, add it with \
@@ -743,6 +799,9 @@ fn unknown_op(name: &str) -> String {
 /// - `name`: the type's name, such as `f16`.
 ///
 /// Outputs: the type's number, or `None` when dovata cannot size a type of that name.
-pub(crate) fn type_by_name(name: &str) -> Option<u32> {
+pub(crate) fn type_by_name(
+    name: &str,
+) -> Option<u32>
+{
     (0..64u32).find(|t| crate::gguf::ggml_type_layout(*t).is_some() && crate::gguf::ggml_type_name(*t).eq_ignore_ascii_case(name))
 }

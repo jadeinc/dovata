@@ -69,7 +69,12 @@ pub(crate) struct ParamDef {
 /// - `default`: its value when the layout leaves it out.
 ///
 /// Outputs: the definition.
-const fn p(name: &'static str, kind: Kind, default: Init) -> ParamDef {
+const fn p(
+    name: &'static str,
+    kind: Kind,
+    default: Init,
+) -> ParamDef
+{
     ParamDef { name, kind, default }
 }
 
@@ -247,7 +252,10 @@ pub(crate) const OPS: &[OpDef] = &[
 /// - `name`: the op name, such as `mul_mat`.
 ///
 /// Outputs: the op's definition, or `None`.
-pub(crate) fn op(name: &str) -> Option<&'static OpDef> {
+pub(crate) fn op(
+    name: &str,
+) -> Option<&'static OpDef>
+{
     OPS.iter().find(|o| o.name == name)
 }
 
@@ -256,7 +264,8 @@ pub(crate) fn op(name: &str) -> Option<&'static OpDef> {
 /// Inputs: none.
 ///
 /// Outputs: the names, in table order.
-pub fn names() -> impl Iterator<Item = &'static str> {
+pub fn names() -> impl Iterator<Item = &'static str>
+{
     OPS.iter().map(|o| o.name)
 }
 
@@ -266,7 +275,10 @@ pub fn names() -> impl Iterator<Item = &'static str> {
 /// - `name`: the op name, such as `mul_mat`.
 ///
 /// Outputs: the enum value, or `None` for an unknown name.
-pub fn ggml_enum(name: &str) -> Option<Ggml> {
+pub fn ggml_enum(
+    name: &str,
+) -> Option<Ggml>
+{
     op(name).map(|o| o.ggml)
 }
 
@@ -276,7 +288,10 @@ pub fn ggml_enum(name: &str) -> Option<Ggml> {
 /// - `name`: the op name, such as `mul_mat`.
 ///
 /// Outputs: `true` for `view`, `reshape`, `permute` and `transpose`.
-pub fn is_view_op(name: &str) -> bool {
+pub fn is_view_op(
+    name: &str,
+) -> bool
+{
     matches!(name, "view" | "reshape" | "permute" | "transpose")
 }
 
@@ -288,7 +303,10 @@ pub fn is_view_op(name: &str) -> bool {
 /// - `ty`: the ggml type number.
 ///
 /// Outputs: the two sizes, or an error for an unknown type.
-fn layout_of(ty: u32) -> Result<(u64, u64), String> {
+fn layout_of(
+    ty: u32,
+) -> Result<(u64, u64), String>
+{
     ggml_type_layout(ty).ok_or_else(|| format!("ggml type {ty} has no known size"))
 }
 
@@ -299,7 +317,11 @@ fn layout_of(ty: u32) -> Result<(u64, u64), String> {
 /// - `n`: the element count.
 ///
 /// Outputs: the size in bytes, or an error for a partial block.
-pub(crate) fn row_size(ty: u32, n: u64) -> Result<u64, String> {
+pub(crate) fn row_size(
+    ty: u32,
+    n: u64,
+) -> Result<u64, String>
+{
     let (blck, size) = layout_of(ty)?;
     if !n.is_multiple_of(blck) {
         return Err(format!("{n} elements of {} is not a whole number of {blck}-element blocks", crate::gguf::ggml_type_name(ty)));
@@ -314,7 +336,11 @@ pub(crate) fn row_size(ty: u32, n: u64) -> Result<u64, String> {
 /// - `ty`: the ggml type number.
 ///
 /// Outputs: the four strides, or an error.
-pub(crate) fn packed_nb(ne: [u64; 4], ty: u32) -> Result<[u64; 4], String> {
+pub(crate) fn packed_nb(
+    ne: [u64; 4],
+    ty: u32,
+) -> Result<[u64; 4], String>
+{
     let (_, size) = layout_of(ty)?;
     let nb1 = row_size(ty, ne[0])?;
     Ok([size, nb1, nb1 * ne[1], nb1 * ne[1] * ne[2]])
@@ -328,7 +354,12 @@ pub(crate) fn packed_nb(ne: [u64; 4], ty: u32) -> Result<[u64; 4], String> {
 /// - `ty`: the ggml type number.
 ///
 /// Outputs: the size in bytes, or an error.
-pub(crate) fn nbytes(ne: [u64; 4], nb: [u64; 4], ty: u32) -> Result<u64, String> {
+pub(crate) fn nbytes(
+    ne: [u64; 4],
+    nb: [u64; 4],
+    ty: u32,
+) -> Result<u64, String>
+{
     if ne.contains(&0) {
         return Ok(0);
     }
@@ -343,7 +374,10 @@ pub(crate) fn nbytes(ne: [u64; 4], nb: [u64; 4], ty: u32) -> Result<u64, String>
 /// - `ne`: the four dims.
 ///
 /// Outputs: the element count.
-pub(crate) fn nelements(ne: [u64; 4]) -> u64 {
+pub(crate) fn nelements(
+    ne: [u64; 4],
+) -> u64
+{
     ne.iter().product()
 }
 
@@ -354,7 +388,11 @@ pub(crate) fn nelements(ne: [u64; 4]) -> u64 {
 /// - `n`: the highest dim that may have gaps.
 ///
 /// Outputs: `true` when it is.
-fn contiguous_n(t: &TInfo, n: usize) -> bool {
+fn contiguous_n(
+    t: &TInfo,
+    n: usize,
+) -> bool
+{
     let Ok((blck, size)) = layout_of(t.ty) else { return false };
     let mut next = size;
     if t.ne[0] != blck && t.nb[0] != next {
@@ -382,7 +420,10 @@ fn contiguous_n(t: &TInfo, n: usize) -> bool {
 /// - `t`: the tensor's shape, strides and type.
 ///
 /// Outputs: `true` when it is.
-pub(crate) fn is_contiguous(t: &TInfo) -> bool {
+pub(crate) fn is_contiguous(
+    t: &TInfo,
+) -> bool
+{
     contiguous_n(t, 0)
 }
 
@@ -393,7 +434,11 @@ pub(crate) fn is_contiguous(t: &TInfo) -> bool {
 /// - `what`: the check, for the error.
 ///
 /// Outputs: `Ok(())`, or the error.
-fn check(ok: bool, what: &str) -> Result<(), String> {
+fn check(
+    ok: bool,
+    what: &str,
+) -> Result<(), String>
+{
     if ok { Ok(()) } else { Err(format!("ggml would refuse this: {what}")) }
 }
 
@@ -404,7 +449,11 @@ fn check(ok: bool, what: &str) -> Result<(), String> {
 /// - `ty`: the result's ggml type number.
 ///
 /// Outputs: the result.
-fn fresh(ne: [u64; 4], ty: u32) -> Out {
+fn fresh(
+    ne: [u64; 4],
+    ty: u32,
+) -> Out
+{
     Out { ne, ty, alias: None }
 }
 
@@ -415,7 +464,11 @@ fn fresh(ne: [u64; 4], ty: u32) -> Out {
 /// - `name`: the parameter's name.
 ///
 /// Outputs: the list, or `None`.
-fn ints(params: &BTreeMap<String, Param>, name: &str) -> Option<Vec<i64>> {
+fn ints(
+    params: &BTreeMap<String, Param>,
+    name: &str,
+) -> Option<Vec<i64>>
+{
     match params.get(name) {
         Some(Param::Ints(v)) => Some(v.clone()),
         _ => None,
@@ -429,7 +482,11 @@ fn ints(params: &BTreeMap<String, Param>, name: &str) -> Option<Vec<i64>> {
 /// - `name`: the parameter's name.
 ///
 /// Outputs: the integer, or `None`.
-fn int(params: &BTreeMap<String, Param>, name: &str) -> Option<i64> {
+fn int(
+    params: &BTreeMap<String, Param>,
+    name: &str,
+) -> Option<i64>
+{
     match params.get(name) {
         Some(Param::Int(v)) => Some(*v),
         _ => None,
@@ -443,7 +500,11 @@ fn int(params: &BTreeMap<String, Param>, name: &str) -> Option<i64> {
 /// - `what`: the parameter, for the error.
 ///
 /// Outputs: the four dims, or an error.
-fn dims4(v: &[i64], what: &str) -> Result<[u64; 4], String> {
+fn dims4(
+    v: &[i64],
+    what: &str,
+) -> Result<[u64; 4], String>
+{
     if v.is_empty() || v.len() > 4 {
         return Err(format!("{what} needs one to four sizes, got {}", v.len()));
     }
@@ -464,7 +525,11 @@ fn dims4(v: &[i64], what: &str) -> Result<[u64; 4], String> {
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type.
-fn same(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn same(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     Ok(fresh(i[0].ne, i[0].ty))
 }
 
@@ -475,7 +540,11 @@ fn same(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn broadcast(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn broadcast(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let (a, b) = (&i[0], &i[1]);
     check((0..4).all(|d| b.ne[d] != 0 && a.ne[d].is_multiple_of(b.ne[d])), "the second input does not broadcast over the first (ggml_can_repeat)")?;
     Ok(fresh(a.ne, a.ty))
@@ -488,7 +557,11 @@ fn broadcast(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type.
-fn sum_rows(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn sum_rows(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let a = &i[0];
     Ok(fresh([1, a.ne[1], a.ne[2], a.ne[3]], a.ty))
 }
@@ -500,7 +573,11 @@ fn sum_rows(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String>
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn mul_mat(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn mul_mat(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let (a, b) = (&i[0], &i[1]);
     check(a.ne[0] == b.ne[0], &format!("mul_mat needs a.ne0 == b.ne0, got {} and {}", a.ne[0], b.ne[0]))?;
     check(b.ne[2].is_multiple_of(a.ne[2]) && b.ne[3].is_multiple_of(a.ne[3]), "mul_mat: a does not broadcast over b's dims 2 and 3")?;
@@ -515,7 +592,11 @@ fn mul_mat(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> 
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn mul_mat_id(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn mul_mat_id(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let (as_, b, ids) = (&i[0], &i[1], &i[2]);
     check(ids.ty == I32, "mul_mat_id: ids must be i32")?;
     check(as_.ne[3] == 1 && b.ne[3] == 1, "mul_mat_id: the experts and b must be 3d")?;
@@ -533,7 +614,11 @@ fn mul_mat_id(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, Strin
 /// - `params`: the op's parameters.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn cpy(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn cpy(
+    i: &[TInfo],
+    params: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let ty = int(params, "type");
     if i.len() == 2 {
         check(ty.is_none(), "cpy into a second input takes its type from that input; drop `type`")?;
@@ -551,7 +636,11 @@ fn cpy(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String>
 /// - `params`: the op's parameters.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn cont(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn cont(
+    i: &[TInfo],
+    params: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let a = &i[0];
     let ne = match ints(params, "ne") {
         Some(v) => dims4(&v, "cont's ne")?,
@@ -568,7 +657,11 @@ fn cont(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String
 /// - `params`: the op's parameters.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn reshape(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn reshape(
+    i: &[TInfo],
+    params: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let a = &i[0];
     let ne = dims4(&ints(params, "ne").unwrap_or_default(), "reshape's ne")?;
     check(is_contiguous(a), "reshape needs a contiguous input; put a `cont` before it")?;
@@ -583,7 +676,11 @@ fn reshape(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, Str
 /// - `params`: the op's parameters.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn view(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn view(
+    i: &[TInfo],
+    params: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let a = &i[0];
     let given = ints(params, "ne").unwrap_or_default();
     let ne = dims4(&given, "view's ne")?;
@@ -612,7 +709,11 @@ fn view(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String
 /// - `params`: the op's parameters.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn permute(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn permute(
+    i: &[TInfo],
+    params: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let a = &i[0];
     let axes = ints(params, "axes").unwrap_or_default();
     check(axes.len() == 4, "permute takes four axes")?;
@@ -635,7 +736,11 @@ fn permute(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, Str
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type.
-fn transpose(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn transpose(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let a = &i[0];
     let ne = [a.ne[1], a.ne[0], a.ne[2], a.ne[3]];
     let nb = [a.nb[1], a.nb[0], a.nb[2], a.nb[3]];
@@ -649,7 +754,11 @@ fn transpose(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn get_rows(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn get_rows(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let (a, b) = (&i[0], &i[1]);
     check(a.ne[2] == b.ne[1] && a.ne[3] == b.ne[2], "get_rows: the rows' batch dims do not match the ids")?;
     check(b.ne[3] == 1, "get_rows: ids must be at most 3d")?;
@@ -664,7 +773,11 @@ fn get_rows(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String>
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn set_rows(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn set_rows(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let (a, b, c) = (&i[0], &i[1], &i[2]);
     check(a.ne[0] == b.ne[0], &format!("set_rows: row width {} into a destination of width {}", b.ne[0], a.ne[0]))?;
     check(a.ne[2] == b.ne[2] && a.ne[3] == b.ne[3], "set_rows: dims 2 and 3 must match")?;
@@ -682,7 +795,11 @@ fn set_rows(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String>
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn soft_max(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn soft_max(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let a = &i[0];
     check(is_contiguous(a), "soft_max needs a contiguous input")?;
     if let Some(m) = i.get(1) {
@@ -701,7 +818,11 @@ fn soft_max(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String>
 /// - `params`: the op's parameters.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn rope(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn rope(
+    i: &[TInfo],
+    params: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let (a, pos) = (&i[0], &i[1]);
     let mode = int(params, "mode").unwrap_or(0);
     check(pos.ty == I32 && pos.ne[1] == 1 && pos.ne[2] == 1 && pos.ne[3] == 1, "rope: positions must be an i32 vector")?;
@@ -724,7 +845,11 @@ fn rope(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn flash_attn_ext(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn flash_attn_ext(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let (q, k, v) = (&i[0], &i[1], &i[2]);
     check(k.ne[0] == q.ne[0], &format!("flash_attn_ext: K head width {} and Q head width {}", k.ne[0], q.ne[0]))?;
     check(q.ne[2].is_multiple_of(k.ne[2]) && q.ne[3].is_multiple_of(k.ne[3]), "flash_attn_ext: Q heads are not a multiple of K heads")?;
@@ -747,7 +872,11 @@ fn flash_attn_ext(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, S
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type.
-fn argsort(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn argsort(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     Ok(fresh(i[0].ne, I32))
 }
 
@@ -758,7 +887,11 @@ fn argsort(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> 
 /// - `params`: the op's parameters.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn top_k(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn top_k(
+    i: &[TInfo],
+    params: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let a = &i[0];
     let k = u64::try_from(int(params, "k").unwrap_or(0)).map_err(|_| "top_k: k is negative")?;
     check(a.ne[0] >= k, "top_k: k is larger than the row")?;
@@ -772,7 +905,11 @@ fn top_k(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, Strin
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn glu(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn glu(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let a = &i[0];
     check(contiguous_n(a, 1), "a gated unit needs contiguous rows")?;
     if let Some(b) = i.get(1) {
@@ -790,7 +927,11 @@ fn glu(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
 /// - `params`: the op's parameters.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the inputs.
-fn concat(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn concat(
+    i: &[TInfo],
+    params: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let (a, b) = (&i[0], &i[1]);
     // ggml_concat: the two inputs share a type and every dim but `dim`, which adds up.
     let dim = int(params, "dim").and_then(|d| usize::try_from(d).ok()).filter(|d| *d < 4).ok_or("concat: dim must be 0, 1, 2 or 3")?;
@@ -813,7 +954,11 @@ fn concat(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, Stri
 /// - `_`: the op's parameters, which this rule does not read.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the input.
-fn fill(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn fill(
+    i: &[TInfo],
+    _: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let a = &i[0];
     // ggml_fill_impl: a new tensor shaped like the input, every element set to `c`.
     check(a.ty == F32 || a.ty == F16, "fill: the input must be f32 or f16")?;
@@ -828,7 +973,11 @@ fn fill(i: &[TInfo], _: &mut BTreeMap<String, Param>) -> Result<Out, String> {
 /// - `params`: the op's parameters.
 ///
 /// Outputs: the result's shape and type, or an error when ggml would refuse the input.
-fn repeat(i: &[TInfo], params: &mut BTreeMap<String, Param>) -> Result<Out, String> {
+fn repeat(
+    i: &[TInfo],
+    params: &mut BTreeMap<String, Param>,
+) -> Result<Out, String>
+{
     let a = &i[0];
     let ne = dims4(&ints(params, "ne").unwrap_or_default(), "repeat's ne")?;
     // ggml_can_repeat: every dim of the result is a whole number of the input's, and an
@@ -849,12 +998,17 @@ mod tests {
     /// - `ty`: the ggml type number.
     ///
     /// Outputs: the tensor's shape, strides and type.
-    fn t(ne: [u64; 4], ty: u32) -> TInfo {
+    fn t(
+        ne: [u64; 4],
+        ty: u32,
+    ) -> TInfo
+    {
         TInfo { ne, nb: packed_nb(ne, ty).unwrap(), ty }
     }
 
     #[test]
-    fn mul_mat_shape_and_refusal() {
+    fn mul_mat_shape_and_refusal()
+    {
         let w = t([2048, 4096, 1, 1], 12);
         let x = t([2048, 7, 1, 1], F32);
         let out = mul_mat(&[w, x], &mut BTreeMap::new()).unwrap();
@@ -865,7 +1019,8 @@ mod tests {
     }
 
     #[test]
-    fn permute_moves_dims_and_strides() {
+    fn permute_moves_dims_and_strides()
+    {
         let q = t([128, 32, 7, 1], F32);
         let mut p = BTreeMap::from([("axes".to_string(), Param::Ints(vec![0, 2, 1, 3]))]);
         let out = permute(&[q], &mut p).unwrap();
@@ -875,7 +1030,8 @@ mod tests {
     }
 
     #[test]
-    fn a_quantized_view_strides_in_whole_blocks() {
+    fn a_quantized_view_strides_in_whole_blocks()
+    {
         // A q4_0 K cache: 512 wide (4 heads of 128), 4096 cells.
         assert_eq!(row_size(2, 128).unwrap(), 128 / 32 * 18);
         assert!(row_size(2, 100).is_err(), "half a block is not addressable");
@@ -884,7 +1040,8 @@ mod tests {
     }
 
     #[test]
-    fn reshape_refuses_a_permuted_input() {
+    fn reshape_refuses_a_permuted_input()
+    {
         let q = t([128, 32, 7, 1], F32);
         let mut p = BTreeMap::from([("axes".to_string(), Param::Ints(vec![0, 2, 1, 3]))]);
         let o = permute(&[q], &mut p).unwrap();
@@ -894,7 +1051,8 @@ mod tests {
     }
 
     #[test]
-    fn concat_fill_and_repeat_follow_ggml() {
+    fn concat_fill_and_repeat_follow_ggml()
+    {
         // MLA's Q: the absorbed part, 512 per head, then the rope part, 64 per head.
         let absorbed = t([512, 16, 7, 1], F32);
         let rope = t([64, 16, 7, 1], F32);

@@ -39,7 +39,12 @@ pub enum Error {
 ///
 /// Outputs: the windows, and the window index of each tensor, or an error when one tensor
 /// is larger than `limit`.
-pub fn windows(spans: &[Span], limit: u64, page: u64) -> Result<(Vec<Window>, Vec<usize>), Error> {
+pub fn windows(
+    spans: &[Span],
+    limit: u64,
+    page: u64,
+) -> Result<(Vec<Window>, Vec<usize>), Error>
+{
     // A Metal no-copy buffer takes a length in whole pages, so the program rounds each
     // window up to the end of its last page, as ggml's Metal backend does. A limit of
     // whole pages keeps that rounded length within the GPU's buffer limit.
@@ -81,12 +86,17 @@ mod tests {
     /// - `bytes`: its size in bytes.
     ///
     /// Outputs: the [`Span`].
-    fn span(file_offset: u64, bytes: u64) -> Span {
+    fn span(
+        file_offset: u64,
+        bytes: u64,
+    ) -> Span
+    {
         Span { file_offset, bytes }
     }
 
     #[test]
-    fn without_a_limit_one_window_starts_at_zero() {
+    fn without_a_limit_one_window_starts_at_zero()
+    {
         let spans = [span(6_000_000, 1000), span(6_001_024, 5000)];
         let (ws, which) = windows(&spans, u64::MAX, 4096).unwrap();
         assert_eq!(ws, vec![Window { file_start: 0, bytes: 6_001_024 + 5000 }]);
@@ -94,7 +104,8 @@ mod tests {
     }
 
     #[test]
-    fn a_limit_splits_and_every_tensor_fits_one_window() {
+    fn a_limit_splits_and_every_tensor_fits_one_window()
+    {
         let spans: Vec<Span> = (0..10).map(|i| span(PAGE + i * 300_000, 300_000)).collect();
         let (ws, which) = windows(&spans, 1_000_000, PAGE).unwrap();
         assert!(ws.len() > 1);
@@ -107,7 +118,8 @@ mod tests {
     }
 
     #[test]
-    fn a_window_rounded_up_to_whole_pages_stays_within_the_limit() {
+    fn a_window_rounded_up_to_whole_pages_stays_within_the_limit()
+    {
         // A limit that is not whole pages, as a GPU could report.
         let limit = 10 * PAGE + 123;
         let spans: Vec<Span> = (0..40).map(|i| span(PAGE + i * 70_001, 70_001)).collect();
@@ -117,13 +129,15 @@ mod tests {
     }
 
     #[test]
-    fn a_tensor_larger_than_the_limit_is_refused() {
+    fn a_tensor_larger_than_the_limit_is_refused()
+    {
         let err = windows(&[span(PAGE, 10), span(2 * PAGE, 5_000_000)], 1_000_000, PAGE).unwrap_err();
         assert!(matches!(err, Error::TensorTooLarge { index: 1, .. }), "{err:?}");
     }
 
     #[test]
-    fn input_order_does_not_matter() {
+    fn input_order_does_not_matter()
+    {
         let a = [span(PAGE, 600_000), span(PAGE + 600_000, 600_000)];
         let b = [a[1], a[0]];
         let (wa, ia) = windows(&a, 1_000_000, PAGE).unwrap();

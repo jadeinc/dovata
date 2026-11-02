@@ -43,7 +43,8 @@ impl Fixture {
     /// Inputs: none.
     ///
     /// Outputs: the [`Fixture`], or an I/O error's text.
-    pub fn llama() -> Result<Fixture, String> {
+    pub fn llama() -> Result<Fixture, String>
+    {
         let dir = temp_dir()?;
         let path = dir.join("refback-llama.gguf");
         let fixture = Fixture { dir, path };
@@ -58,7 +59,8 @@ impl Drop for Fixture {
     /// Inputs: none.
     ///
     /// Outputs: none.
-    fn drop(&mut self) {
+    fn drop(&mut self)
+    {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -69,7 +71,8 @@ impl Drop for Fixture {
 /// Inputs: none.
 ///
 /// Outputs: the directory's path, or an I/O error's text.
-fn temp_dir() -> Result<PathBuf, String> {
+fn temp_dir() -> Result<PathBuf, String>
+{
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
     loop {
@@ -89,7 +92,10 @@ fn temp_dir() -> Result<PathBuf, String> {
 /// - `path`: the file to write.
 ///
 /// Outputs: `Ok(())`, or the writer's error text.
-pub fn write_llama(path: &Path) -> Result<(), String> {
+pub fn write_llama(
+    path: &Path,
+) -> Result<(), String>
+{
     let mut w = Writer::new();
     let s = |v: &str| Value::String(v.into());
     w.kv("general.architecture", s("llama"))
@@ -140,7 +146,10 @@ pub fn write_llama(path: &Path) -> Result<(), String> {
 /// - `state`: the stream's state, advanced in place.
 ///
 /// Outputs: 64 random bits, from splitmix64.
-fn next(state: &mut u64) -> u64 {
+fn next(
+    state: &mut u64,
+) -> u64
+{
     *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut z = *state;
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -156,7 +165,12 @@ fn next(state: &mut u64) -> u64 {
 /// - `salt`: makes each tensor's values different.
 ///
 /// Outputs: the encoded bytes.
-fn data(ty: u32, dims: &[u64], salt: u64) -> Vec<u8> {
+fn data(
+    ty: u32,
+    dims: &[u64],
+    salt: u64,
+) -> Vec<u8>
+{
     let elems: u64 = dims.iter().product();
     let mut st = salt.wrapping_mul(0x0123_4567_89ab_cdef) ^ 0x5eed;
     // A value in [-0.5, 0.5), in steps of 1/1024.

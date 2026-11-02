@@ -22,7 +22,11 @@ impl Header {
     /// - `n_vocab`: the number of tokens in the tokenizer.
     ///
     /// Outputs: the header.
-    pub(crate) fn new(arch: &str, n_vocab: u64) -> Header {
+    pub(crate) fn new(
+        arch: &str,
+        n_vocab: u64,
+    ) -> Header
+    {
         let mut h = Header { arch: arch.to_owned(), kvs: Vec::new(), tensors: Vec::new() };
         h.str("general.architecture", arch);
         h.str("tokenizer.ggml.model", "gpt2");
@@ -43,7 +47,12 @@ impl Header {
     /// - `v`: the value.
     ///
     /// Outputs: the header, for chaining.
-    pub(crate) fn str(&mut self, key: &str, v: &str) -> &mut Self {
+    pub(crate) fn str(
+        &mut self,
+        key: &str,
+        v: &str,
+    ) -> &mut Self
+    {
         let mut p = (v.len() as u64).to_le_bytes().to_vec();
         p.extend_from_slice(v.as_bytes());
         self.kvs.push((key.to_owned(), 8, p));
@@ -57,7 +66,12 @@ impl Header {
     /// - `v`: the value.
     ///
     /// Outputs: the header, for chaining.
-    pub(crate) fn u32(&mut self, suffix: &str, v: u32) -> &mut Self {
+    pub(crate) fn u32(
+        &mut self,
+        suffix: &str,
+        v: u32,
+    ) -> &mut Self
+    {
         let key = format!("{}.{suffix}", self.arch);
         self.kvs.push((key, 4, v.to_le_bytes().to_vec()));
         self
@@ -70,7 +84,12 @@ impl Header {
     /// - `v`: the value.
     ///
     /// Outputs: the header, for chaining.
-    pub(crate) fn f32(&mut self, suffix: &str, v: f32) -> &mut Self {
+    pub(crate) fn f32(
+        &mut self,
+        suffix: &str,
+        v: f32,
+    ) -> &mut Self
+    {
         let key = format!("{}.{suffix}", self.arch);
         self.kvs.push((key, 6, v.to_le_bytes().to_vec()));
         self
@@ -84,7 +103,13 @@ impl Header {
     /// - `ty`: its ggml type number.
     ///
     /// Outputs: the header, for chaining.
-    pub(crate) fn tensor(&mut self, name: &str, dims: &[u64], ty: u32) -> &mut Self {
+    pub(crate) fn tensor(
+        &mut self,
+        name: &str,
+        dims: &[u64],
+        ty: u32,
+    ) -> &mut Self
+    {
         self.tensors.push((name.to_owned(), dims.to_vec(), ty));
         self
     }
@@ -94,7 +119,8 @@ impl Header {
     /// Inputs: none.
     ///
     /// Outputs: the bytes.
-    pub(crate) fn bytes(&self) -> Vec<u8> {
+    pub(crate) fn bytes(&self) -> Vec<u8>
+    {
         let mut b = b"GGUF".to_vec();
         b.extend_from_slice(&3u32.to_le_bytes());
         b.extend_from_slice(&(self.tensors.len() as u64).to_le_bytes());
@@ -128,7 +154,8 @@ impl Header {
     /// Inputs: none.
     ///
     /// Outputs: the model.
-    pub(crate) fn model(&self) -> Model {
+    pub(crate) fn model(&self) -> Model
+    {
         Model::from_headers(&[(PathBuf::from("synthetic.gguf"), self.bytes())]).expect("the synthetic header preflights")
     }
 }
@@ -160,7 +187,11 @@ const F32: u32 = 0;
 /// - `s`: the model shape.
 ///
 /// Outputs: the header.
-fn common(arch: &str, s: &Shape) -> Header {
+fn common(
+    arch: &str,
+    s: &Shape,
+) -> Header
+{
     let mut h = Header::new(arch, s.n_vocab);
     h.u32("block_count", s.n_layer)
         .u32("context_length", 4096)
@@ -185,7 +216,13 @@ fn common(arch: &str, s: &Shape) -> Header {
 /// - `tied`: whether to leave out the output weight.
 ///
 /// Outputs: none.
-fn ends(h: &mut Header, s: &Shape, ty: u32, tied: bool) {
+fn ends(
+    h: &mut Header,
+    s: &Shape,
+    ty: u32,
+    tied: bool,
+)
+{
     h.tensor("token_embd.weight", &[s.n_embd, s.n_vocab], ty);
     h.tensor("output_norm.weight", &[s.n_embd], F32);
     if !tied {
@@ -202,7 +239,13 @@ fn ends(h: &mut Header, s: &Shape, ty: u32, tied: bool) {
 /// - `ty`: the type of the large weights.
 ///
 /// Outputs: none.
-fn attention(h: &mut Header, s: &Shape, l: u32, ty: u32) {
+fn attention(
+    h: &mut Header,
+    s: &Shape,
+    l: u32,
+    ty: u32,
+)
+{
     let q = s.head_dim * s.n_head;
     let kv = s.head_dim * s.n_head_kv;
     h.tensor(&format!("blk.{l}.attn_norm.weight"), &[s.n_embd], F32);
@@ -220,7 +263,12 @@ fn attention(h: &mut Header, s: &Shape, l: u32, ty: u32) {
 /// - `tied`: whether to leave out the output weight.
 ///
 /// Outputs: the header.
-pub(crate) fn qwen3moe(s: &Shape, ty: u32, tied: bool) -> Header {
+pub(crate) fn qwen3moe(
+    s: &Shape,
+    ty: u32,
+    tied: bool,
+) -> Header
+{
     let mut h = common("qwen3moe", s);
     h.u32("expert_count", u32::try_from(s.n_expert).unwrap())
         .u32("expert_used_count", u32::try_from(s.n_expert_used).unwrap())
@@ -247,7 +295,12 @@ pub(crate) fn qwen3moe(s: &Shape, ty: u32, tied: bool) -> Header {
 /// - `tied`: whether to leave out the output weight.
 ///
 /// Outputs: the header.
-pub(crate) fn qwen3(s: &Shape, ty: u32, tied: bool) -> Header {
+pub(crate) fn qwen3(
+    s: &Shape,
+    ty: u32,
+    tied: bool,
+) -> Header
+{
     let mut h = common("qwen3", s);
     ends(&mut h, s, ty, tied);
     for l in 0..s.n_layer {
@@ -271,7 +324,13 @@ pub(crate) fn qwen3(s: &Shape, ty: u32, tied: bool) -> Header {
 /// - `moe`: whether to add experts.
 ///
 /// Outputs: the header.
-pub(crate) fn llama(s: &Shape, ty: u32, tied: bool, moe: bool) -> Header {
+pub(crate) fn llama(
+    s: &Shape,
+    ty: u32,
+    tied: bool,
+    moe: bool,
+) -> Header
+{
     let mut h = common("llama", s);
     if moe {
         // Preflight's report requires all three MoE keys once expert_count is set.
@@ -306,7 +365,12 @@ impl Header {
     /// - `v`: the values, one per layer.
     ///
     /// Outputs: the header, for chaining.
-    pub(crate) fn i32s(&mut self, suffix: &str, v: &[i32]) -> &mut Self {
+    pub(crate) fn i32s(
+        &mut self,
+        suffix: &str,
+        v: &[i32],
+    ) -> &mut Self
+    {
         // gguf-py writes a per-layer list of Python ints, such as deci's head counts, as
         // an INT32 array.
         let key = format!("{}.{suffix}", self.arch);
@@ -328,7 +392,12 @@ impl Header {
 /// - `tied`: whether to leave out the output weight.
 ///
 /// Outputs: the header.
-pub(crate) fn qwen2(s: &Shape, ty: u32, tied: bool) -> Header {
+pub(crate) fn qwen2(
+    s: &Shape,
+    ty: u32,
+    tied: bool,
+) -> Header
+{
     let mut h = common("qwen2", s);
     ends(&mut h, s, ty, tied);
     let kv = s.head_dim * s.n_head_kv;
@@ -360,7 +429,12 @@ pub(crate) fn qwen2(s: &Shape, ty: u32, tied: bool) -> Header {
 /// - `no_output`: whether to leave out the output weight, which nemotron requires.
 ///
 /// Outputs: the header.
-pub(crate) fn nemotron(s: &Shape, ty: u32, no_output: bool) -> Header {
+pub(crate) fn nemotron(
+    s: &Shape,
+    ty: u32,
+    no_output: bool,
+) -> Header
+{
     // Not `common`: a nemotron file has no RMS epsilon, so a layout that read one would
     // fail here as it would on a real file.
     let mut h = Header::new("nemotron", s.n_vocab);
@@ -403,7 +477,13 @@ pub(crate) fn nemotron(s: &Shape, ty: u32, no_output: bool) -> Header {
 /// - `layers`: `(n_head, n_head_kv, n_ff)` for each layer.
 ///
 /// Outputs: the header.
-pub(crate) fn deci(s: &Shape, ty: u32, tied: bool, layers: &[(u64, u64, u64)]) -> Header {
+pub(crate) fn deci(
+    s: &Shape,
+    ty: u32,
+    tied: bool,
+    layers: &[(u64, u64, u64)],
+) -> Header
+{
     // conversion/deci.py writes the head counts and FFN widths as per-layer arrays.
     let mut h = Header::new("deci", s.n_vocab);
     let list = |pick: fn(&(u64, u64, u64)) -> u64| layers.iter().map(|l| i32::try_from(pick(l)).unwrap()).collect::<Vec<_>>();
@@ -453,7 +533,13 @@ pub(crate) fn deci(s: &Shape, ty: u32, tied: bool, layers: &[(u64, u64, u64)]) -
 /// - `fused_qkv`: whether to write one fused QKV weight per layer instead of Q, K and V.
 ///
 /// Outputs: the header.
-pub(crate) fn llama4(s: &Shape, ty: u32, moe_step: u32, fused_qkv: bool) -> Header {
+pub(crate) fn llama4(
+    s: &Shape,
+    ty: u32,
+    moe_step: u32,
+    fused_qkv: bool,
+) -> Header
+{
     let mut h = common("llama4", s);
     h.u32("expert_count", u32::try_from(s.n_expert).unwrap())
         .u32("expert_used_count", u32::try_from(s.n_expert_used).unwrap())
@@ -498,7 +584,12 @@ impl Header {
     /// - `v`: the value.
     ///
     /// Outputs: the header, for chaining.
-    pub(crate) fn bool(&mut self, suffix: &str, v: bool) -> &mut Self {
+    pub(crate) fn bool(
+        &mut self,
+        suffix: &str,
+        v: bool,
+    ) -> &mut Self
+    {
         let key = format!("{}.{suffix}", self.arch);
         self.kvs.push((key, 7, vec![u8::from(v)]));
         self
@@ -570,7 +661,11 @@ const DS2_VOCAB: u64 = 32;
 /// - `ty`: the type of the large weights.
 ///
 /// Outputs: the header.
-pub(crate) fn deepseek2(v: &Deepseek2, ty: u32) -> Header {
+pub(crate) fn deepseek2(
+    v: &Deepseek2,
+    ty: u32,
+) -> Header
+{
     let n = |x: u64| u32::try_from(x).unwrap();
     let k_mla = DS2_NOPE + DS2_ROT;
     // The convert script writes an MLA file as MQA with one KV head: K is the compressed

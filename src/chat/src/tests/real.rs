@@ -18,7 +18,10 @@ use crate::{header, Chat, ChatError, Message};
 /// - `var`: the variable's name.
 ///
 /// Outputs: the path, or `None` if the variable is not set.
-fn env_path(var: &str) -> Option<PathBuf> {
+fn env_path(
+    var: &str,
+) -> Option<PathBuf>
+{
     let path = std::env::var_os(var).map(PathBuf::from);
     if path.is_none() {
         eprintln!("skipping: set {var} to run this test against a real model");
@@ -32,7 +35,8 @@ fn env_path(var: &str) -> Option<PathBuf> {
 /// Inputs: none.
 ///
 /// Outputs: the messages and the tool definitions.
-fn conversation() -> (Vec<Message>, serde_json::Value) {
+fn conversation() -> (Vec<Message>, serde_json::Value)
+{
     let messages = vec![
         Message::system("You are a coding assistant."),
         Message::user("What is the weather in Paris?"),
@@ -59,7 +63,8 @@ fn conversation() -> (Vec<Message>, serde_json::Value) {
 }
 
 #[test]
-fn qwen3_coder_header_renders() {
+fn qwen3_coder_header_renders()
+{
     let Some(path) = env_path("DOVATA_TEST_HEADER") else {
         return;
     };
@@ -92,7 +97,8 @@ fn qwen3_coder_header_renders() {
 }
 
 #[test]
-fn qwen3_coder_tokenizer_matches_its_header() {
+fn qwen3_coder_tokenizer_matches_its_header()
+{
     let (Some(head), Some(tok)) = (env_path("DOVATA_TEST_HEADER"), env_path("DOVATA_TEST_TOKENIZER")) else {
         return;
     };
@@ -129,7 +135,8 @@ struct Expected {
 }
 
 #[test]
-fn matches_jinja2_cases() {
+fn matches_jinja2_cases()
+{
     let Some(path) = env_path("DOVATA_CHAT_CASES") else {
         return;
     };

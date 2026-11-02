@@ -79,7 +79,10 @@ impl ChatError {
     ///
     /// Outputs: `ChatError::Raised` if the template called `raise_exception`, else
     /// `ChatError::Template`.
-    pub(crate) fn from_render(err: minijinja::Error) -> ChatError {
+    pub(crate) fn from_render(
+        err: minijinja::Error,
+    ) -> ChatError
+    {
         let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&err);
         while let Some(e) = source {
             if let Some(raised) = e.downcast_ref::<crate::template::Raised>() {
@@ -98,7 +101,11 @@ impl fmt::Display for ChatError {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             ChatError::Io { path, source } => write!(f, "cannot read {}: {source}", path.display()),
             ChatError::Header(detail) => write!(f, "cannot read the GGUF header: {detail}"),
@@ -145,7 +152,8 @@ impl std::error::Error for ChatError {
     /// Inputs: none.
     ///
     /// Outputs: the I/O or minijinja error it wraps, or `None`.
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)>
+    {
         match self {
             ChatError::Io { source, .. } => Some(source),
             ChatError::Template(e) => Some(e),

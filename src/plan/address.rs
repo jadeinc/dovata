@@ -76,7 +76,8 @@ impl Role {
     /// Inputs: none.
     ///
     /// Outputs: `true` for the KV cache and recurrent state.
-    fn persists(&self) -> bool {
+    fn persists(&self) -> bool
+    {
         matches!(self, Role::Kv | Role::State)
     }
 
@@ -86,7 +87,8 @@ impl Role {
     /// Inputs: none.
     ///
     /// Outputs: `true` for inputs, scratch tensors and outputs.
-    fn per_step(&self) -> bool {
+    fn per_step(&self) -> bool
+    {
         matches!(self, Role::Input | Role::Scratch | Role::Output)
     }
 }
@@ -251,7 +253,11 @@ impl fmt::Display for PlanError {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             PlanError::Layout(e) => write!(f, "{e}"),
             PlanError::DoesNotFit { need, have, what } => {
@@ -289,7 +295,10 @@ impl std::error::Error for PlanError {}
 /// - `bytes`: the byte count.
 ///
 /// Outputs: text such as `17.28 GiB`.
-fn gib(bytes: u64) -> String {
+fn gib(
+    bytes: u64,
+) -> String
+{
     format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64)
 }
 
@@ -300,7 +309,11 @@ fn gib(bytes: u64) -> String {
 /// - `align`: the alignment, a power of two.
 ///
 /// Outputs: the rounded offset.
-fn align_up(x: u64, align: u64) -> u64 {
+fn align_up(
+    x: u64,
+    align: u64,
+) -> u64
+{
     x.div_ceil(align) * align
 }
 
@@ -313,7 +326,12 @@ fn align_up(x: u64, align: u64) -> u64 {
 /// - `target`: the machine to plan for.
 ///
 /// Outputs: the [`Plan`], or a [`PlanError`] saying why the model cannot be planned.
-pub fn place(model: &Model, others: &[PlanTensor], target: &Target) -> Result<Plan, PlanError> {
+pub fn place(
+    model: &Model,
+    others: &[PlanTensor],
+    target: &Target,
+) -> Result<Plan, PlanError>
+{
     let mut regions: Vec<Region> = Vec::new();
     let mut entries: Vec<AddressEntry> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
@@ -554,7 +572,10 @@ pub fn place(model: &Model, others: &[PlanTensor], target: &Target) -> Result<Pl
 /// - `target`: the machine.
 ///
 /// Outputs: the limit in bytes on Apple, or `None` on CPU and CUDA.
-fn max_buffer_bytes_of(target: &Target) -> Option<u64> {
+fn max_buffer_bytes_of(
+    target: &Target,
+) -> Option<u64>
+{
     match target {
         Target::Apple { max_buffer_bytes, .. } => Some(*max_buffer_bytes),
         Target::Cpu { .. } | Target::Cuda { .. } => None,
@@ -567,7 +588,10 @@ fn max_buffer_bytes_of(target: &Target) -> Option<u64> {
 /// - `k`: the kind of memory.
 ///
 /// Outputs: a name such as `vram` or `host`.
-fn kind_name(k: RegionKind) -> &'static str {
+fn kind_name(
+    k: RegionKind,
+) -> &'static str
+{
     match k {
         RegionKind::Mmap => "mmap",
         RegionKind::Host => "host",
@@ -582,7 +606,10 @@ fn kind_name(k: RegionKind) -> &'static str {
 /// - `regions`: the regions made so far.
 ///
 /// Outputs: the next id, or an error past 65535 regions.
-fn next_id(regions: &[Region]) -> Result<u16, PlanError> {
+fn next_id(
+    regions: &[Region],
+) -> Result<u16, PlanError>
+{
     u16::try_from(regions.len()).map_err(|_| PlanError::Invariant("more than 65535 regions".into()))
 }
 
@@ -596,7 +623,14 @@ fn next_id(regions: &[Region]) -> Result<u16, PlanError> {
 /// - `align`: the alignment `offset` has.
 ///
 /// Outputs: the [`AddressEntry`].
-fn weight_entry(t: &crate::load::TensorRef<'_>, bytes: u64, region: u16, offset: u64, align: u64) -> AddressEntry {
+fn weight_entry(
+    t: &crate::load::TensorRef<'_>,
+    bytes: u64,
+    region: u16,
+    offset: u64,
+    align: u64,
+) -> AddressEntry
+{
     AddressEntry {
         tensor: t.info.name.clone(),
         role: Role::Weight,
@@ -617,7 +651,8 @@ impl Plan {
     /// Inputs: none.
     ///
     /// Outputs: the JSON text.
-    pub fn to_json(&self) -> String {
+    pub fn to_json(&self) -> String
+    {
         serde_json::to_string_pretty(self).expect("a plan always serializes")
     }
 
@@ -627,7 +662,11 @@ impl Plan {
     /// - `model`: the model the plan was made from.
     ///
     /// Outputs: `Ok(())`, or [`PlanError::Invariant`] naming the first broken invariant.
-    pub(super) fn seal(&mut self, model: &Model) -> Result<(), PlanError> {
+    pub(super) fn seal(
+        &mut self,
+        model: &Model,
+    ) -> Result<(), PlanError>
+    {
         self.table_hash = self.compute_hash();
         self.check(model).map_err(PlanError::Invariant)
     }
@@ -638,7 +677,8 @@ impl Plan {
     /// Inputs: none.
     ///
     /// Outputs: the hash in lowercase hex.
-    fn compute_hash(&self) -> String {
+    fn compute_hash(&self) -> String
+    {
         let mut copy = self.clone();
         copy.table_hash = String::new();
         let bytes = serde_json::to_vec(&copy).expect("a plan always serializes");
@@ -651,7 +691,11 @@ impl Plan {
     /// - `tensor`: the tensor's name.
     ///
     /// Outputs: the entry, or `None` when there is no such tensor.
-    pub fn entry(&self, tensor: &str) -> Option<&AddressEntry> {
+    pub fn entry(
+        &self,
+        tensor: &str,
+    ) -> Option<&AddressEntry>
+    {
         self.entries.binary_search_by(|e| e.tensor.as_str().cmp(tensor)).ok().map(|i| &self.entries[i])
     }
 
@@ -662,7 +706,11 @@ impl Plan {
     /// - `model`: the model the plan was made from.
     ///
     /// Outputs: `Ok(())`, or an error naming the first broken invariant.
-    pub fn check(&self, model: &Model) -> Result<(), String> {
+    pub fn check(
+        &self,
+        model: &Model,
+    ) -> Result<(), String>
+    {
         for (i, r) in self.regions.iter().enumerate() {
             if usize::from(r.id) != i {
                 return Err(format!("region {} is at index {i}", r.id));
@@ -735,7 +783,11 @@ mod tests {
     /// - `elems`: the elements in each weight.
     ///
     /// Outputs: the [`Model`].
-    fn model(n: usize, elems: u64) -> Model {
+    fn model(
+        n: usize,
+        elems: u64,
+    ) -> Model
+    {
         Model::from_headers(&[("m.gguf".into(), header_bytes(n, elems, &[]))]).unwrap()
     }
 
@@ -747,7 +799,12 @@ mod tests {
     /// - `extra`: more metadata entries, as `(key, type tag, encoded value)`.
     ///
     /// Outputs: the header bytes.
-    fn header_bytes(n: usize, elems: u64, extra: &[(&str, u32, Vec<u8>)]) -> Vec<u8> {
+    fn header_bytes(
+        n: usize,
+        elems: u64,
+        extra: &[(&str, u32, Vec<u8>)],
+    ) -> Vec<u8>
+    {
         let mut b = header_with("llama", None, extra);
         b[8..16].copy_from_slice(&(n as u64).to_le_bytes());
         let size = align_up(elems * 4, 32);
@@ -773,7 +830,14 @@ mod tests {
     /// - `last`: the last op that uses it.
     ///
     /// Outputs: the [`PlanTensor`].
-    fn t(name: &str, role: Role, bytes: u64, first: u32, last: u32) -> PlanTensor {
+    fn t(
+        name: &str,
+        role: Role,
+        bytes: u64,
+        first: u32,
+        last: u32,
+    ) -> PlanTensor
+    {
         PlanTensor { name: name.into(), role, dims: vec![bytes / 4], ggml_type: 0, bytes, first, last }
     }
 
@@ -783,7 +847,8 @@ mod tests {
     /// Inputs: none.
     ///
     /// Outputs: the tensors.
-    fn others() -> Vec<PlanTensor> {
+    fn others() -> Vec<PlanTensor>
+    {
         vec![
             t("inp_tokens", Role::Input, 64, 0, 1),
             t("cache_k_l0", Role::Kv, 4096, 0, 0),
@@ -796,7 +861,8 @@ mod tests {
     }
 
     #[test]
-    fn apple_maps_weights_and_allocates_the_rest_unified() {
+    fn apple_maps_weights_and_allocates_the_rest_unified()
+    {
         let m = model(4, 1024);
         let p = place(&m, &others(), &Target::apple(1 << 30, 1 << 30)).unwrap();
         assert!(p.entries.iter().filter(|e| e.role == Role::Weight).all(|e| p.regions[usize::from(e.region)].kind == RegionKind::Mmap));
@@ -805,14 +871,16 @@ mod tests {
     }
 
     #[test]
-    fn apple_over_budget_does_not_fit() {
+    fn apple_over_budget_does_not_fit()
+    {
         let m = model(4, 1024);
         let err = place(&m, &others(), &Target::apple(10_000, 1 << 30)).unwrap_err();
         assert!(matches!(err, PlanError::DoesNotFit { .. }), "{err:?}");
     }
 
     #[test]
-    fn apple_windows_split_at_the_buffer_limit() {
+    fn apple_windows_split_at_the_buffer_limit()
+    {
         // 8 weights of 64 KiB against a 160 KiB buffer limit and 16 KiB pages.
         let m = model(8, 16384);
         let p = place(&m, &[], &Target::Apple { unified_bytes: 1 << 30, max_buffer_bytes: 160 * 1024, page_bytes: 16384 }).unwrap();
@@ -822,7 +890,8 @@ mod tests {
     }
 
     #[test]
-    fn cpu_mmap_offsets_equal_file_offsets() {
+    fn cpu_mmap_offsets_equal_file_offsets()
+    {
         let m = model(4, 1024);
         let p = place(&m, &others(), &Target::cpu(1 << 30)).unwrap();
         for e in p.entries.iter().filter(|e| e.role == Role::Weight) {
@@ -833,7 +902,8 @@ mod tests {
     }
 
     #[test]
-    fn cuda_fit_all_vram() {
+    fn cuda_fit_all_vram()
+    {
         let m = model(4, 1024);
         let p = place(&m, &others(), &Target::cuda(1 << 30)).unwrap();
         assert!(p.regions.iter().all(|r| r.kind == RegionKind::Vram));
@@ -841,7 +911,8 @@ mod tests {
     }
 
     #[test]
-    fn cuda_over_vram_is_deferred_error() {
+    fn cuda_over_vram_is_deferred_error()
+    {
         let m = model(4, 1024);
         let err = place(&m, &others(), &Target::cuda(4096)).unwrap_err();
         assert!(matches!(err, PlanError::DoesNotFitVram { .. }), "{err:?}");
@@ -849,7 +920,8 @@ mod tests {
     }
 
     #[test]
-    fn scratch_reuses_bytes_and_views_follow_their_base() {
+    fn scratch_reuses_bytes_and_views_follow_their_base()
+    {
         let m = model(1, 64);
         let p = place(&m, &others(), &Target::cpu(1 << 30)).unwrap();
         let (x0, x1) = (p.entry("x0").unwrap(), p.entry("x1").unwrap());
@@ -859,7 +931,8 @@ mod tests {
     }
 
     #[test]
-    fn region_ids_dense_ordered_and_one_entry_per_weight() {
+    fn region_ids_dense_ordered_and_one_entry_per_weight()
+    {
         let m = model(3, 1024);
         let p = place(&m, &others(), &Target::cuda(1 << 30)).unwrap();
         for (i, r) in p.regions.iter().enumerate() {
@@ -870,7 +943,8 @@ mod tests {
     }
 
     #[test]
-    fn plan_is_deterministic_and_round_trips_json() {
+    fn plan_is_deterministic_and_round_trips_json()
+    {
         let m = model(4, 1024);
         let a = place(&m, &others(), &Target::apple(1 << 30, 1 << 30)).unwrap();
         let b = place(&m, &others(), &Target::apple(1 << 30, 1 << 30)).unwrap();
@@ -887,7 +961,8 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_changes_with_header() {
+    fn fingerprint_changes_with_header()
+    {
         let a = model(2, 1024);
         let b = model(2, 2048);
         let pa = place(&a, &[], &Target::cpu(1 << 30)).unwrap();
@@ -897,7 +972,8 @@ mod tests {
     }
 
     #[test]
-    fn a_tampered_plan_fails_its_check() {
+    fn a_tampered_plan_fails_its_check()
+    {
         let m = model(2, 1024);
         let mut p = place(&m, &others(), &Target::cuda(1 << 30)).unwrap();
         p.entries[0].offset += 1;
@@ -905,7 +981,8 @@ mod tests {
     }
 
     #[test]
-    fn a_view_of_nothing_is_refused() {
+    fn a_view_of_nothing_is_refused()
+    {
         let m = model(1, 64);
         let bad = [PlanTensor { name: "v".into(), role: Role::View { of: "missing".into(), byte_offset: 0, nb: [4, 4, 4, 4] }, dims: vec![1], ggml_type: 0, bytes: 4, first: 0, last: 0 }];
         assert!(matches!(place(&m, &bad, &Target::cpu(1 << 30)).unwrap_err(), PlanError::BadView { .. }));

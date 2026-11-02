@@ -17,7 +17,8 @@ use super::{
 ///
 /// Outputs: the [`Machine`], or a [`MachineError`] when a system tool fails or the operating
 /// system is not macOS or Linux.
-pub fn current() -> Result<Machine, MachineError> {
+pub fn current() -> Result<Machine, MachineError>
+{
     if cfg!(target_os = "macos") {
         Ok(Machine {
             os: format!("macOS {}", run("/usr/bin/sw_vers", &["-productVersion"])?.trim()),
@@ -54,7 +55,10 @@ pub fn current() -> Result<Machine, MachineError> {
 ///
 /// Outputs: the [`Usage`], or a [`MachineError`] when a system tool fails or the operating
 /// system is not macOS or Linux.
-pub fn usage(process: Option<&str>) -> Result<Usage, MachineError> {
+pub fn usage(
+    process: Option<&str>,
+) -> Result<Usage, MachineError>
+{
     let memory = if cfg!(target_os = "macos") {
         let mut m = parse_vm_stat(&run("/usr/bin/vm_stat", &[])?, sysctl_number("hw.memsize")?)?;
         (m.swap_total_bytes, m.swap_used_bytes) = parse_swapusage(&run("/usr/sbin/sysctl", &["-n", "vm.swapusage"])?)?;
@@ -83,7 +87,8 @@ pub fn usage(process: Option<&str>) -> Result<Usage, MachineError> {
 ///
 /// Outputs: one [`Gpu`] per GPU; none when `nvidia-smi` is not on `PATH`; or a
 /// [`MachineError`] when it is installed but fails, as it does when the driver is not loaded.
-fn nvidia_gpus() -> Result<Vec<Gpu>, MachineError> {
+fn nvidia_gpus() -> Result<Vec<Gpu>, MachineError>
+{
     let Some(program) = find_on_path("nvidia-smi") else {
         return Ok(Vec::new());
     };
@@ -97,7 +102,8 @@ fn nvidia_gpus() -> Result<Vec<Gpu>, MachineError> {
 ///
 /// Outputs: the limits, or `None` on a machine without a Metal GPU.
 #[cfg(target_os = "macos")]
-fn metal_limits() -> Option<MetalLimits> {
+fn metal_limits() -> Option<MetalLimits>
+{
     super::metal::limits()
 }
 
@@ -107,7 +113,8 @@ fn metal_limits() -> Option<MetalLimits> {
 ///
 /// Outputs: always `None`.
 #[cfg(not(target_os = "macos"))]
-fn metal_limits() -> Option<MetalLimits> {
+fn metal_limits() -> Option<MetalLimits>
+{
     None
 }
 
@@ -117,7 +124,10 @@ fn metal_limits() -> Option<MetalLimits> {
 /// - `name`: the value's name, such as `hw.memsize`.
 ///
 /// Outputs: the number, or a [`MachineError`].
-fn sysctl_number(name: &str) -> Result<u64, MachineError> {
+fn sysctl_number(
+    name: &str,
+) -> Result<u64, MachineError>
+{
     let text = run("/usr/sbin/sysctl", &["-n", name])?;
     text.trim().parse().map_err(|_| parse_error(&format!("sysctl {name}"), &text))
 }
@@ -130,7 +140,11 @@ fn sysctl_number(name: &str) -> Result<u64, MachineError> {
 ///
 /// Outputs: its standard output, or a [`MachineError::Command`] when it cannot start or exits
 /// with an error.
-fn run(program: &str, args: &[&str]) -> Result<String, MachineError> {
+fn run(
+    program: &str,
+    args: &[&str],
+) -> Result<String, MachineError>
+{
     let fail = |detail: String| MachineError::Command { program: program.to_owned(), detail };
     let out = Command::new(program).args(args).output().map_err(|e| fail(format!("cannot start it: {e}")))?;
     if !out.status.success() {
@@ -145,7 +159,10 @@ fn run(program: &str, args: &[&str]) -> Result<String, MachineError> {
 /// - `path`: the file's path.
 ///
 /// Outputs: its contents, or a [`MachineError::Command`] naming the file.
-fn read(path: &str) -> Result<String, MachineError> {
+fn read(
+    path: &str,
+) -> Result<String, MachineError>
+{
     std::fs::read_to_string(path).map_err(|e| MachineError::Command { program: path.to_owned(), detail: e.to_string() })
 }
 
@@ -155,7 +172,10 @@ fn read(path: &str) -> Result<String, MachineError> {
 /// - `name`: the program's name.
 ///
 /// Outputs: its path, or `None` when it is not installed.
-fn find_on_path(name: &str) -> Option<PathBuf> {
+fn find_on_path(
+    name: &str,
+) -> Option<PathBuf>
+{
     std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join(name)).find(|p| p.is_file())
 }
 
@@ -166,7 +186,11 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
 /// - `text`: what it printed.
 ///
 /// Outputs: the [`MachineError::Parse`].
-fn parse_error(what: &str, text: &str) -> MachineError {
+fn parse_error(
+    what: &str,
+    text: &str,
+) -> MachineError
+{
     MachineError::Parse { what: what.to_owned(), detail: format!("expected a number, found {:?}", text.trim()) }
 }
 
@@ -176,7 +200,8 @@ mod tests {
 
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn this_machine_reads() {
+    fn this_machine_reads()
+    {
         let m = current().unwrap();
         assert!(m.memory_bytes > 1 << 30, "{m:?}");
         assert!(m.page_bytes.is_power_of_two(), "{m:?}");
@@ -190,7 +215,8 @@ mod tests {
 
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn this_machines_use_reads_and_finds_this_test() {
+    fn this_machines_use_reads_and_finds_this_test()
+    {
         let me = std::env::current_exe().unwrap();
         let name = me.file_name().unwrap().to_string_lossy().into_owned();
         let u = usage(Some(&name)).unwrap();

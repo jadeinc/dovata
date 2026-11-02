@@ -61,7 +61,11 @@ impl fmt::Display for Value {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             Value::Int(v) => write!(f, "{v}"),
             Value::Float(v) => write!(f, "{v}"),
@@ -78,14 +82,20 @@ pub(crate) trait Scope {
     /// - `name`: a symbol, `L`, a loop variable, or `src.*`.
     ///
     /// Outputs: the value, or an error when the name has none here.
-    fn name(&self, name: &str) -> Result<Value, String>;
+    fn name(
+        &self,
+        name: &str,
+    ) -> Result<Value, String>;
     /// Purpose: This function tells whether the model file holds a tensor.
     ///
     /// Inputs:
     /// - `template`: the tensor name, with its placeholders still in it.
     ///
     /// Outputs: `true` when the file holds the tensor, or an error.
-    fn has(&self, template: &str) -> Result<bool, String>;
+    fn has(
+        &self,
+        template: &str,
+    ) -> Result<bool, String>;
     /// Purpose: This function returns the bytes `n` elements of the op's first input type
     /// take.
     ///
@@ -93,7 +103,10 @@ pub(crate) trait Scope {
     /// - `n`: the element count.
     ///
     /// Outputs: the size in bytes, or an error.
-    fn row_size(&self, n: i64) -> Result<i64, String>;
+    fn row_size(
+        &self,
+        n: i64,
+    ) -> Result<i64, String>;
 }
 
 impl Expr {
@@ -103,7 +116,10 @@ impl Expr {
     /// - `src`: the expression's text.
     ///
     /// Outputs: the parsed expression, or an error saying where the text went wrong.
-    pub(crate) fn parse(src: &str) -> Result<Expr, String> {
+    pub(crate) fn parse(
+        src: &str,
+    ) -> Result<Expr, String>
+    {
         let tokens = lex(src)?;
         let mut p = Parser { tokens, pos: 0 };
         let e = p.expr()?;
@@ -119,7 +135,11 @@ impl Expr {
     /// - `out`: the list to add to.
     ///
     /// Outputs: none.
-    pub(crate) fn names<'a>(&'a self, out: &mut Vec<&'a str>) {
+    pub(crate) fn names<'a>(
+        &'a self,
+        out: &mut Vec<&'a str>,
+    )
+    {
         match self {
             Expr::Int(_) | Expr::Float(_) | Expr::Has(_) => {}
             Expr::Name(n) => out.push(n),
@@ -143,7 +163,11 @@ impl Expr {
     /// - `out`: the list to add to.
     ///
     /// Outputs: none.
-    pub(crate) fn has_names<'a>(&'a self, out: &mut Vec<&'a str>) {
+    pub(crate) fn has_names<'a>(
+        &'a self,
+        out: &mut Vec<&'a str>,
+    )
+    {
         match self {
             Expr::Int(_) | Expr::Float(_) | Expr::Name(_) => {}
             Expr::Has(n) => out.push(n),
@@ -165,7 +189,8 @@ impl Expr {
     /// Inputs: none.
     ///
     /// Outputs: `true` when it does.
-    pub(crate) fn uses_row_size(&self) -> bool {
+    pub(crate) fn uses_row_size(&self) -> bool
+    {
         match self {
             Expr::Int(_) | Expr::Float(_) | Expr::Name(_) | Expr::Has(_) => false,
             Expr::Call(f, a) => *f == Func::RowSize || a.uses_row_size(),
@@ -181,7 +206,11 @@ impl Expr {
     /// - `s`: the scope that gives names their values.
     ///
     /// Outputs: an integer, a float or a truth value, or an error.
-    pub(crate) fn eval(&self, s: &dyn Scope) -> Result<Value, String> {
+    pub(crate) fn eval(
+        &self,
+        s: &dyn Scope,
+    ) -> Result<Value, String>
+    {
         Ok(match self {
             Expr::Int(v) => Value::Int(*v),
             Expr::Float(v) => Value::Float(*v),
@@ -217,7 +246,11 @@ impl Expr {
     /// - `s`: the scope that gives names their values.
     ///
     /// Outputs: the integer, or an error for any other kind of value.
-    pub(crate) fn eval_int(&self, s: &dyn Scope) -> Result<i64, String> {
+    pub(crate) fn eval_int(
+        &self,
+        s: &dyn Scope,
+    ) -> Result<i64, String>
+    {
         match self.eval(s)? {
             Value::Int(v) => Ok(v),
             other => Err(format!("expected an integer, got {other}")),
@@ -231,7 +264,11 @@ impl Expr {
     /// - `s`: the scope that gives names their values.
     ///
     /// Outputs: the value as a `u64`, or an error.
-    pub(crate) fn eval_u64(&self, s: &dyn Scope) -> Result<u64, String> {
+    pub(crate) fn eval_u64(
+        &self,
+        s: &dyn Scope,
+    ) -> Result<u64, String>
+    {
         let v = self.eval_int(s)?;
         u64::try_from(v).map_err(|_| format!("expected a size, got {v}"))
     }
@@ -242,7 +279,11 @@ impl Expr {
     /// - `s`: the scope that gives names their values.
     ///
     /// Outputs: the value as an `f64`, or an error for a truth value.
-    pub(crate) fn eval_f64(&self, s: &dyn Scope) -> Result<f64, String> {
+    pub(crate) fn eval_f64(
+        &self,
+        s: &dyn Scope,
+    ) -> Result<f64, String>
+    {
         num(self.eval(s)?, "a float parameter")
     }
 
@@ -252,7 +293,11 @@ impl Expr {
     /// - `s`: the scope that gives names their values.
     ///
     /// Outputs: the truth value, or an error for a number.
-    pub(crate) fn eval_bool(&self, s: &dyn Scope) -> Result<bool, String> {
+    pub(crate) fn eval_bool(
+        &self,
+        s: &dyn Scope,
+    ) -> Result<bool, String>
+    {
         truth(self.eval(s)?, "a condition")
     }
 }
@@ -264,7 +309,11 @@ impl Expr {
 /// - `what`: what needs the number, for the error.
 ///
 /// Outputs: the float, or an error for a truth value.
-fn num(v: Value, what: &str) -> Result<f64, String> {
+fn num(
+    v: Value,
+    what: &str,
+) -> Result<f64, String>
+{
     match v {
         #[allow(clippy::cast_precision_loss)]
         Value::Int(i) => Ok(i as f64),
@@ -280,7 +329,11 @@ fn num(v: Value, what: &str) -> Result<f64, String> {
 /// - `what`: what needs the truth value, for the error.
 ///
 /// Outputs: the truth value, or an error for a number.
-fn truth(v: Value, what: &str) -> Result<bool, String> {
+fn truth(
+    v: Value,
+    what: &str,
+) -> Result<bool, String>
+{
     match v {
         Value::Bool(b) => Ok(b),
         other => Err(format!("{what} needs a condition, got the number {other}; compare it, as in `x != 0`")),
@@ -296,7 +349,12 @@ fn truth(v: Value, what: &str) -> Result<bool, String> {
 ///
 /// Outputs: the result, or an error for overflow, division by zero, or a value of the
 /// wrong kind.
-fn binary(op: BinOp, a: Value, b: Value) -> Result<Value, String> {
+fn binary(
+    op: BinOp,
+    a: Value,
+    b: Value,
+) -> Result<Value, String>
+{
     use BinOp::*;
     if let (Value::Bool(x), Value::Bool(y)) = (a, b) {
         return match op {
@@ -359,7 +417,11 @@ impl fmt::Display for Tok {
     /// - `f`: the formatter Rust writes the text into.
     ///
     /// Outputs: `Ok(())`, or an error if writing fails.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result
+    {
         match self {
             Tok::Int(v) => write!(f, "{v}"),
             Tok::Float(v) => write!(f, "{v}"),
@@ -376,7 +438,10 @@ impl fmt::Display for Tok {
 /// - `src`: the expression's text.
 ///
 /// Outputs: the tokens, or an error for text the language does not allow.
-fn lex(src: &str) -> Result<Vec<Tok>, String> {
+fn lex(
+    src: &str,
+) -> Result<Vec<Tok>, String>
+{
     const SYMS: [&str; 20] = [
         "==", "!=", "<=", ">=", "&&", "||", "<", ">", "+", "-", "*", "/", "%", "(", ")", "?", ":", "!", ",", ".",
     ];
@@ -445,7 +510,11 @@ impl Parser {
     /// - `s`: the symbol.
     ///
     /// Outputs: `true` when it is.
-    fn peek_sym(&self, s: &str) -> bool {
+    fn peek_sym(
+        &self,
+        s: &str,
+    ) -> bool
+    {
         matches!(self.tokens.get(self.pos), Some(Tok::Sym(t)) if *t == s)
     }
 
@@ -455,7 +524,11 @@ impl Parser {
     /// - `s`: the symbol.
     ///
     /// Outputs: `true` when the symbol was consumed.
-    fn eat(&mut self, s: &str) -> bool {
+    fn eat(
+        &mut self,
+        s: &str,
+    ) -> bool
+    {
         if self.peek_sym(s) {
             self.pos += 1;
             true
@@ -470,7 +543,11 @@ impl Parser {
     /// - `s`: the symbol that must come next.
     ///
     /// Outputs: `Ok(())`, or an error naming what was found instead.
-    fn expect(&mut self, s: &str) -> Result<(), String> {
+    fn expect(
+        &mut self,
+        s: &str,
+    ) -> Result<(), String>
+    {
         if self.eat(s) {
             Ok(())
         } else {
@@ -486,7 +563,8 @@ impl Parser {
     /// Inputs: none.
     ///
     /// Outputs: the parsed expression, or an error.
-    fn expr(&mut self) -> Result<Expr, String> {
+    fn expr(&mut self) -> Result<Expr, String>
+    {
         let c = self.or()?;
         if self.eat("?") {
             let a = self.expr()?;
@@ -502,7 +580,8 @@ impl Parser {
     /// Inputs: none.
     ///
     /// Outputs: the parsed expression, or an error.
-    fn or(&mut self) -> Result<Expr, String> {
+    fn or(&mut self) -> Result<Expr, String>
+    {
         let mut e = self.and()?;
         while self.eat("||") {
             e = Expr::Binary(BinOp::Or, Box::new(e), Box::new(self.and()?));
@@ -515,7 +594,8 @@ impl Parser {
     /// Inputs: none.
     ///
     /// Outputs: the parsed expression, or an error.
-    fn and(&mut self) -> Result<Expr, String> {
+    fn and(&mut self) -> Result<Expr, String>
+    {
         let mut e = self.cmp()?;
         while self.eat("&&") {
             e = Expr::Binary(BinOp::And, Box::new(e), Box::new(self.cmp()?));
@@ -528,7 +608,8 @@ impl Parser {
     /// Inputs: none.
     ///
     /// Outputs: the parsed expression, or an error.
-    fn cmp(&mut self) -> Result<Expr, String> {
+    fn cmp(&mut self) -> Result<Expr, String>
+    {
         let e = self.sum()?;
         for (s, op) in [("==", BinOp::Eq), ("!=", BinOp::Ne), ("<=", BinOp::Le), (">=", BinOp::Ge), ("<", BinOp::Lt), (">", BinOp::Gt)] {
             if self.eat(s) {
@@ -543,7 +624,8 @@ impl Parser {
     /// Inputs: none.
     ///
     /// Outputs: the parsed expression, or an error.
-    fn sum(&mut self) -> Result<Expr, String> {
+    fn sum(&mut self) -> Result<Expr, String>
+    {
         let mut e = self.product()?;
         loop {
             let op = if self.eat("+") {
@@ -562,7 +644,8 @@ impl Parser {
     /// Inputs: none.
     ///
     /// Outputs: the parsed expression, or an error.
-    fn product(&mut self) -> Result<Expr, String> {
+    fn product(&mut self) -> Result<Expr, String>
+    {
         let mut e = self.unary()?;
         loop {
             let op = if self.eat("*") {
@@ -583,7 +666,8 @@ impl Parser {
     /// Inputs: none.
     ///
     /// Outputs: the parsed expression, or an error.
-    fn unary(&mut self) -> Result<Expr, String> {
+    fn unary(&mut self) -> Result<Expr, String>
+    {
         if self.eat("!") {
             return Ok(Expr::Not(Box::new(self.unary()?)));
         }
@@ -599,7 +683,8 @@ impl Parser {
     /// Inputs: none.
     ///
     /// Outputs: the parsed expression, or an error.
-    fn primary(&mut self) -> Result<Expr, String> {
+    fn primary(&mut self) -> Result<Expr, String>
+    {
         let t = self.tokens.get(self.pos).cloned().ok_or("expression ends too soon")?;
         self.pos += 1;
         match t {
@@ -644,7 +729,11 @@ mod tests {
         /// - `n`: the name.
         ///
         /// Outputs: the value, or an error for a name the tests did not set.
-        fn name(&self, n: &str) -> Result<Value, String> {
+        fn name(
+            &self,
+            n: &str,
+        ) -> Result<Value, String>
+        {
             self.0.get(n).copied().ok_or_else(|| format!("unknown {n}"))
         }
         /// Purpose: This function answers `has()` in the tests, where only
@@ -654,7 +743,11 @@ mod tests {
         /// - `t`: the tensor name.
         ///
         /// Outputs: `true` for that one name.
-        fn has(&self, t: &str) -> Result<bool, String> {
+        fn has(
+            &self,
+            t: &str,
+        ) -> Result<bool, String>
+        {
             Ok(t == "blk.{L}.attn_q.bias")
         }
         /// Purpose: This function answers `row_size()` in the tests with 18 bytes per 32
@@ -664,7 +757,11 @@ mod tests {
         /// - `n`: the element count.
         ///
         /// Outputs: `n / 32 * 18`.
-        fn row_size(&self, n: i64) -> Result<i64, String> {
+        fn row_size(
+            &self,
+            n: i64,
+        ) -> Result<i64, String>
+        {
             Ok(n / 32 * 18)
         }
     }
@@ -674,7 +771,8 @@ mod tests {
     /// Inputs: none.
     ///
     /// Outputs: the scope.
-    fn vars() -> Vars {
+    fn vars() -> Vars
+    {
         Vars(HashMap::from([
             ("n_embd", Value::Int(2048)),
             ("n_head", Value::Int(32)),
@@ -691,12 +789,16 @@ mod tests {
     /// - `src`: the expression's text.
     ///
     /// Outputs: the value. It panics on an error.
-    fn eval(src: &str) -> Value {
+    fn eval(
+        src: &str,
+    ) -> Value
+    {
         Expr::parse(src).unwrap().eval(&vars()).unwrap()
     }
 
     #[test]
-    fn integer_arithmetic_is_c_arithmetic() {
+    fn integer_arithmetic_is_c_arithmetic()
+    {
         assert_eq!(eval("n_embd / n_head"), Value::Int(64));
         assert_eq!(eval("7 / 2"), Value::Int(3));
         assert_eq!(eval("2 + 3 * 4"), Value::Int(14));
@@ -706,7 +808,8 @@ mod tests {
     }
 
     #[test]
-    fn floats_and_functions() {
+    fn floats_and_functions()
+    {
         assert_eq!(eval("1 / sqrt(64)"), Value::Float(0.125));
         assert_eq!(eval("1e-6"), Value::Float(1e-6));
         assert_eq!(eval("eps * 2"), Value::Float(2e-6));
@@ -714,7 +817,8 @@ mod tests {
     }
 
     #[test]
-    fn conditions() {
+    fn conditions()
+    {
         assert_eq!(eval("L == n_layer - 1"), Value::Bool(true));
         assert_eq!(eval("q && n_embd % 64 == 0"), Value::Bool(true));
         assert_eq!(eval("!q || L < 3"), Value::Bool(false));
@@ -724,7 +828,8 @@ mod tests {
     }
 
     #[test]
-    fn src_names_are_one_token() {
+    fn src_names_are_one_token()
+    {
         let e = Expr::parse("src.ne0 * src.nb2").unwrap();
         let mut names = Vec::new();
         e.names(&mut names);
@@ -732,7 +837,8 @@ mod tests {
     }
 
     #[test]
-    fn mistakes_are_errors_not_guesses() {
+    fn mistakes_are_errors_not_guesses()
+    {
         assert!(Expr::parse("n_embd +").is_err());
         assert!(Expr::parse("(n_embd").is_err());
         assert!(Expr::parse("n_embd $ 2").is_err());

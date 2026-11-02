@@ -31,7 +31,11 @@ impl Message {
     /// - `content`: the turn's text.
     ///
     /// Outputs: the new `Message`.
-    pub fn new(role: impl Into<String>, content: impl Into<String>) -> Message {
+    pub fn new(
+        role: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Message
+    {
         Message { role: role.into(), content: Some(content.into()), extra: Map::new() }
     }
 
@@ -41,7 +45,10 @@ impl Message {
     /// - `content`: the system prompt.
     ///
     /// Outputs: the new `Message`.
-    pub fn system(content: impl Into<String>) -> Message {
+    pub fn system(
+        content: impl Into<String>,
+    ) -> Message
+    {
         Message::new("system", content)
     }
 
@@ -51,7 +58,10 @@ impl Message {
     /// - `content`: what the person said.
     ///
     /// Outputs: the new `Message`.
-    pub fn user(content: impl Into<String>) -> Message {
+    pub fn user(
+        content: impl Into<String>,
+    ) -> Message
+    {
         Message::new("user", content)
     }
 
@@ -61,7 +71,10 @@ impl Message {
     /// - `content`: the model's reply.
     ///
     /// Outputs: the new `Message`.
-    pub fn assistant(content: impl Into<String>) -> Message {
+    pub fn assistant(
+        content: impl Into<String>,
+    ) -> Message
+    {
         Message::new("assistant", content)
     }
 
@@ -72,7 +85,10 @@ impl Message {
     /// - `calls`: the OpenAI-style list of tool calls.
     ///
     /// Outputs: the new `Message`.
-    pub fn tool_calls(calls: Value) -> Message {
+    pub fn tool_calls(
+        calls: Value,
+    ) -> Message
+    {
         let mut m = Message { role: "assistant".into(), content: None, extra: Map::new() };
         m.extra.insert("tool_calls".into(), calls);
         m
@@ -84,7 +100,10 @@ impl Message {
     /// - `content`: the tool's result.
     ///
     /// Outputs: the new `Message`.
-    pub fn tool(content: impl Into<String>) -> Message {
+    pub fn tool(
+        content: impl Into<String>,
+    ) -> Message
+    {
         Message::new("tool", content)
     }
 
@@ -96,7 +115,12 @@ impl Message {
     ///
     /// Outputs: the same `Message` with the key set.
     #[must_use]
-    pub fn with(mut self, key: impl Into<String>, value: Value) -> Message {
+    pub fn with(
+        mut self,
+        key: impl Into<String>,
+        value: Value,
+    ) -> Message
+    {
         self.extra.insert(key.into(), value);
         self
     }
@@ -107,7 +131,8 @@ impl Message {
     /// Inputs: none.
     ///
     /// Outputs: `Ok(())`, or an error naming the repeated key.
-    pub(crate) fn check(&self) -> Result<(), String> {
+    pub(crate) fn check(&self) -> Result<(), String>
+    {
         for field in ["role", "content"] {
             if self.extra.contains_key(field) {
                 return Err(format!("extra holds `{field}`, which is a field of Message"));
