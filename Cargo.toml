@@ -82,9 +82,9 @@ objc2-metal = { version = "0.3.2", default-features = false, features = ["std", 
 # capabilities as plain modules of this crate, and the directories under it that are
 # separate crates are members below, each for a reason stated where it sits.
 members = [
-    # `dovata-chat`: the optional tokenizer and chat-template package for Jade users.
-    # Its own crate so dovata never depends on a tokenizer; see its README.
-    "src/chat",
+    # `dovata-chat-template`: the optional tokenizer and chat-template package for
+    # Jade users. Its own crate so dovata never depends on a tokenizer; see its README.
+    "src/chat_template",
     # `refback`: the test-only reference backend. It sets up a plan's memory for real
     # and checks every tensor against the model file, so it needs unsafe code and
     # Apple's Metal framework, neither of which belongs in dovata. Never published.

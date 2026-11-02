@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/tests/template.rs
+//! File: src/chat_template/src/tests/template.rs
 //! Description: Tests the template environment, `tojson` and `strftime_now` against
 //! Python's output.
 

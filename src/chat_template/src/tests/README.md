@@ -1,11 +1,11 @@
-# src/chat/src/tests: the dovata-chat tests
+# src/chat_template/src/tests: the dovata-chat-template tests
 
-This folder holds the unit tests for dovata-chat. It is a module of the crate, compiled
+This folder holds the unit tests for dovata-chat-template. It is a module of the crate, compiled
 only under `cargo test`, so the tests can reach private items such as the header reader
 and the template environment.
 
 Almost everything here runs offline against fixtures that the tests build themselves, so
-`cargo test -p dovata-chat` needs no model file, no network and no GPU. The exceptions
+`cargo test -p dovata-chat-template` needs no model file, no network and no GPU. The exceptions
 are the tests in `real.rs`, which run only when environment variables name real model
 files, and two tests in `hf_hub.rs`, which are `#[ignore]`d because they download from
 huggingface.co.
@@ -45,7 +45,7 @@ belongs in the repository, so with a variable unset its test prints a note and p
   `Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf`.
 - `DOVATA_TEST_TOKENIZER` optionally names that model's `tokenizer.json`, from
   `Qwen/Qwen3-Coder-30B-A3B-Instruct`.
-- `DOVATA_CHAT_CASES` names the output of `src/chat/jinja2_cases.py`. The comparison runs
+- `DOVATA_CHAT_TEMPLATE_CASES` names the output of `src/chat_template/jinja2_cases.py`. The comparison runs
   only with `--features preserve_order`, because the cases' tools are in Python's dict
   order, which a `serde_json::Value` keeps only with that feature on.
 
@@ -57,7 +57,7 @@ belongs in the repository, so with a variable unset its test prints a note and p
 - `hf_hub.rs`: the Hub rule's pure parts, offline: which GGUF in a repo is picked, and where
   the base model's id is read from. It also holds the two network tests, which fetch
   `Qwen/Qwen3-0.6B-GGUF` and `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`. Run them with
-  `cargo test -p dovata-chat -- --ignored`.
+  `cargo test -p dovata-chat-template -- --ignored`.
 - `real.rs`: the tests against real model files and the jinja2 cases.
 - `template.rs`: the template environment, `tojson` and `strftime_now`, against what
   `transformers`, jinja2 and CPython produce.

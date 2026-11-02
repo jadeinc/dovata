@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/lib.rs
+//! File: src/chat_template/src/lib.rs
 //! Description: Turns a conversation into a model's prompt and token ids, and back.
 
 #![warn(missing_docs)]
@@ -23,7 +23,7 @@ pub use error::{ChatError, Mismatch};
 pub use message::Message;
 
 /// The GGUF header type [`Chat::from_gguf`] takes, re-exported so a program using
-/// dovata-chat does not need to depend on dovata just to name it.
+/// dovata-chat-template does not need to depend on dovata just to name it.
 pub use dovata::gguf::Gguf;
 
 /// The `tokenizers` crate, re-exported so a program building a [`Chat`] with [`Chat::new`]
@@ -32,7 +32,7 @@ pub use tokenizers;
 /// The tokenizer [`Chat::new`] takes. See [`tokenizers`].
 pub use tokenizers::Tokenizer;
 
-/// Purpose: This type is the result type dovata-chat's functions return.
+/// Purpose: This type is the result type dovata-chat-template's functions return.
 pub type Result<T> = std::result::Result<T, ChatError>;
 
 /// The name the chat template is registered under. It has no extension on purpose:
@@ -89,10 +89,10 @@ impl Chat {
     /// ```no_run
     /// use std::path::Path;
     ///
-    /// use dovata_chat::{Chat, Message};
+    /// use dovata_chat_template::{Chat, Message};
     /// use serde_json::json;
     ///
-    /// # fn main() -> Result<(), dovata_chat::ChatError> {
+    /// # fn main() -> Result<(), dovata_chat_template::ChatError> {
     /// let chat = Chat::from_files(Path::new("model.gguf"), Path::new("tokenizer.json"))?;
     ///
     /// let messages = [Message::system("Be brief."), Message::user("What is a KV cache?")];

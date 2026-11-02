@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/template/mod.rs
+//! File: src/chat_template/src/template/mod.rs
 //! Description: Builds the Jinja environment that chat templates render in.
 
 use std::time::{SystemTime, UNIX_EPOCH};

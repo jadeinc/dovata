@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/template/clock.rs
+//! File: src/chat_template/src/template/clock.rs
 //! Description: Formats a time in UTC for the `strftime_now` template function.
 
 /// Purpose: This function formats a time in UTC with C `strftime` codes.

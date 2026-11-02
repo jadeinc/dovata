@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/tests/vocab.rs
+//! File: src/chat_template/src/tests/vocab.rs
 //! Description: Tests the vocabulary check.
 
 use super::fixture::{self, Header, WORDS};

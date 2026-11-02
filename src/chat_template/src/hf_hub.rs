@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/hf_hub.rs
+//! File: src/chat_template/src/hf_hub.rs
 //! Description: Builds a `Chat` from a model repo on the Hugging Face Hub.
 
 use std::io::Read;
@@ -73,7 +73,7 @@ pub(crate) fn from_hub(
     let api = ApiBuilder::from_env()
         .with_progress(false)
         .with_token(token.clone())
-        .with_user_agent("dovata-chat", env!("CARGO_PKG_VERSION"))
+        .with_user_agent("dovata-chat-template", env!("CARGO_PKG_VERSION"))
         .build()
         .map_err(hub_error(repo))?;
 
@@ -90,7 +90,7 @@ pub(crate) fn from_hub(
     let cached = cache.repo(at);
     let file = pick_gguf(&files, |f| cached.get(f).is_some()).ok_or_else(|| {
         ChatError::Hub(format!(
-            "{repo} has no GGUF; dovata-chat reads the chat template from a GGUF header. \
+            "{repo} has no GGUF; dovata-chat-template reads the chat template from a GGUF header. \
              For a repo without one, download its tokenizer.json and use Chat::new"
         ))
     })?;
@@ -213,7 +213,7 @@ fn range_fetch(
     let agent = ureq::AgentBuilder::new()
         .redirect_auth_headers(ureq::RedirectAuthHeaders::SameHost)
         .try_proxy_from_env(true)
-        .user_agent(concat!("dovata-chat/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("dovata-chat-template/", env!("CARGO_PKG_VERSION")))
         .build();
     let io = |e: std::io::Error| ChatError::Hub(format!("{url}: {e}"));
 

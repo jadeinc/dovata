@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/tests/mod.rs
+//! File: src/chat_template/src/tests/mod.rs
 //! Description: Tests `Chat` itself and lists the other test files.
 
 mod fixture;

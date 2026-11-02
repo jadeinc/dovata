@@ -1,6 +1,6 @@
 """Author: Joe Ricks
-File: src/chat/jinja2_cases.py
-Description: Renders real chat templates with jinja2 to make test cases for dovata-chat.
+File: src/chat_template/jinja2_cases.py
+Description: Renders real chat templates with jinja2 to make test cases for dovata-chat-template.
 """
 import json
 import os
@@ -14,15 +14,15 @@ from jinja2.ext import loopcontrols
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 USAGE = """Render real chat templates with jinja2, set up as Hugging Face's transformers sets it up,
-and write the results as cases for dovata-chat's `matches_jinja2_cases` test.
+and write the results as cases for dovata-chat-template's `matches_jinja2_cases` test.
 
-Why: dovata-chat renders templates with minijinja, and models were trained on what
+Why: dovata-chat-template renders templates with minijinja, and models were trained on what
 transformers renders with jinja2. This is the comparison that says the two agree. Run it
 again after bumping minijinja or minijinja-contrib, or to check a new model's template.
 
     pip install jinja2
-    python3 src/chat/jinja2_cases.py /tmp/cases.json
-    DOVATA_CHAT_CASES=/tmp/cases.json cargo test -p dovata-chat --features preserve_order \
+    python3 src/chat_template/jinja2_cases.py /tmp/cases.json
+    DOVATA_CHAT_TEMPLATE_CASES=/tmp/cases.json cargo test -p dovata-chat-template --features preserve_order \
         matches_jinja2_cases -- --nocapture
 
 The templates are fetched from the public tokenizer_config.json of each model, so no

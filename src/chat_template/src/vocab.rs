@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/vocab.rs
+//! File: src/chat_template/src/vocab.rs
 //! Description: Checks that a `tokenizer.json` and a GGUF file have the same vocabulary.
 
 use std::collections::HashSet;

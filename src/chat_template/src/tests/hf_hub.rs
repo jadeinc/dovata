@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/tests/hf_hub.rs
+//! File: src/chat_template/src/tests/hf_hub.rs
 //! Description: Tests how `from_hub` picks its files, plus two network tests that are
 //! off by default.
 

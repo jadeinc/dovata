@@ -1,4 +1,4 @@
-# src/chat/src/template: the Jinja environment chat templates render in
+# src/chat_template/src/template: the Jinja environment chat templates render in
 
 This folder builds the `minijinja` environment that `Chat` renders a model's chat
 template in. It is set up to behave like the `jinja2` environment Hugging Face's
@@ -52,8 +52,8 @@ succeed. Strings, sequences and maps are iterable, and so is undefined, since ji
 Templates call `raise_exception(message)` to refuse a conversation they cannot render,
 such as one whose roles do not alternate, or one with more tool calls than the model
 takes. The function returns a minijinja error whose source is a `Raised` value holding
-the message. `ChatError::from_render` in `src/chat/src/error.rs` walks the error's
-sources looking for that value, so the program using dovata-chat gets `ChatError::Raised`
+the message. `ChatError::from_render` in `src/chat_template/src/error.rs` walks the error's
+sources looking for that value, so the program using dovata-chat-template gets `ChatError::Raised`
 with the template's own words, kept apart from `ChatError::Template`, which means a
 template bug.
 
@@ -117,7 +117,7 @@ Basic Multilingual Plane, as Python does.
 
 ## Who uses it
 
-Only the rest of dovata-chat. `Chat::new` in `src/chat/src/lib.rs` calls `environment`,
+Only the rest of dovata-chat-template. `Chat::new` in `src/chat_template/src/lib.rs` calls `environment`,
 `Chat::with_time` calls `set_clock`, and `ChatError::from_render` looks for `Raised`. The
-tests in `src/chat/src/tests/template.rs` call `clock::strftime` and `pyjson::dumps`
+tests in `src/chat_template/src/tests/template.rs` call `clock::strftime` and `pyjson::dumps`
 directly, and compare their output with what CPython prints.

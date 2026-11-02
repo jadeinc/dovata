@@ -1,11 +1,11 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/error.rs
-//! Description: Defines the errors dovata-chat returns.
+//! File: src/chat_template/src/error.rs
+//! Description: Defines the errors dovata-chat-template returns.
 
 use std::fmt;
 use std::path::PathBuf;
 
-/// Purpose: This enum lists the errors dovata-chat can return.
+/// Purpose: This enum lists the errors dovata-chat-template can return.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ChatError {
@@ -95,7 +95,7 @@ impl ChatError {
 }
 
 impl fmt::Display for ChatError {
-    /// Purpose: This function formats dovata-chat errors.
+    /// Purpose: This function formats dovata-chat-template errors.
     ///
     /// Inputs:
     /// - `f`: the formatter Rust writes the text into.
@@ -147,7 +147,7 @@ impl fmt::Display for ChatError {
 }
 
 impl std::error::Error for ChatError {
-    /// Purpose: This function returns the lower-level error inside a dovata-chat error.
+    /// Purpose: This function returns the lower-level error inside a dovata-chat-template error.
     ///
     /// Inputs: none.
     ///

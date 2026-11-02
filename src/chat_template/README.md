@@ -1,9 +1,10 @@
-# dovata-chat: prompts and token ids for a model planned with dovata
+# dovata-chat-template: prompts and token ids for a model planned with dovata
 
-`dovata-chat` turns a conversation into the prompt string a model expects, and turns that
-prompt into token ids and back. It reads the chat template from the model's GGUF header
-and runs the model's own `tokenizer.json`. It is a Rust package that sits next to dovata
-in this repository, and it is optional.
+`dovata-chat-template` turns a conversation into the prompt string a model expects, and
+turns that prompt into token ids and back. It reads the chat template from the model's
+GGUF header and runs the model's own `tokenizer.json`. It is a Rust package that sits
+next to dovata in this repository, and it is optional. It never runs the model: a
+program that does gives it the token ids the model produced, and gets text back.
 
 ## Why it is separate, and why it is optional
 
@@ -29,7 +30,7 @@ crates.
 ```rust
 use std::path::Path;
 
-use dovata_chat::{Chat, Message};
+use dovata_chat_template::{Chat, Message};
 use serde_json::json;
 
 // From files on disk. Only the GGUF's header is read, never its tensor data.
@@ -261,8 +262,8 @@ To rerun the comparison, for example after bumping minijinja:
 
 ```sh
 pip install jinja2
-python3 src/chat/jinja2_cases.py /tmp/cases.json
-DOVATA_CHAT_CASES=/tmp/cases.json cargo test -p dovata-chat --features preserve_order \
+python3 src/chat_template/jinja2_cases.py /tmp/cases.json
+DOVATA_CHAT_TEMPLATE_CASES=/tmp/cases.json cargo test -p dovata-chat-template --features preserve_order \
     matches_jinja2_cases -- --nocapture
 ```
 
@@ -318,7 +319,7 @@ out in `src/template/README.md`.
 - `src/error.rs`: `ChatError`.
 - `src/tests/`: the tests. They build a tiny GGUF header and a WordLevel
   `tokenizer.json` in the test. `real.rs` runs against real model files when
-  `DOVATA_TEST_HEADER`, `DOVATA_TEST_TOKENIZER` or `DOVATA_CHAT_CASES` is set, and
+  `DOVATA_TEST_HEADER`, `DOVATA_TEST_TOKENIZER` or `DOVATA_CHAT_TEMPLATE_CASES` is set, and
   `hf_hub.rs` has two `#[ignore]` tests that use the network. Its own README describes each
   file.
 - `jinja2_cases.py`: writes the cases for the jinja2 comparison.

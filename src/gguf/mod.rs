@@ -622,7 +622,7 @@ impl Report {
             ("tokenizer.ggml.merges", false, "BPE merge table; required for BPE tokenizers"),
             ("tokenizer.ggml.bos_token_id", false, "beginning-of-sequence id"),
             ("tokenizer.ggml.eos_token_id", false, "end-of-sequence id; wrong here means generation never stops"),
-            ("tokenizer.chat_template", false, "the publisher's Jinja chat template; dovata-chat renders it"),
+            ("tokenizer.chat_template", false, "the publisher's Jinja chat template; dovata-chat-template renders it"),
         ] {
             checks.push(Check {
                 key: key.to_owned(),

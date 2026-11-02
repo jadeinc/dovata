@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/header.rs
+//! File: src/chat_template/src/header.rs
 //! Description: Reads the chat template, token list and special tokens from a GGUF
 //! file's header.
 

@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/tests/real.rs
+//! File: src/chat_template/src/tests/real.rs
 //! Description: Tests against real model files and the jinja2 cases, when environment
 //! variables name them.
 
@@ -137,7 +137,7 @@ struct Expected {
 #[test]
 fn matches_jinja2_cases()
 {
-    let Some(path) = env_path("DOVATA_CHAT_CASES") else {
+    let Some(path) = env_path("DOVATA_CHAT_TEMPLATE_CASES") else {
         return;
     };
     if !cfg!(feature = "preserve_order") {

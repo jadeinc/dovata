@@ -35,7 +35,7 @@ jade.toml
 # sibling jade-os repo, and `.venv/` matches only a real directory.
 .venv
 
-# Python bytecode cache, from src/chat/jinja2_cases.py
+# Python bytecode cache, from src/chat_template/jinja2_cases.py
 __pycache__/
 *.pyc
 

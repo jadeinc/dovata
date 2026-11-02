@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/message.rs
+//! File: src/chat_template/src/message.rs
 //! Description: Defines `Message`, one turn of a conversation.
 
 use serde::{Deserialize, Serialize};

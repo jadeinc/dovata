@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/tests/fixture.rs
+//! File: src/chat_template/src/tests/fixture.rs
 //! Description: Builds the test fixtures: a small GGUF header, a matching
 //! `tokenizer.json`, and a scratch folder.
 
@@ -310,7 +310,7 @@ impl Scratch {
     {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("dovata-chat-test-{}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dovata-chat-template-test-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create scratch dir");
         Scratch(dir)
     }

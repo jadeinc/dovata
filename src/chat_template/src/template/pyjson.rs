@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/chat/src/template/pyjson.rs
+//! File: src/chat_template/src/template/pyjson.rs
 //! Description: The `tojson` template filter, which prints JSON the way Python's
 //! `json.dumps` does.
 
