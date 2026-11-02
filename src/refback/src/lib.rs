@@ -6,7 +6,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use dovata::plan::Plan;
+use dovata::memplan::Plan;
 
 pub mod check;
 pub mod fixture;

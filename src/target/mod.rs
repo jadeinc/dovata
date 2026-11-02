@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/plan/target.rs
+//! File: src/target/mod.rs
 //! Description: Describes the machine a plan is for and its kinds of memory.
 
 use serde::Serialize;

@@ -232,10 +232,10 @@ fn info_text(
 ///
 /// Outputs: the text, the kind of target first and then one limit per line.
 fn target_block(
-    t: &dovata::plan::Target,
+    t: &dovata::target::Target,
 ) -> String
 {
-    use dovata::plan::Target;
+    use dovata::target::Target;
     match t {
         Target::Apple { unified_bytes, max_buffer_bytes, page_bytes } => format!(
             "apple target\n  memory          {} the plan may use\n  largest buffer  {}\n  page size       {}\n",
@@ -401,12 +401,12 @@ mod tests {
     #[test]
     fn target_text_shows_units()
     {
-        let apple = dovata::plan::Target::Apple { unified_bytes: 19_069_665_280, max_buffer_bytes: 14_302_248_960, page_bytes: 16384 };
+        let apple = dovata::target::Target::Apple { unified_bytes: 19_069_665_280, max_buffer_bytes: 14_302_248_960, page_bytes: 16384 };
         assert_eq!(
             target_block(&apple),
             "apple target\n  memory          17.8 GiB the plan may use\n  largest buffer  13.3 GiB\n  page size       16 KiB\n"
         );
-        let cuda = dovata::plan::Target::Cuda { vram_bytes: 80 << 30 };
+        let cuda = dovata::target::Target::Cuda { vram_bytes: 80 << 30 };
         assert!(target_block(&cuda).contains("80.0 GiB of VRAM"));
     }
 

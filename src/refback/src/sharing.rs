@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use dovata::gguf::ggml_type_layout;
-use dovata::plan::{AddressEntry, Plan, Role};
+use dovata::memplan::{AddressEntry, Plan, Role};
 
 use crate::regions::Memory;
 use crate::{Check, Outcome};
@@ -394,7 +394,7 @@ mod tests {
             align: 1,
             ggml_type: 0,
             dims: vec![4, 4],
-            source: dovata::plan::Source::None,
+            source: dovata::memplan::Source::None,
             live: None,
         };
         assert_eq!(spans(&e, [4, 16, 64, 64]).unwrap(), vec![(0, 64)]);

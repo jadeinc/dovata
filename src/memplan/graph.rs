@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/plan/graph.rs
+//! File: src/memplan/graph.rs
 //! Description: Plans a model from its layout: binds the layout, works out each tensor's
 //! lifetime from op order, places every tensor, and puts the ops into the plan.
 
@@ -8,9 +8,9 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use super::address::{place, Plan, PlanError, PlanTensor, Role};
-use super::target::Target;
 use crate::layout::{BindOptions, BoundGraph, Layout, Param, TensorKind};
 use crate::load::Model;
+use crate::target::Target;
 
 /// Purpose: This struct holds the forward step a plan's tensors belong to: its ops in
 /// run order, by tensor name, so the Jade compiler can generate one kernel per op.
@@ -202,7 +202,7 @@ mod tests {
     use crate::layout::testutil::{qwen3moe, SMALL};
     use crate::layout::{builtin, for_model};
     use crate::load::KvType;
-    use crate::plan::target::RegionKind;
+    use crate::target::RegionKind;
 
     const F16: u32 = 1;
 

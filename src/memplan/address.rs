@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/plan/address.rs
+//! File: src/memplan/address.rs
 //! Description: Gives every tensor a memory region and byte offset, and checks the result.
 
 use std::collections::BTreeMap;
@@ -8,12 +8,12 @@ use std::fmt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::arena;
 use super::graph::Step;
-use super::target::{ExecSite, RegionKind, Target};
-use super::window;
+use crate::arena;
 use crate::layout::LayoutError;
 use crate::load::{Model, PartIdentity};
+use crate::target::{ExecSite, RegionKind, Target};
+use crate::window;
 
 /// The version of the plan's JSON form. Bumped on any change the compiler must notice.
 pub const SCHEMA_VERSION: u32 = 1;

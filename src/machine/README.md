@@ -16,7 +16,7 @@ through NVML and lived outside the workspace.
 
 It is separate from the planner on purpose. The planner never reads hardware, because
 the Jade compiler may build on a laptop for a different machine; it takes a
-`plan::Target` the caller describes. `Machine::target` is the bridge: it describes the
+`target::Target` the caller describes. `Machine::target` is the bridge: it describes the
 current machine as a `Target`, for when the build machine is the machine the program
 runs on.
 

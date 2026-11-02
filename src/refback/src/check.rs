@@ -5,7 +5,7 @@
 
 use std::os::unix::fs::FileExt;
 
-use dovata::plan::{AddressEntry, Plan, Role, Source};
+use dovata::memplan::{AddressEntry, Plan, Role, Source};
 
 use crate::regions::Memory;
 use crate::{quant, Check, Outcome};

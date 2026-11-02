@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 use dovata::hf_hub::{self, FetchError, FetchOptions, Fetched, Level, ModelSource, SelectError, Want};
 use dovata::layout::{self, BindOptions, Layout};
 use dovata::load::{KvType, Model};
-use dovata::plan::{Backing, Plan, Role, Target};
+use dovata::memplan::{Backing, Plan, Role};
 use dovata::quantize::{self, Ftype, QuantError, QuantSpec};
+use dovata::target::Target;
 
 use super::{json, out, parse_size, size, target_text, Fail};
 
@@ -235,7 +236,7 @@ fn run(
         None => None,
     };
     let layout = layout::for_model(&model, caller).map_err(|e| Fail::Run(e.to_string()))?;
-    let plan = dovata::plan::plan(&model, &layout, &o.step, &target).map_err(|e| Fail::Run(e.to_string()))?;
+    let plan = dovata::memplan::plan(&model, &layout, &o.step, &target).map_err(|e| Fail::Run(e.to_string()))?;
     if o.json {
         out(&format!("{}\n", json(&plan)));
     } else {
@@ -460,10 +461,10 @@ fn summary(
 ///
 /// Outputs: a name such as `mmap` or `unified`.
 fn kind(
-    r: &dovata::plan::Region,
+    r: &dovata::memplan::Region,
 ) -> &'static str
 {
-    use dovata::plan::RegionKind;
+    use dovata::target::RegionKind;
     match r.kind {
         RegionKind::Mmap => "mmap",
         RegionKind::Host => "host",
@@ -481,7 +482,7 @@ fn kind(
 /// Outputs: a phrase such as `weights, part 1 from byte 0` or `KV cache`.
 fn holds(
     plan: &Plan,
-    r: &dovata::plan::Region,
+    r: &dovata::memplan::Region,
 ) -> String
 {
     if let Backing::File { part, file_start } = r.backing {

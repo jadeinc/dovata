@@ -14,7 +14,7 @@ All of it is pure except the file reads, `Preflight::read` and the reads inside
 `Model::open` and `Model::from_parts`. The checks take byte slices, so they are
 unit-tested on any machine against synthetic GGUF headers. Those headers all come from
 one builder, `preflight::tests::header` and `header_with`, which the tests in `dims.rs`,
-`model.rs` and `src/plan/address.rs` share. A second hand-written GGUF byte
+`model.rs` and `src/memplan/address.rs` share. A second hand-written GGUF byte
 builder is the kind of duplicate that drifts from the real format without anyone
 noticing.
 

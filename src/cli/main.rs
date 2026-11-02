@@ -146,10 +146,10 @@ pub(crate) fn parse_size(
 ///
 /// Outputs: the phrase, such as `apple target, 17.8 GiB, buffers up to 13.3 GiB`.
 pub(crate) fn target_text(
-    t: &dovata::plan::Target,
+    t: &dovata::target::Target,
 ) -> String
 {
-    use dovata::plan::Target;
+    use dovata::target::Target;
     match t {
         Target::Apple { unified_bytes, max_buffer_bytes, .. } => {
             format!("apple target, {}, buffers up to {}", size(*unified_bytes), size(*max_buffer_bytes))

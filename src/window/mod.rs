@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/plan/window.rs
+//! File: src/window/mod.rs
 //! Description: Splits a mapped GGUF file into windows no larger than one GPU buffer.
 
 /// Purpose: This struct holds one tensor's file offset and size in a mapped file.

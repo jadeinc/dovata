@@ -1,5 +1,6 @@
-# Rust
-target/
+# Rust. Anchored to the root, where every crate in the workspace builds, so that
+# src/target/, the planner's machine description, is not ignored.
+/target/
 **/*.rs.bk
 
 # C / CUDA build artifacts. Nothing in the 3.0 tree is C++ or CUDA of our own; these

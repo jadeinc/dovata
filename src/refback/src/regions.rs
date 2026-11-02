@@ -8,7 +8,8 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::ptr::NonNull;
 
-use dovata::plan::{Backing, Plan, Region, RegionKind, Target};
+use dovata::memplan::{Backing, Plan, Region};
+use dovata::target::{RegionKind, Target};
 use memmap2::Mmap;
 
 use crate::{Check, Outcome, StartError};

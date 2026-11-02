@@ -7,7 +7,8 @@ use std::path::PathBuf;
 
 use dovata::layout::{self, BindOptions};
 use dovata::load::{KvType, Model};
-use dovata::plan::{Backing, Plan, Role, Target};
+use dovata::memplan::{Backing, Plan, Role};
+use dovata::target::Target;
 
 use crate::fixture::Fixture;
 use crate::{quant, run, Check, Report, StartError};
@@ -50,7 +51,7 @@ fn planned(
     let f = Fixture::llama().unwrap();
     let model = Model::open(&f.path).unwrap();
     let layout = layout::for_model(&model, None).unwrap();
-    let plan = dovata::plan::plan(&model, &layout, &opts(), &target).unwrap();
+    let plan = dovata::memplan::plan(&model, &layout, &opts(), &target).unwrap();
     let parts = model.paths.clone();
     (f, parts, plan)
 }

@@ -3,7 +3,7 @@
 `dovata` is the package's command-line program. It has two groups of commands:
 `dovata machine` reports the current machine's memory and GPUs through
 [`src/machine/`](../machine/README.md), and `dovata plan` places a model's tensors in
-memory through [`src/plan/`](../plan/README.md). `gguf-inspect` can join it later as
+memory through [`src/memplan/`](../memplan/README.md). `gguf-inspect` can join it later as
 `dovata inspect`, so dovata has one program with subcommands instead of one program per
 job.
 
@@ -46,7 +46,7 @@ memory.
 
 `info` and `target` answer different questions. `info` describes the hardware: all of
 its memory, its page size and every GPU. `target` describes the budget the planner gets
-from that hardware, the `plan::Target` that `Machine::target` builds: Apple on a Mac
+from that hardware, the `target::Target` that `Machine::target` builds: Apple on a Mac
 with Metal, CUDA for the first NVIDIA GPU, and CPU otherwise. On a Mac, the budget is
 Metal's working set, not all of memory:
 
@@ -149,4 +149,4 @@ cargo run --bin dovata -- plan /path/to/model.gguf
 ## Who uses it
 
 People, at a terminal. Programs such as the Jade compiler call `dovata::machine` and
-`dovata::plan` directly.
+`dovata::memplan` directly.

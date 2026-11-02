@@ -7,7 +7,7 @@ use std::fmt;
 
 use serde::Serialize;
 
-use crate::plan::Target;
+use crate::target::Target;
 
 #[cfg(feature = "machine")]
 mod probe;

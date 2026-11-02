@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use dovata::load::Model;
-use dovata::plan::Plan;
+use dovata::memplan::Plan;
 
 use crate::{Check, Outcome, StartError};
 

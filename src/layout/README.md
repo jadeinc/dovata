@@ -19,7 +19,7 @@ that builds a ggml graph at run time. A layout is that answer as data: it can be
 reviewed, versioned, diffed against llama.cpp when the pin moves, and handed to a
 compiler that never links llama.cpp.
 
-Layouts are their own capability, separate from the planner in `src/plan/`. A layout is
+Layouts are their own capability, separate from the planner in `src/memplan/`. A layout is
 the contract with the compiler's kernels, and the planner only decides where a bound
 graph's tensors go. Keeping the two apart means the format can be reviewed, versioned
 and extended without touching placement, and the planner never needs to know about
@@ -45,7 +45,7 @@ not know yet.
 
 ## Who uses it
 
-The planner (`src/plan/`, next) takes a `BoundGraph` and places its tensors. The Jade
+The planner (`src/memplan/`, next) takes a `BoundGraph` and places its tensors. The Jade
 compiler takes the same graph, through the plan, and generates kernels from its ops,
 dispatching on `ops::ggml_enum`, which gives the ggml enum value each op name stands
 for. `gguf-inspect` says whether a file's architecture has a built-in layout. A caller

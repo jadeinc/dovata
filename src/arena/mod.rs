@@ -1,5 +1,5 @@
 //! Author: Joe Ricks
-//! File: src/plan/arena.rs
+//! File: src/arena/mod.rs
 //! Description: Places a step's short-lived tensors in one shared memory region.
 
 /// Purpose: This struct holds one tensor the arena must place.

@@ -17,8 +17,17 @@ pub mod quantize;
 /// Describes each supported architecture's compute graph as data, in ggml's op names.
 pub mod layout;
 
+/// Describes the machine a plan is for and its kinds of memory.
+pub mod target;
+
+/// Splits a mapped GGUF file into windows no larger than one GPU buffer.
+pub mod window;
+
+/// Packs one step's short-lived tensors into shared memory by when each is alive.
+pub mod arena;
+
 /// Places every tensor of a model in memory on one target machine.
-pub mod plan;
+pub mod memplan;
 
 /// Reads the current machine's memory capacity, its GPUs and their use.
 pub mod machine;
