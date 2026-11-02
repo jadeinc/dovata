@@ -3,7 +3,9 @@
 //! Description: The `dovata machine` commands, which report the current machine's memory
 //! and GPUs.
 
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal, Read, Write};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use dovata::machine::{self, Gpu, Machine, Pressure, Usage};
@@ -19,13 +21,15 @@ Report this machine's memory and GPUs.
 commands:
   info              memory capacity, page size, and GPU memory limits
   usage             memory in use right now
-  watch             memory in use, refreshed in place until Ctrl-C
+  watch             memory in use on a full screen, redrawn in place until you press q
   target            the memory and limits the planner will use on this machine
 
 options:
   --json            print JSON instead of text (info, usage, target)
   --process NAME    also show the memory of running programs named NAME (usage, watch)
   --every SECONDS   seconds between refreshes, default 1 (watch)
+  --lines           one line per reading instead of a full screen (watch); the default
+                    when the output is a file or a pipe
   --cpu             describe the CPU even when a GPU is present (target)
 ";
 
@@ -39,7 +43,7 @@ enum Cmd {
     /// `dovata machine usage`.
     Usage { json: bool, process: Option<String> },
     /// `dovata machine watch`.
-    Watch { every: Duration, process: Option<String> },
+    Watch { every: Duration, process: Option<String>, lines: bool },
     /// `dovata machine target`.
     Target { json: bool, cpu: bool },
 }
@@ -73,13 +77,14 @@ fn parse(
         [] | ["help" | "--help" | "-h", ..] => return Ok(Cmd::Help),
         [command, rest @ ..] => (*command, rest),
     };
-    let (mut json, mut cpu, mut process, mut every) = (false, false, None, Duration::from_secs(1));
+    let (mut json, mut cpu, mut process, mut every, mut lines) = (false, false, None, Duration::from_secs(1), false);
     let mut i = 0;
     while i < rest.len() {
         let value = |i: usize| rest.get(i + 1).copied().ok_or_else(|| format!("{} needs a value", rest[i]));
         match rest[i] {
             "--json" => json = true,
             "--cpu" => cpu = true,
+            "--lines" => lines = true,
             "--process" => {
                 process = Some(value(i)?.to_owned());
                 i += 1;
@@ -101,7 +106,7 @@ fn parse(
     let allowed: &[&str] = match command {
         "info" => &["--json"],
         "usage" => &["--json", "--process"],
-        "watch" => &["--process", "--every"],
+        "watch" => &["--process", "--every", "--lines"],
         "target" => &["--json", "--cpu"],
         other => return Err(format!("unknown command `machine {other}`")),
     };
@@ -111,7 +116,7 @@ fn parse(
     Ok(match command {
         "info" => Cmd::Info { json },
         "usage" => Cmd::Usage { json, process },
-        "watch" => Cmd::Watch { every, process },
+        "watch" => Cmd::Watch { every, process, lines },
         _ => Cmd::Target { json, cpu },
     })
 }
@@ -144,7 +149,7 @@ fn run(
                 out(&usage_text(&u, process.as_deref()));
             }
         }
-        Cmd::Watch { every, process } => watch(every, process.as_deref())?,
+        Cmd::Watch { every, process, lines } => watch(every, process.as_deref(), lines)?,
         Cmd::Target { json: as_json, cpu } => {
             let target = machine::current().map_err(|e| e.to_string())?.target(cpu);
             if as_json {
@@ -157,44 +162,210 @@ fn run(
     Ok(())
 }
 
-/// Purpose: This function shows memory in use, refreshed in place, until the program is
-/// stopped or its output is closed.
+/// Purpose: This function shows memory in use until the user quits or its output is
+/// closed.
 ///
 /// Inputs:
 /// - `every`: the time between refreshes.
 /// - `process`: a program name whose running copies to show.
+/// - `lines`: `true` to write one line per reading, even to a terminal.
 ///
-/// Outputs: `Ok(())` once its output is closed, as when piped into `head`, or the message
-/// to print when reading the machine fails.
+/// Outputs: `Ok(())` once the user presses q or the output is closed, as when piped into
+/// `head`, or the message to print when reading the machine fails.
 fn watch(
     every: Duration,
     process: Option<&str>,
+    lines: bool,
 ) -> Result<(), String>
 {
     let m = machine::current().map_err(|e| e.to_string())?;
-    let terminal = std::io::stdout().is_terminal();
     let start = Instant::now();
+
+    // One line per reading, for a log file, a pipe, or anyone who asks with --lines.
+    if lines || !std::io::stdout().is_terminal() {
+        loop {
+            let u = machine::usage(process).map_err(|e| e.to_string())?;
+            let line = format!("{:>8.1}s  {}\n", start.elapsed().as_secs_f64(), usage_line(&u));
+            if !write_out(&line) {
+                return Ok(());
+            }
+            std::thread::sleep(every);
+        }
+    }
+
+    // A full screen of its own, the way vim and top work. Dropping `screen` gives the
+    // terminal back, on a quit and on an error alike.
+    let chip = m.chip.as_deref().unwrap_or(&m.os);
+    let mut screen = Screen::open();
     loop {
         let u = machine::usage(process).map_err(|e| e.to_string())?;
-        let text = if terminal {
-            // Move to the top left and clear the screen, so each reading replaces the last.
-            format!(
-                "\x1b[H\x1b[2Jdovata machine watch: {}, every {} s. Press Ctrl-C to stop.\n\n{}",
-                m.chip.as_deref().unwrap_or(&m.os),
-                every.as_secs_f64(),
-                usage_text(&u, process)
-            )
-        } else {
-            format!("{:>8.1}s  {}\n", start.elapsed().as_secs_f64(), usage_line(&u))
-        };
-        let mut stdout = std::io::stdout().lock();
-        // Rust ignores SIGPIPE, so a closed pipe shows up here as a write error.
-        if stdout.write_all(text.as_bytes()).and_then(|()| stdout.flush()).is_err() {
+        let text = format!(
+            "dovata machine watch: {chip}, every {} s, running {} s\n\n{}\nPress q to quit.",
+            every.as_secs_f64(),
+            start.elapsed().as_secs(),
+            usage_text(&u, process)
+        );
+        if !write_out(&frame(&text)) || screen.wait(every) {
             return Ok(());
         }
-        drop(stdout);
-        std::thread::sleep(every);
     }
+}
+
+/// Purpose: This struct holds the terminal while `watch` shows its full screen, and gives
+/// the terminal back as it was when it is dropped.
+struct Screen {
+    /// The terminal's settings from before, as `stty -g` prints them, or `None` when the
+    /// keyboard is not a terminal.
+    saved: Option<String>,
+    /// Each key the user presses, read on a second thread, or `None` when there is no
+    /// keyboard to read.
+    keys: Option<mpsc::Receiver<u8>>,
+}
+
+impl Screen {
+    /// Purpose: This function switches the terminal to a full screen of its own.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the [`Screen`].
+    fn open() -> Screen
+    {
+        // Each key reaches dovata as soon as it is pressed and is not shown on screen.
+        // Ctrl-C arrives as a key instead of stopping the program, so the terminal is
+        // always given back. When stdin is not a terminal, its settings are left alone.
+        let saved = if std::io::stdin().is_terminal() { stty(&["-g"]) } else { None };
+        let saved = saved.filter(|_| stty(&["-icanon", "-echo", "-isig", "min", "1", "time", "0"]).is_some());
+        let keys = saved.as_ref().map(|_| read_keys());
+        // Switch to the terminal's second screen, and hide the cursor.
+        write_out("\x1b[?1049h\x1b[?25l");
+        Screen { saved, keys }
+    }
+
+    /// Purpose: This function waits until the next refresh, or until the user presses a
+    /// key.
+    ///
+    /// Inputs:
+    /// - `every`: the longest time to wait.
+    ///
+    /// Outputs: `true` when the user pressed q or Ctrl-C.
+    fn wait(
+        &mut self,
+        every: Duration,
+    ) -> bool
+    {
+        let Some(keys) = &self.keys else {
+            std::thread::sleep(every);
+            return false;
+        };
+        match keys.recv_timeout(every) {
+            // Any other key refreshes the screen right away.
+            Ok(key) => is_quit(key),
+            Err(mpsc::RecvTimeoutError::Timeout) => false,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // The keyboard closed, so only the timer is left.
+                self.keys = None;
+                false
+            }
+        }
+    }
+}
+
+impl Drop for Screen {
+    /// Purpose: This function gives the terminal back as it was before `watch` started.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: none.
+    fn drop(&mut self)
+    {
+        // Show the cursor, and switch back to the first screen, which still holds what
+        // was there before.
+        write_out("\x1b[?25h\x1b[?1049l");
+        if let Some(settings) = &self.saved {
+            stty(&[settings.as_str()]);
+        }
+    }
+}
+
+/// Purpose: This function runs `stty` on the terminal dovata was started from.
+///
+/// Inputs:
+/// - `args`: the arguments for `stty`, such as `["-g"]`.
+///
+/// Outputs: what `stty` printed, trimmed, or `None` when it could not run or failed.
+fn stty(
+    args: &[&str],
+) -> Option<String>
+{
+    // stty reads and changes the terminal on its own stdin, so it gets dovata's.
+    let out = Command::new("stty").args(args).stdin(Stdio::inherit()).stderr(Stdio::null()).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// Purpose: This function starts a thread that reads each key the user presses.
+///
+/// Inputs: none.
+///
+/// Outputs: the receiving end, which gets one byte for each key.
+fn read_keys() -> mpsc::Receiver<u8>
+{
+    let (send, keys) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut byte = [0u8; 1];
+        // The thread ends when stdin closes, or with the program.
+        while let Ok(1) = std::io::stdin().read(&mut byte) {
+            if send.send(byte[0]).is_err() {
+                break;
+            }
+        }
+    });
+    keys
+}
+
+/// Purpose: This function tells whether a key asks `watch` to quit.
+///
+/// Inputs:
+/// - `key`: the byte the terminal sent for the key.
+///
+/// Outputs: `true` for q, Q and Ctrl-C.
+fn is_quit(
+    key: u8,
+) -> bool
+{
+    matches!(key, b'q' | b'Q' | 0x03)
+}
+
+/// Purpose: This function turns text into one full-screen frame that draws over the last
+/// one in place.
+///
+/// Inputs:
+/// - `text`: the lines to show.
+///
+/// Outputs: the text, with the terminal codes that draw it from the top left.
+fn frame(
+    text: &str,
+) -> String
+{
+    // Start at the top left, clear the rest of each line after its text, and clear
+    // everything below the last line. Nothing is cleared before it is drawn over, so the
+    // screen does not flicker, and the last line has no newline, so it never scrolls.
+    let lines: Vec<String> = text.lines().map(|l| format!("{l}\x1b[K")).collect();
+    format!("\x1b[H{}\x1b[J", lines.join("\n"))
+}
+
+/// Purpose: This function writes text to the terminal or pipe right away.
+///
+/// Inputs:
+/// - `text`: the text.
+///
+/// Outputs: `false` when the output is closed, as when piped into `head`.
+fn write_out(
+    text: &str,
+) -> bool
+{
+    let mut stdout = std::io::stdout().lock();
+    // Rust ignores SIGPIPE, so a closed pipe shows up here as a write error.
+    stdout.write_all(text.as_bytes()).and_then(|()| stdout.flush()).is_ok()
 }
 
 /// Purpose: This function formats a machine's capacity for `dovata machine info`.
@@ -385,7 +556,8 @@ mod tests {
         assert_eq!(p("info"), Ok(Cmd::Info { json: false }));
         assert_eq!(p("info --json"), Ok(Cmd::Info { json: true }));
         assert_eq!(p("usage --process qwen-chat"), Ok(Cmd::Usage { json: false, process: Some("qwen-chat".into()) }));
-        assert_eq!(p("watch --every 0.5"), Ok(Cmd::Watch { every: Duration::from_millis(500), process: None }));
+        assert_eq!(p("watch --every 0.5"), Ok(Cmd::Watch { every: Duration::from_millis(500), process: None, lines: false }));
+        assert_eq!(p("watch --lines"), Ok(Cmd::Watch { every: Duration::from_secs(1), process: None, lines: true }));
         assert_eq!(p("target --cpu"), Ok(Cmd::Target { json: false, cpu: true }));
         assert_eq!(p("target --json"), Ok(Cmd::Target { json: true, cpu: false }));
     }
@@ -393,9 +565,22 @@ mod tests {
     #[test]
     fn bad_command_lines_are_refused()
     {
-        for bad in ["nope", "info --cpu", "usage --process", "watch --every soon", "watch --every 0", "info --verbose"] {
+        for bad in ["nope", "info --cpu", "usage --process", "watch --every soon", "watch --every 0", "info --verbose", "usage --lines"] {
             assert!(p(bad).is_err(), "{bad:?} should be refused");
         }
+    }
+
+    #[test]
+    fn a_frame_draws_over_the_last_one_in_place()
+    {
+        assert_eq!(frame("a\nb\n"), "\x1b[Ha\x1b[K\nb\x1b[K\x1b[J");
+    }
+
+    #[test]
+    fn q_and_ctrl_c_quit_and_other_keys_do_not()
+    {
+        assert!(is_quit(b'q') && is_quit(b'Q') && is_quit(0x03));
+        assert!(!is_quit(b' ') && !is_quit(b'j') && !is_quit(0x1b));
     }
 
     #[test]

@@ -12,7 +12,7 @@ job.
 ```text
 dovata machine info [--json]                    memory capacity, page size, GPU memory limits
 dovata machine usage [--json] [--process N]     memory in use right now
-dovata machine watch [--every S] [--process N]  memory in use, refreshed in place until Ctrl-C
+dovata machine watch [--every S] [--process N]  memory in use on a full screen, until you press q
 dovata machine target [--json] [--cpu]          the memory and limits the planner will use here
 ```
 
@@ -33,12 +33,24 @@ $ dovata machine usage --process zsh
   process    92385 /bin/zsh, 2.4 MiB resident
 ```
 
-`watch` shows the same reading as `usage`, cleared and redrawn every `--every` seconds,
-one second by default. On a machine with NVIDIA GPUs, each GPU's line shows its memory,
-load, temperature and clocks. When its output is a file or a pipe instead of a terminal,
-`watch` writes one line per reading, with the seconds since it started, so a log of a
-long run can be kept with `dovata machine watch > memory.log`. It stops when Ctrl-C
-ends it or when its output is closed, as when it is piped into `head`.
+`watch` shows the same reading as `usage` on a full screen of its own, the way vim and
+`top` do, and redraws it in place every `--every` seconds, one second by default. Press q
+or Ctrl-C to quit, and the terminal comes back exactly as it was, with nothing added to
+its scrollback. Any other key redraws right away. On a machine with NVIDIA GPUs, each
+GPU's line shows its memory, load, temperature and clocks.
+
+The full screen needs two terminal features. The program switches to the terminal's
+second screen with the codes `ESC[?1049h` and `ESC[?1049l`. It also runs `stty` so each
+key arrives as soon as it is pressed, and puts the old settings back on the way out.
+Clearing the whole screen with `ESC[2J` on every reading, as `watch` used to, made macOS
+Terminal and iTerm2 push each reading into the scrollback.
+
+`--lines` writes one line per reading instead, with the seconds since it started. That
+is also what `watch` does when its output is a file or a pipe instead of a terminal, so a
+log of a long run can be kept with `dovata machine watch > memory.log`, and a program
+such as Claude Code, which reads the output rather than watching a screen, gets a line
+per reading. Line mode stops when Ctrl-C ends it or when its output is closed, as when it
+is piped into `head`.
 
 `--process NAME` matches running programs whose command, or the last part of its path,
 is exactly `NAME`, and shows each one's resident memory, the bytes it holds in physical
