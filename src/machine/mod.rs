@@ -567,7 +567,7 @@ mod tests {
     {
         // The kernel cuts the Name line to 15 characters; the path in cmdline is whole.
         let status = "Name:\tdovata-d6d26964\nUmask:\t0022\nState:\tR (running)\nPid:\t4877\nVmRSS:\t   20480 kB\n";
-        let cmdline = b"/home/runner/target/debug/deps/dovata-d6d2696452ae6944\0--test-threads\01\0";
+        let cmdline = b"/home/runner/target/debug/deps/dovata-d6d2696452ae6944\0--test-threads=1\0";
         let p = parse_proc_process(4877, cmdline, status, "dovata-d6d2696452ae6944").unwrap();
         assert_eq!((p.pid, p.rss_bytes), (4877, 20480 * 1024));
         assert_eq!(p.command, "/home/runner/target/debug/deps/dovata-d6d2696452ae6944");
