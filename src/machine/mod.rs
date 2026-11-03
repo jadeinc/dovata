@@ -151,7 +151,8 @@ pub enum Pressure {
 pub struct ProcessUse {
     /// The process id.
     pub pid: u32,
-    /// The command, as `ps` shows it.
+    /// The command: on macOS as `ps` shows it, and on Linux the program's path from
+    /// `/proc/<pid>/cmdline`.
     pub command: String,
     /// Resident memory: the bytes of the program held in physical memory.
     pub rss_bytes: u64,
@@ -435,6 +436,42 @@ pub fn parse_ps(
         .collect()
 }
 
+/// Purpose: This function reads one Linux process from its files in `/proc`, when it is
+/// the program asked for.
+///
+/// Inputs:
+/// - `pid`: the process id, which names its directory in `/proc`.
+/// - `cmdline`: the contents of `/proc/<pid>/cmdline`, its arguments, each ending in a
+///   NUL byte. The first is the program's path.
+/// - `status`: the contents of `/proc/<pid>/status`. Its `Name` line is the program's
+///   name cut to 15 characters, and its `VmRSS` line is the resident memory.
+/// - `name`: the program name to match against the path's last part, such as
+///   `qwen-chat`, or the whole path. The `Name` line matches too.
+///
+/// Outputs: the process, or `None` when it is another program.
+pub fn parse_proc_process(
+    pid: u32,
+    cmdline: &[u8],
+    status: &str,
+    name: &str,
+) -> Option<ProcessUse>
+{
+    let field = |key: &str| status.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix(':').map(str::trim));
+    let program = String::from_utf8_lossy(cmdline.split(|&b| b == 0).next().unwrap_or_default()).into_owned();
+    let base = program.rsplit('/').next().unwrap_or(&program);
+    let short = field("Name").unwrap_or_default();
+    if !(base == name || program == name || short == name) {
+        return None;
+    }
+    // A kernel thread has no VmRSS line, and holds no memory of its own.
+    let rss_kib = match field("VmRSS") {
+        Some(v) => v.strip_suffix("kB")?.trim().parse::<u64>().ok()?,
+        None => 0,
+    };
+    let command = if program.is_empty() { short.to_owned() } else { program };
+    Some(ProcessUse { pid, command, rss_bytes: rss_kib * 1024 })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,6 +560,29 @@ mod tests {
         assert_eq!(code.len(), 1, "a name with spaces");
         assert_eq!(parse_ps(text, "/sbin/launchd")[0].pid, 1, "the whole command matches too");
         assert!(parse_ps(text, "chat").is_empty(), "a partial name does not");
+    }
+
+    #[test]
+    fn a_linux_process_matches_by_its_whole_program_name()
+    {
+        // The kernel cuts the Name line to 15 characters; the path in cmdline is whole.
+        let status = "Name:\tdovata-d6d26964\nUmask:\t0022\nState:\tR (running)\nPid:\t4877\nVmRSS:\t   20480 kB\n";
+        let cmdline = b"/home/runner/target/debug/deps/dovata-d6d2696452ae6944\0--test-threads\01\0";
+        let p = parse_proc_process(4877, cmdline, status, "dovata-d6d2696452ae6944").unwrap();
+        assert_eq!((p.pid, p.rss_bytes), (4877, 20480 * 1024));
+        assert_eq!(p.command, "/home/runner/target/debug/deps/dovata-d6d2696452ae6944");
+        let path = "/home/runner/target/debug/deps/dovata-d6d2696452ae6944";
+        assert!(parse_proc_process(4877, cmdline, status, path).is_some(), "the whole path matches too");
+        assert!(parse_proc_process(4877, cmdline, status, "dovata").is_none(), "a partial name does not");
+
+        // A program that rewrites its arguments still matches by its Name line.
+        let postgres = "Name:\tpostgres\nVmRSS:\t    8192 kB\n";
+        let found = parse_proc_process(10, b"postgres: checkpointer \0", postgres, "postgres");
+        assert_eq!(found.map(|p| (p.command, p.rss_bytes)), Some(("postgres: checkpointer ".into(), 8192 * 1024)));
+
+        // A kernel thread has no arguments and no resident memory.
+        let kthread = parse_proc_process(7, b"", "Name:\tkworker/0:1\n", "kworker/0:1").unwrap();
+        assert_eq!((kthread.command.as_str(), kthread.rss_bytes), ("kworker/0:1", 0));
     }
 
     #[test]

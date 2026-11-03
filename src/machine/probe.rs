@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use super::{
-    parse_memory_pressure, parse_meminfo, parse_nvidia_smi, parse_ps, parse_psi, parse_swapusage, parse_vm_stat, Gpu,
-    MachineError, Machine, MetalLimits, Usage, NVIDIA_QUERY,
+    parse_memory_pressure, parse_meminfo, parse_nvidia_smi, parse_proc_process, parse_ps, parse_psi, parse_swapusage,
+    parse_vm_stat, Gpu, MachineError, Machine, MetalLimits, ProcessUse, Usage, NVIDIA_QUERY,
 };
 
 /// Purpose: This function reads what the current machine has: its memory, page size and
@@ -71,14 +71,40 @@ pub fn usage(
     } else {
         return Err(MachineError::Unsupported(std::env::consts::OS.to_owned()));
     };
+    // Linux's `ps` shows a name cut to 15 characters, so Linux reads `/proc` instead.
     let processes = match process {
-        Some(name) => {
-            let ps = if cfg!(target_os = "macos") { "/bin/ps" } else { "ps" };
-            parse_ps(&run(ps, &["-A", "-o", "pid=,rss=,comm="])?, name)
-        }
+        Some(name) if cfg!(target_os = "macos") => parse_ps(&run("/bin/ps", &["-A", "-o", "pid=,rss=,comm="])?, name),
+        Some(name) => proc_processes(name)?,
         None => Vec::new(),
     };
     Ok(Usage { memory, nvidia: nvidia_gpus()?, processes })
+}
+
+/// Purpose: This function finds the running programs with a given name in Linux's
+/// `/proc`.
+///
+/// Inputs:
+/// - `name`: the program name, such as `qwen-chat`, or its whole path.
+///
+/// Outputs: every matching process, by process id, or a [`MachineError`] when `/proc`
+/// cannot be listed.
+fn proc_processes(
+    name: &str,
+) -> Result<Vec<ProcessUse>, MachineError>
+{
+    let dir = std::fs::read_dir("/proc").map_err(|e| MachineError::Command { program: "/proc".into(), detail: e.to_string() })?;
+    let mut found: Vec<ProcessUse> = dir
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let pid = entry.file_name().to_str()?.parse().ok()?;
+            // A process can end between the listing and these reads. It is skipped then.
+            let cmdline = std::fs::read(entry.path().join("cmdline")).ok()?;
+            let status = std::fs::read_to_string(entry.path().join("status")).ok()?;
+            parse_proc_process(pid, &cmdline, &status, name)
+        })
+        .collect();
+    found.sort_by_key(|p| p.pid);
+    Ok(found)
 }
 
 /// Purpose: This function reads every NVIDIA GPU through `nvidia-smi`.

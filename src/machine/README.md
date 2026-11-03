@@ -35,8 +35,13 @@ framework, and there is no `unsafe` code.
 | memory use | `vm_stat` | `/proc/meminfo` |
 | swap | `sysctl -n vm.swapusage` | `SwapTotal` and `SwapFree` in `/proc/meminfo` |
 | pressure | `memory_pressure -Q` | `/proc/pressure/memory` |
-| a program's memory | `ps -A -o pid=,rss=,comm=` | the same |
+| a program's memory | `ps -A -o pid=,rss=,comm=` | `cmdline` and `status` in `/proc/<pid>` |
 | NVIDIA GPUs | `nvidia-smi`, when installed | the same |
+
+Linux's `ps` shows a program's name cut to 15 characters, the kernel's limit for a
+process name, so a longer name such as `dovata-d6d2696452ae6944` never matched. On Linux
+dovata reads each process's path from `/proc/<pid>/cmdline` instead, which is whole, and
+its resident memory from the `VmRSS` line of `/proc/<pid>/status`.
 
 On macOS the tools are called by their full paths, such as `/usr/bin/vm_stat`, so a
 program of the same name earlier on `PATH` is never run instead. The Linux tools vary in
@@ -92,7 +97,8 @@ instead.
   build and test on any machine. With the `machine` feature off, it also holds the
   `current()` and `usage()` that return `NotBuilt`.
 - `probe.rs` is the edge, built only with the `machine` feature. It runs the tools for
-  the current system and passes their output to the parsers.
+  the current system, reads the Linux files in `/proc`, and passes what it gets to the
+  parsers.
 - `metal.rs` reads Metal's limits. It is built only on macOS with the `machine` feature.
 - `testdata/` holds the tool output the parser tests read. The macOS files were saved
   from a Mac Mini with an M4 on 2026-10-31. `macos-ps.txt` is in the real `ps` format
