@@ -1,0 +1,359 @@
+# deepseek2: the multi-head latent attention (MLA) transformer with mixture-of-experts
+# FFNs. llama.cpp loads DeepSeek V2, V2-Lite, V3 and R1, Kimi K2, Moonlight,
+# GLM-4.7-Flash, GigaChat3 and Mistral Large 3 as this architecture.
+#
+# Translated from llama.cpp at commit 52b3df0023659b142ce29f75c7a82cf437769c33:
+#   src/models/deepseek2.cpp  load_arch_hparams, load_arch_tensors, and the graph in
+#                             graph::graph
+#   src/llama-graph.cpp       build_inp_embd, build_inp_attn_scale, build_attn_inp_k,
+#                             build_attn_inp_kv, build_norm, build_attn (both the K-only
+#                             and the KV overloads), build_attn_mha, build_ffn,
+#                             build_moe_ffn, build_lora_mm
+#   src/llama-kv-cache.cpp    the constructor (an MLA model has no V cache), cpy_k,
+#                             cpy_v, get_k, get_v, build_input_k_rot
+#   src/llama-model.cpp       create_tensor_gate_up_exps, llama_model_rope_type
+#   src/llama-context.cpp     the YaRN attn_factor, with deepseek2's rope_yarn_log_mul
+#
+# Ops are listed in the order the C++ creates them, which is a valid execution order.
+#
+# Two attention paths, chosen by is_mla, which is set when the file states the MLA head
+# widths (attention.key_length_mla and value_length_mla):
+# - MLA with the absorption optimization, for every file converted since llama.cpp split
+#   attn_kv_b into attn_k_b and attn_v_b. K and V share one cache row per token: the
+#   compressed KV (kv_lora_rank values) then the rope part of K (n_rot values). Q's
+#   non-rope part is multiplied by attn_k_b first, so the model attends like MQA with one
+#   KV head; V is a view of the K cache's first kv_lora_rank values, and attn_v_b
+#   "decompresses" the attention output back to n_head heads. llama.cpp builds no
+#   Hadamard rotation on this path, even with a quantized cache.
+# - The legacy path, for older files that hold attn_kv_b: the compressed KV is expanded
+#   to full K and V heads before the cache, which is then an ordinary K and V cache.
+#
+# Attention is ggml_flash_attn_ext, llama.cpp's flash-attention path, as in the other
+# built-in layouts. LoRA adapters, control vectors (build_cvec) and NVFP4 sidecar scales
+# (attn_output.scale and the *_exps.scale tensors) are not part of this layout, and
+# neither is expert_gating_func 3 (softmax over the chosen weights), which no deepseek2
+# model uses; a file that asks for it fails to bind at the first read of ffn_moe_probs.
+
+schema_version = 1
+arch = "deepseek2"
+description = "DeepSeek V2/V3: MLA attention with a K-only cache, leading dense blocks, then routed and shared experts"
+outputs = ["result_output"]
+
+# Every ggml_rope_ext call in the graph passes llm_graph_context's members, which
+# llama-context.cpp fills from the model's hparams.
+defaults.rope.n_dims = "n_rot"
+defaults.rope.mode = "norm"              # llama_model_rope_type: LLM_ARCH_DEEPSEEK2 is NORM
+defaults.rope.n_ctx_orig = "n_ctx_orig"
+defaults.rope.freq_base = "freq_base"
+defaults.rope.freq_scale = "freq_scale"
+defaults.rope.ext_factor = "ext_factor"
+defaults.rope.attn_factor = "attn_factor"
+defaults.rope.beta_fast = "beta_fast"
+defaults.rope.beta_slow = "beta_slow"
+
+# llama_model_deepseek2::load_arch_tensors. Its n_embd_head_qk_rope is n_rot, and its
+# n_embd_head_qk_nope is n_embd_head_k_mla - n_rot.
+weights = [
+  { name = "token_embd.weight", dims = ["n_embd", "n_vocab"] },
+  { name = "output_norm.weight", dims = ["n_embd"] },
+  # TENSOR_NOT_REQUIRED, then TENSOR_DUPLICATED from the token embeddings: a tied
+  # model has no output.weight, and the LM head reads token_embd.weight instead.
+  { name = "output.weight", dims = ["n_embd", "n_vocab"], fallback = "token_embd.weight" },
+
+  { name = "blk.{L}.attn_norm.weight", dims = ["n_embd"] },
+  # Q through a low-rank pair when the model has one; the lite variants, such as
+  # DeepSeek-V2-Lite and Moonlight, have one full projection instead.
+  { name = "blk.{L}.attn_q_a_norm.weight", dims = ["q_lora_rank"], when = "q_lora_rank > 0" },
+  { name = "blk.{L}.attn_kv_a_norm.weight", dims = ["kv_lora_rank"] },
+  { name = "blk.{L}.attn_q_a.weight", dims = ["n_embd", "q_lora_rank"], when = "q_lora_rank > 0" },
+  { name = "blk.{L}.attn_q_b.weight", dims = ["q_lora_rank", "n_head * n_embd_head_k_mla"], when = "q_lora_rank > 0" },
+  { name = "blk.{L}.attn_q.weight", dims = ["n_embd", "n_head * n_embd_head_k_mla"], when = "q_lora_rank == 0" },
+  # The compressed KV and the rope part of K, from one projection.
+  { name = "blk.{L}.attn_kv_a_mqa.weight", dims = ["n_embd", "kv_lora_rank + n_rot"] },
+  # MLA files hold attn_kv_b split in two, with the K half transposed; older files hold
+  # it whole.
+  { name = "blk.{L}.attn_k_b.weight", dims = ["n_embd_head_k_mla - n_rot", "kv_lora_rank", "n_head"], when = "is_mla" },
+  { name = "blk.{L}.attn_v_b.weight", dims = ["kv_lora_rank", "n_embd_head_v_mla", "n_head"], when = "is_mla" },
+  { name = "blk.{L}.attn_kv_b.weight", dims = ["kv_lora_rank", "n_head * (n_embd_head_k_mla - n_rot + n_embd_head_v_mla)"], when = "!is_mla" },
+  { name = "blk.{L}.attn_output.weight", dims = ["n_head * n_embd_head_v_mla", "n_embd"] },
+
+  { name = "blk.{L}.ffn_norm.weight", dims = ["n_embd"] },
+  # The first n_layer_dense_lead layers have a dense FFN.
+  { name = "blk.{L}.ffn_gate.weight", dims = ["n_embd", "n_ff"], when = "L < n_layer_dense_lead" },
+  { name = "blk.{L}.ffn_down.weight", dims = ["n_ff", "n_embd"], when = "L < n_layer_dense_lead" },
+  { name = "blk.{L}.ffn_up.weight", dims = ["n_embd", "n_ff"], when = "L < n_layer_dense_lead" },
+  # The rest have routed experts, with DeepSeek V3's optional selection bias,
+  { name = "blk.{L}.ffn_gate_inp.weight", dims = ["n_embd", "n_expert"], when = "L >= n_layer_dense_lead" },
+  { name = "blk.{L}.exp_probs_b.bias", dims = ["n_expert"], optional = true, when = "L >= n_layer_dense_lead" },
+  { name = "blk.{L}.ffn_down_exps.weight", dims = ["n_ff_exp", "n_embd", "n_expert"], when = "L >= n_layer_dense_lead" },
+  # create_tensor_gate_up_exps: one fused gate and up weight when the file has it, else
+  # the two separately.
+  { name = "blk.{L}.ffn_gate_up_exps.weight", dims = ["n_embd", "n_ff_exp * 2", "n_expert"], optional = true, when = "L >= n_layer_dense_lead" },
+  { name = "blk.{L}.ffn_gate_exps.weight", dims = ["n_embd", "n_ff_exp", "n_expert"], when = "L >= n_layer_dense_lead && !has(blk.{L}.ffn_gate_up_exps.weight)" },
+  { name = "blk.{L}.ffn_up_exps.weight", dims = ["n_embd", "n_ff_exp", "n_expert"], when = "L >= n_layer_dense_lead && !has(blk.{L}.ffn_gate_up_exps.weight)" },
+  # and shared experts, one dense FFN n_ff_exp * n_expert_shared wide.
+  { name = "blk.{L}.ffn_gate_shexp.weight", dims = ["n_embd", "n_ff_exp * n_expert_shared"], when = "L >= n_layer_dense_lead" },
+  { name = "blk.{L}.ffn_down_shexp.weight", dims = ["n_ff_exp * n_expert_shared", "n_embd"], when = "L >= n_layer_dense_lead" },
+  { name = "blk.{L}.ffn_up_shexp.weight", dims = ["n_embd", "n_ff_exp * n_expert_shared"], when = "L >= n_layer_dense_lead" },
+]
+
+tensors = [
+  # build_inp_embd: the token ids of this step.
+  { name = "inp_tokens", kind = "input", dtype = "i32", dims = ["n_tokens"] },
+  # build_inp_attn_scale: Mistral Large 3's per-token temperature scale for Q, present
+  # only when the file sets attention.temperature_scale.
+  { name = "inp_attn_scale", kind = "input", dtype = "f32", dims = [1, 1, "n_tokens"], when = "f_attn_temp_scale != 0" },
+  # build_inp_pos: one position per token.
+  { name = "inp_pos", kind = "input", dtype = "i32", dims = ["n_tokens"] },
+  # build_attn_inp_k for MLA, build_attn_inp_kv for the legacy path: the cache rows this
+  # step writes (one index per token) and the mask, which is f16 because flash attention
+  # needs it. Only the legacy path writes a V cache, and only it builds the Hadamard
+  # matrices for a quantized cache.
+  { name = "inp_k_idxs", kind = "input", dtype = "i64", dims = ["n_tokens"] },
+  { name = "inp_v_idxs", kind = "input", dtype = "i64", dims = ["n_tokens"], when = "!is_mla" },
+  { name = "attn_inp_kq_mask", kind = "input", dtype = "f16", dims = ["n_kv", "n_tokens", 1, 1] },
+  { name = "attn_inp_k_rot", kind = "input", dtype = "f32", dims = ["n_attn_rot_k", "n_attn_rot_k"], when = "!is_mla && attn_rot_k" },
+  { name = "attn_inp_v_rot", kind = "input", dtype = "f32", dims = ["n_attn_rot_v", "n_attn_rot_v"], when = "!is_mla && attn_rot_v" },
+  # build_inp_out_ids: the rows whose logits the step returns.
+  { name = "inp_out_ids", kind = "input", dtype = "i32", dims = ["n_outputs"] },
+  # llama_kv_cache's layers[il].k and .v: one stream of n_ctx cells per layer. With MLA
+  # the K row is kv_lora_rank + n_rot wide (the file's key_length, with one KV head), and
+  # there is no V tensor: has_v is !is_mla.
+  { name = "cache_k_l{L}", kind = "kv", dtype = "kv_k", dims = ["n_embd_k_gqa", "n_ctx"] },
+  { name = "cache_v_l{L}", kind = "kv", dtype = "kv_v", dims = ["n_embd_v_gqa", "n_ctx"], when = "!is_mla" },
+]
+
+prologue = [
+  # build_inp_embd: the embedding rows of this step's tokens.
+  { op = "get_rows", in = ["token_embd.weight", "inp_tokens"], out = "inpL" },
+]
+
+block = [
+  # build_norm(inpL, attn_norm, NULL, LLM_NORM_RMS)
+  { op = "rms_norm", in = ["inpL"], out = "norm", eps = "f_norm_rms_eps" },
+  { op = "mul", in = ["norm", "blk.{L}.attn_norm.weight"], out = "attn_norm" },
+
+  # deepseek2.cpp: Q through wq_a, an RMS norm (build_norm) and wq_b, or through wq for
+  # a lite variant. Each head is n_embd_head_k_mla wide.
+  { op = "mul_mat", when = "q_lora_rank > 0", in = ["blk.{L}.attn_q_a.weight", "attn_norm"], out = "q" },
+  { op = "rms_norm", when = "q_lora_rank > 0", in = ["q"], out = "norm", eps = "f_norm_rms_eps" },
+  { op = "mul", when = "q_lora_rank > 0", in = ["norm", "blk.{L}.attn_q_a_norm.weight"], out = "q" },
+  { op = "mul_mat", when = "q_lora_rank > 0", in = ["blk.{L}.attn_q_b.weight", "q"], out = "q" },
+  { op = "mul_mat", when = "q_lora_rank == 0", in = ["blk.{L}.attn_q.weight", "attn_norm"], out = "q" },
+  # Split every Q head into its non-rope part, then its rope part.
+  { op = "view", in = ["q"], out = "q_nope", ne = ["n_embd_head_k_mla - n_rot", "n_head", "n_tokens"], nb = ["row_size(n_embd_head_k_mla)", "row_size(n_embd_head_k_mla) * n_head"], offset = 0 },
+  { op = "view", in = ["q"], out = "q_pe", ne = ["n_rot", "n_head", "n_tokens"], nb = ["row_size(n_embd_head_k_mla)", "row_size(n_embd_head_k_mla) * n_head"], offset = "row_size(n_embd_head_k_mla - n_rot)" },
+
+  # The compressed KV and the rope part of K, split out of one projection's rows.
+  { op = "mul_mat", in = ["blk.{L}.attn_kv_a_mqa.weight", "attn_norm"], out = "kv_cmpr_pe" },
+  { op = "view", in = ["kv_cmpr_pe"], out = "kv_cmpr", ne = ["kv_lora_rank", "n_tokens"], nb = ["row_size(kv_lora_rank + n_rot)"], offset = 0 },
+  { op = "view", in = ["kv_cmpr_pe"], out = "k_pe", ne = ["n_rot", 1, "n_tokens"], nb = ["row_size(kv_lora_rank + n_rot)", "row_size(kv_lora_rank + n_rot)"], offset = "row_size(kv_lora_rank)" },
+
+  # Rope only the rope parts; K's is one head shared by every Q head.
+  { op = "rope", in = ["q_pe", "inp_pos"], out = "q_pe" },
+  { op = "rope", in = ["k_pe", "inp_pos"], out = "k_pe" },
+
+  # build_norm(kv_cmpr, attn_kv_a_norm, nullptr, LLM_NORM_RMS)
+  { op = "rms_norm", in = ["kv_cmpr"], out = "norm", eps = "f_norm_rms_eps" },
+  { op = "mul", in = ["norm", "blk.{L}.attn_kv_a_norm.weight"], out = "kv_cmpr" },
+
+  # MLA with absorption: fold attn_k_b into Q's non-rope part, per head, so Q.K can be
+  # taken against the compressed KV. The permutes move heads to dim 2 for the batched
+  # matmul and back. "rope must go first for in-place context shifting", so Q and K
+  # are the absorbed part, then the rope part.
+  { op = "permute", when = "is_mla", in = ["q_nope"], out = "q_nope", axes = [0, 2, 1, 3] },
+  { op = "mul_mat", when = "is_mla", in = ["blk.{L}.attn_k_b.weight", "q_nope"], out = "q_nope_absorbed" },
+  { op = "permute", when = "is_mla", in = ["q_nope_absorbed"], out = "q_nope_absorbed", axes = [0, 2, 1, 3] },
+  { op = "concat", when = "is_mla", in = ["q_nope_absorbed", "q_pe"], out = "Qcur", dim = 0 },
+  { op = "reshape", when = "is_mla", in = ["kv_cmpr"], out = "kv_cmpr", ne = ["kv_lora_rank", 1, "n_tokens"] },
+  { op = "concat", when = "is_mla", in = ["kv_cmpr", "k_pe"], out = "Kcur", dim = 0 },
+  # Vcur is kv_cmpr itself; build_attn reads only its width, kv_lora_rank.
+
+  # The legacy path: expand the compressed KV through attn_kv_b into full K and V heads.
+  { op = "mul_mat", when = "!is_mla", in = ["blk.{L}.attn_kv_b.weight", "kv_cmpr"], out = "kv" },
+  { op = "view", when = "!is_mla", in = ["kv"], out = "k_nope", ne = ["n_embd_head_k_mla - n_rot", "n_head", "n_tokens"], nb = ["row_size(n_embd_head_k_mla - n_rot + n_embd_head_v_mla)", "row_size(n_embd_head_k_mla - n_rot + n_embd_head_v_mla) * n_head"], offset = 0 },
+  { op = "view", when = "!is_mla", in = ["kv"], out = "Vcur", ne = ["n_embd_head_v_mla", "n_head", "n_tokens"], nb = ["row_size(n_embd_head_k_mla - n_rot + n_embd_head_v_mla)", "row_size(n_embd_head_k_mla - n_rot + n_embd_head_v_mla) * n_head"], offset = "row_size(n_embd_head_k_mla - n_rot)" },
+  { op = "cont", when = "!is_mla", in = ["Vcur"], out = "Vcur" },
+  { op = "concat", when = "!is_mla", in = ["q_nope", "q_pe"], out = "Qcur", dim = 0 },
+  # ggml_repeat(k_pe, q_pe) copies K's one rope head to every head. It reads only
+  # q_pe's shape, which the layout states, as ggml_repeat_4d takes it.
+  { op = "repeat", when = "!is_mla", in = ["k_pe"], out = "k_pe_repeat", ne = ["n_rot", "n_head", "n_tokens"] },
+  { op = "concat", when = "!is_mla", in = ["k_nope", "k_pe_repeat"], out = "Kcur", dim = 0 },
+
+  # Mistral Large 3's temperature tuning, on both paths.
+  { op = "mul", when = "f_attn_temp_scale != 0", in = ["Qcur", "inp_attn_scale"], out = "Qcur" },
+
+  # build_attn with llm_graph_input_attn_kv, the legacy path only: with a quantized
+  # cache, rotate Q, K and V by a Hadamard matrix before the KV write
+  # (ggml_mul_mat_aux). Q and K share the K rotation, so Q.K is unchanged. All three
+  # are contiguous here, so ggml_mul_mat_aux reshapes rather than copies.
+  { op = "reshape", when = "!is_mla && attn_rot_k", in = ["Qcur"], out = "Qrot", ne = ["n_attn_rot_k", "src.ne0 * src.ne1 * src.ne2 * src.ne3 / n_attn_rot_k"] },
+  { op = "mul_mat", when = "!is_mla && attn_rot_k", in = ["attn_inp_k_rot", "Qrot"], out = "Qrot", hint = "src0_is_hadamard" },
+  { op = "reshape", when = "!is_mla && attn_rot_k", in = ["Qrot"], out = "Qcur", ne = ["n_embd_head_k_mla", "n_head", "n_tokens"] },
+  { op = "reshape", when = "!is_mla && attn_rot_k", in = ["Kcur"], out = "Krot", ne = ["n_attn_rot_k", "src.ne0 * src.ne1 * src.ne2 * src.ne3 / n_attn_rot_k"] },
+  { op = "mul_mat", when = "!is_mla && attn_rot_k", in = ["attn_inp_k_rot", "Krot"], out = "Krot", hint = "src0_is_hadamard" },
+  { op = "reshape", when = "!is_mla && attn_rot_k", in = ["Krot"], out = "Kcur", ne = ["n_embd_head_k_mla", "n_head", "n_tokens"] },
+  { op = "reshape", when = "!is_mla && attn_rot_v", in = ["Vcur"], out = "Vrot", ne = ["n_attn_rot_v", "src.ne0 * src.ne1 * src.ne2 * src.ne3 / n_attn_rot_v"] },
+  { op = "mul_mat", when = "!is_mla && attn_rot_v", in = ["attn_inp_v_rot", "Vrot"], out = "Vrot", hint = "src0_is_hadamard" },
+  { op = "reshape", when = "!is_mla && attn_rot_v", in = ["Vrot"], out = "Vcur", ne = ["n_embd_head_v_mla", "n_head", "n_tokens"] },
+
+  # llama_kv_cache::cpy_k, on both paths: merge the heads into one row per token, then
+  # write this step's rows into the cache at inp_k_idxs. set_rows returns a view of the
+  # cache.
+  { op = "view", in = ["Kcur"], out = "k_cur", ne = ["src.ne0 * src.ne1", "src.ne2"], nb = ["src.nb2"] },
+  { op = "set_rows", in = ["cache_k_l{L}", "k_cur", "inp_k_idxs"], out = "k_cache" },
+  # llama_kv_cache::cpy_v, the legacy path's untransposed branch, taken with flash
+  # attention.
+  { op = "view", when = "!is_mla", in = ["Vcur"], out = "v_cur", ne = ["src.ne0 * src.ne1", "src.ne2"], nb = ["src.nb2"] },
+  { op = "set_rows", when = "!is_mla", in = ["cache_v_l{L}", "v_cur", "inp_v_idxs"], out = "v_cache" },
+
+  # llama_kv_cache::get_k and get_v: the cache as [head width, KV heads, cells].
+  # llama.cpp views the cache tensor itself and relies on graph order; reading the
+  # set_rows result instead says outright that the read comes after the write.
+  { op = "view", in = ["k_cache"], out = "k", ne = ["n_embd_head_k", "n_head_kv", "n_kv", 1], nb = ["row_size(n_embd_head_k)", "row_size(n_embd_k_gqa)", "row_size(n_embd_k_gqa * n_ctx)"] },
+  { op = "view", when = "!is_mla", in = ["v_cache"], out = "v", ne = ["n_embd_head_v", "n_head_kv", "n_kv", 1], nb = ["row_size(n_embd_head_v)", "row_size(n_embd_v_gqa)", "row_size(n_embd_v_gqa * n_ctx)"] },
+  # build_attn with llm_graph_input_attn_k, the MLA path: V is the first kv_lora_rank
+  # values of every K row, a view with K's strides.
+  { op = "view", when = "is_mla", in = ["k"], out = "v", ne = ["kv_lora_rank", "src.ne1", "src.ne2", "src.ne3"], nb = ["src.nb1", "src.nb2", "src.nb3"], offset = 0 },
+
+  # build_attn_mha: one stream, so the first view is all of Q; then heads to dim 2.
+  { op = "view", in = ["Qcur"], out = "q", ne = ["src.ne0", "src.ne1", "src.ne2", 1], nb = ["src.nb1", "src.nb2", "src.nb3"] },
+  { op = "permute", in = ["q"], out = "q", axes = [0, 2, 1, 3] },
+  { op = "permute", in = ["k"], out = "k", axes = [0, 2, 1, 3] },
+  { op = "permute", in = ["v"], out = "v", axes = [0, 2, 1, 3] },
+  # Flash attention reads f16 or quantized K and V; an f32 cache is cast to f16 first.
+  # With MLA, V is a view of the K cache, so it has the K cache's type.
+  { op = "cpy", when = "kv_k_f32", in = ["k"], out = "k", type = "f16" },
+  { op = "cpy", when = "(is_mla && kv_k_f32) || (!is_mla && kv_v_f32)", in = ["v"], out = "v", type = "f16" },
+  # deepseek2.cpp's kq_scale is mscale * mscale / sqrt(n_embd_head_k), where its
+  # n_embd_head_k is the MLA head width; mscale pre-scales for YaRN. max_bias and
+  # logit_softcap stay 0: deepseek2 reads neither hparam. build_attn_mha sets F32
+  # precision.
+  { op = "flash_attn_ext", in = ["q", "k", "v", "attn_inp_kq_mask"], out = "__fattn__", scale = "mscale * mscale / sqrt(n_embd_head_k_mla)", prec = "f32" },
+  # MLA: decompress the kv_lora_rank-wide result to n_embd_head_v_mla per head with
+  # attn_v_b, as a batched matmul over heads. The permutes only reinterpret the data;
+  # cont makes it contiguous for the reshape.
+  { op = "permute", when = "is_mla", in = ["__fattn__"], out = "fattn_mla", axes = [0, 2, 1, 3] },
+  { op = "mul_mat", when = "is_mla", in = ["blk.{L}.attn_v_b.weight", "fattn_mla"], out = "fattn_mla" },
+  { op = "permute", when = "is_mla", in = ["fattn_mla"], out = "fattn_mla", axes = [0, 2, 1, 3] },
+  { op = "cont", when = "is_mla", in = ["fattn_mla"], out = "fattn_mla" },
+  # The C++ reshapes `cur` on both paths; here the two paths' `cur` have different
+  # names, so the reshape is written once for each.
+  { op = "reshape", when = "is_mla", in = ["fattn_mla"], out = "kqv_out", ne = ["src.ne0 * src.ne1", "src.ne2 * src.ne3"] },
+  { op = "reshape", when = "!is_mla", in = ["__fattn__"], out = "kqv_out", ne = ["src.ne0 * src.ne1", "src.ne2 * src.ne3"] },
+
+  # build_attn, the legacy path: undo the V rotation on the attention output.
+  { op = "reshape", when = "!is_mla && attn_rot_v", in = ["kqv_out"], out = "kqv_rot", ne = ["n_attn_rot_v", "src.ne0 * src.ne1 * src.ne2 * src.ne3 / n_attn_rot_v"] },
+  { op = "mul_mat", when = "!is_mla && attn_rot_v", in = ["attn_inp_v_rot", "kqv_rot"], out = "kqv_rot", hint = "src0_is_hadamard" },
+  { op = "reshape", when = "!is_mla && attn_rot_v", in = ["kqv_rot"], out = "kqv_out", ne = ["n_embd_head_v_mla * n_head", "n_tokens"] },
+  # build_attn, both paths: the output projection.
+  { op = "mul_mat", in = ["blk.{L}.attn_output.weight", "kqv_out"], out = "attn_out" },
+
+  # The last layer keeps only the rows whose logits are wanted, from here on.
+  # llama.cpp gathers inpSA, which is inpL under another name.
+  { op = "get_rows", when = "L == n_layer - 1", in = ["attn_out", "inp_out_ids"], out = "attn_out" },
+  { op = "get_rows", when = "L == n_layer - 1", in = ["inpL", "inp_out_ids"], out = "inpL" },
+  { op = "add", in = ["attn_out", "inpL"], out = "ffn_inp" },
+
+  # build_norm(ffn_inp, ffn_norm, NULL, LLM_NORM_RMS), on both FFN paths.
+  { op = "rms_norm", in = ["ffn_inp"], out = "norm", eps = "f_norm_rms_eps" },
+  { op = "mul", in = ["norm", "blk.{L}.ffn_norm.weight"], out = "ffn_norm" },
+
+  # The leading dense layers: build_ffn(up, gate, down, LLM_FFN_SILU, LLM_FFN_PAR).
+  { op = "mul_mat", when = "L < n_layer_dense_lead", in = ["blk.{L}.ffn_up.weight", "ffn_norm"], out = "ffn_up" },
+  { op = "mul_mat", when = "L < n_layer_dense_lead", in = ["blk.{L}.ffn_gate.weight", "ffn_norm"], out = "ffn_gate" },
+  { op = "swiglu", when = "L < n_layer_dense_lead", in = ["ffn_gate", "ffn_up"], out = "ffn_swiglu" },
+  { op = "mul_mat", when = "L < n_layer_dense_lead", in = ["blk.{L}.ffn_down.weight", "ffn_swiglu"], out = "ffn_out" },
+
+  # The MoE layers: build_moe_ffn, with the gating, normalization and scale the file
+  # names. Shapes use src.ne*, because the last layer runs it over n_outputs rows.
+  { op = "mul_mat", when = "L >= n_layer_dense_lead", in = ["blk.{L}.ffn_gate_inp.weight", "ffn_norm"], out = "ffn_moe_logits" },
+  # llama_expert_gating_func_type: 1 is softmax, 2 is sigmoid.
+  { op = "soft_max", when = "L >= n_layer_dense_lead && expert_gating_func == 1", in = ["ffn_moe_logits"], out = "ffn_moe_probs" },
+  { op = "sigmoid", when = "L >= n_layer_dense_lead && expert_gating_func == 2", in = ["ffn_moe_logits"], out = "ffn_moe_probs" },
+  # DeepSeek V3's selection bias steers which experts are chosen but not their
+  # weights, so it goes into selection_probs and the weights still come from
+  # ffn_moe_probs. Without the bias, C++'s selection_probs is ffn_moe_probs itself,
+  # which a layout name cannot alias, so each consumer of selection_probs below is
+  # written once for each case, under complementary conditions.
+  { op = "add", when = "has(blk.{L}.exp_probs_b.bias)", in = ["ffn_moe_probs", "blk.{L}.exp_probs_b.bias"], out = "selection_probs" },
+
+  # Expert groups, as DeepSeek V3 defines them: score each group by its two best
+  # experts, keep the best n_group_used groups, and mask every other group's experts to
+  # -inf before the top-k. Every real deepseek2 file has one group or none, which skips
+  # this.
+  { op = "reshape", when = "L >= n_layer_dense_lead && n_expert_groups > 1 && has(blk.{L}.exp_probs_b.bias)", in = ["selection_probs"], out = "selection_groups", ne = ["n_expert / n_expert_groups", "n_expert_groups", "src.ne1"] },
+  { op = "reshape", when = "L >= n_layer_dense_lead && n_expert_groups > 1 && !has(blk.{L}.exp_probs_b.bias)", in = ["ffn_moe_probs"], out = "selection_groups", ne = ["n_expert / n_expert_groups", "n_expert_groups", "src.ne1"] },
+  # ggml_argsort_top_k(selection_groups, 2), then gather those two scores per group.
+  { op = "argsort", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["selection_groups"], out = "group_scores", order = "desc" },
+  { op = "view", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["group_scores"], out = "group_scores", ne = [2, "src.ne1", "src.ne2", "src.ne3"], nb = ["src.nb1", "src.nb2", "src.nb3"] },
+  { op = "reshape", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["selection_groups"], out = "selection_groups_4d", ne = [1, "src.ne0", "src.ne1", "src.ne2"] },
+  { op = "get_rows", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["selection_groups_4d", "group_scores"], out = "group_scores" },
+  # Sum them into one score per group.
+  { op = "reshape", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["group_scores"], out = "group_scores", ne = ["src.ne1", "src.ne2", "src.ne3"] },
+  { op = "sum_rows", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["group_scores"], out = "group_scores" },
+  { op = "reshape", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["group_scores"], out = "group_scores", ne = ["src.ne1", "src.ne2"] },
+  # ggml_argsort_top_k(group_scores, n_group_used): the chosen groups.
+  { op = "argsort", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["group_scores"], out = "expert_groups", order = "desc" },
+  { op = "view", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["expert_groups"], out = "expert_groups", ne = ["n_group_used", "src.ne1", "src.ne2", "src.ne3"], nb = ["src.nb1", "src.nb2", "src.nb3"] },
+  # Copy the chosen groups' scores into a tensor of -inf, then flatten it back.
+  { op = "get_rows", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["selection_groups", "expert_groups"], out = "selection_probs" },
+  { op = "fill", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["selection_groups"], out = "selection_masked", c = -inf },
+  { op = "set_rows", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["selection_masked", "selection_probs", "expert_groups"], out = "selection_probs" },
+  { op = "reshape", when = "L >= n_layer_dense_lead && n_expert_groups > 1", in = ["selection_probs"], out = "selection_probs", ne = ["n_expert", "src.ne2"] },
+
+  # ggml_argsort_top_k(selection_probs, n_expert_used): a descending argsort, viewed
+  # down to the first n_expert_used.
+  { op = "argsort", when = "L >= n_layer_dense_lead && (has(blk.{L}.exp_probs_b.bias) || n_expert_groups > 1)", in = ["selection_probs"], out = "ffn_moe_argsort", order = "desc" },
+  { op = "argsort", when = "L >= n_layer_dense_lead && !has(blk.{L}.exp_probs_b.bias) && n_expert_groups <= 1", in = ["ffn_moe_probs"], out = "ffn_moe_argsort", order = "desc" },
+  { op = "view", when = "L >= n_layer_dense_lead", in = ["ffn_moe_argsort"], out = "ffn_moe_topk", ne = ["n_expert_used", "src.ne1", "src.ne2", "src.ne3"], nb = ["src.nb1", "src.nb2", "src.nb3"] },
+  # The chosen experts' weights come from the unbiased probabilities. Every
+  # reassignment of C++'s `weights` is named ffn_moe_weights, so the steps that follow
+  # read one name whichever optional steps ran.
+  { op = "reshape", when = "L >= n_layer_dense_lead", in = ["ffn_moe_probs"], out = "probs", ne = [1, "n_expert", "src.ne1"] },
+  { op = "get_rows", when = "L >= n_layer_dense_lead", in = ["probs", "ffn_moe_topk"], out = "ffn_moe_weights" },
+  # norm_w is hparams.expert_weights_norm: scale the chosen weights to sum to 1.
+  { op = "reshape", when = "L >= n_layer_dense_lead && expert_weights_norm", in = ["ffn_moe_weights"], out = "ffn_moe_weights", ne = ["n_expert_used", "src.ne2"] },
+  { op = "sum_rows", when = "L >= n_layer_dense_lead && expert_weights_norm", in = ["ffn_moe_weights"], out = "ffn_moe_weights_sum" },
+  { op = "clamp", when = "L >= n_layer_dense_lead && expert_weights_norm", in = ["ffn_moe_weights_sum"], out = "ffn_moe_weights_sum_clamped", min = 6.103515625e-5, max = inf },
+  { op = "div", when = "L >= n_layer_dense_lead && expert_weights_norm", in = ["ffn_moe_weights", "ffn_moe_weights_sum_clamped"], out = "ffn_moe_weights_norm" },
+  { op = "reshape", when = "L >= n_layer_dense_lead && expert_weights_norm", in = ["ffn_moe_weights_norm"], out = "ffn_moe_weights", ne = [1, "n_expert_used", "src.ne1"] },
+  # w_scale is hparams.expert_weights_scale, such as DeepSeek V3's 2.5; 0 and 1 skip it.
+  { op = "scale", when = "L >= n_layer_dense_lead && expert_weights_scale != 0 && expert_weights_scale != 1", in = ["ffn_moe_weights"], out = "ffn_moe_weights", s = "expert_weights_scale" },
+  { op = "reshape", when = "L >= n_layer_dense_lead", in = ["ffn_norm"], out = "moe_in", ne = ["n_embd", 1, "src.ne1"] },
+  # The fused gate and up weight: one matmul, then the gate half and the up half as
+  # views of its rows.
+  { op = "mul_mat_id", when = "has(blk.{L}.ffn_gate_up_exps.weight)", in = ["blk.{L}.ffn_gate_up_exps.weight", "moe_in", "ffn_moe_topk"], out = "ffn_moe_gate_up" },
+  { op = "view", when = "has(blk.{L}.ffn_gate_up_exps.weight)", in = ["ffn_moe_gate_up"], out = "ffn_moe_gate", ne = ["src.ne0 / 2", "src.ne1", "src.ne2"], nb = ["src.nb1", "src.nb2"], offset = 0 },
+  { op = "view", when = "has(blk.{L}.ffn_gate_up_exps.weight)", in = ["ffn_moe_gate_up"], out = "ffn_moe_up", ne = ["src.ne0 / 2", "src.ne1", "src.ne2"], nb = ["src.nb1", "src.nb2"], offset = "src.ne0 / 2 * src.nb0" },
+  # Separate gate and up weights otherwise.
+  { op = "mul_mat_id", when = "L >= n_layer_dense_lead && !has(blk.{L}.ffn_gate_up_exps.weight)", in = ["blk.{L}.ffn_up_exps.weight", "moe_in", "ffn_moe_topk"], out = "ffn_moe_up" },
+  { op = "mul_mat_id", when = "L >= n_layer_dense_lead && !has(blk.{L}.ffn_gate_up_exps.weight)", in = ["blk.{L}.ffn_gate_exps.weight", "moe_in", "ffn_moe_topk"], out = "ffn_moe_gate" },
+  { op = "swiglu", when = "L >= n_layer_dense_lead", in = ["ffn_moe_gate", "ffn_moe_up"], out = "ffn_moe_swiglu" },
+  { op = "mul_mat_id", when = "L >= n_layer_dense_lead", in = ["blk.{L}.ffn_down_exps.weight", "ffn_moe_swiglu", "ffn_moe_topk"], out = "ffn_moe_down" },
+  { op = "mul", when = "L >= n_layer_dense_lead", in = ["ffn_moe_down", "ffn_moe_weights"], out = "ffn_moe_weighted" },
+  # Sum over the chosen experts: a view of each, all views first, then an add chain.
+  { op = "view", when = "L >= n_layer_dense_lead", in = ["ffn_moe_weighted"], out = "ffn_moe_out", ne = ["n_embd", "src.ne2"], nb = ["src.nb2"], offset = 0 },
+  { op = "view", when = "L >= n_layer_dense_lead", for = "e in 1..n_expert_used", in = ["ffn_moe_weighted"], out = "cur_experts.{e}", ne = ["n_embd", "src.ne2"], nb = ["src.nb2"], offset = "e * src.nb1" },
+  { op = "add", when = "L >= n_layer_dense_lead", for = "e in 1..n_expert_used", in = ["ffn_moe_out", "cur_experts.{e}"], out = "ffn_moe_out" },
+  { op = "cont", when = "L >= n_layer_dense_lead && n_expert_used == 1", in = ["ffn_moe_out"], out = "ffn_moe_out" },
+
+  # The shared experts: build_ffn(up_shexp, gate_shexp, down_shexp, LLM_FFN_SILU,
+  # LLM_FFN_PAR) over the same input, added to the routed experts' output.
+  { op = "mul_mat", when = "L >= n_layer_dense_lead", in = ["blk.{L}.ffn_up_shexp.weight", "ffn_norm"], out = "ffn_up" },
+  { op = "mul_mat", when = "L >= n_layer_dense_lead", in = ["blk.{L}.ffn_gate_shexp.weight", "ffn_norm"], out = "ffn_gate" },
+  { op = "swiglu", when = "L >= n_layer_dense_lead", in = ["ffn_gate", "ffn_up"], out = "ffn_swiglu" },
+  { op = "mul_mat", when = "L >= n_layer_dense_lead", in = ["blk.{L}.ffn_down_shexp.weight", "ffn_swiglu"], out = "ffn_shexp" },
+  { op = "add", when = "L >= n_layer_dense_lead", in = ["ffn_moe_out", "ffn_shexp"], out = "ffn_out" },
+
+  # The residual; the result is the next layer's input.
+  { op = "add", in = ["ffn_out", "ffn_inp"], out = "inpL" },
+]
+
+epilogue = [
+  # build_norm(inpL, output_norm, NULL, LLM_NORM_RMS, -1)
+  { op = "rms_norm", in = ["inpL"], out = "norm", eps = "f_norm_rms_eps" },
+  { op = "mul", in = ["norm", "output_norm.weight"], out = "result_norm" },
+  # The LM head, which is token_embd.weight in a tied model.
+  { op = "mul_mat", in = ["output.weight", "result_norm"], out = "result_output" },
+]

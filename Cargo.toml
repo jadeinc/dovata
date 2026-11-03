@@ -1,120 +1,94 @@
 [package]
 name = "dovata"
-version = "0.1.0"
+version = "3.0.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "JADE OS inference engine — the local llama.cpp provider, loaded in-process as an ovata-infer-protocol provider .so"
+description = "JADE OS model memory and inference layout planner, used by the Jade compiler at build time"
 
 [lib]
 name = "dovata"
 path = "src/lib.rs"
-# cdylib is what ships: the engine loaded straight into a Jade program as a provider
-# package, the same way `echo` is. rlib so the tests and the packaging xtask can link
-# the same code.
-crate-type = ["cdylib", "rlib"]
+# A plain Rust library. The Jade compiler is Rust and takes dovata as a cargo
+# dependency, so there is no C ABI and no shared object to ship. 2.x was a cdylib
+# loaded into running programs; 3.0 runs at build time and never executes a model.
+crate-type = ["rlib"]
 
-# `gguf-inspect` vets a model file — architecture, hparams, whether any profile matches
-# — without llama.cpp, so it runs on a laptop before a GPU box ever sees the model. It
-# is a bin of this package rather than its own crate because the reader it wraps is
-# `src/gguf/`, a plain module of this engine: `load/preflight.rs` is its only other
-# caller, and a crate boundary between them bought nothing but a second manifest.
+# `gguf-inspect` vets a model file — architecture, hparams, quant, split parts —
+# without llama.cpp, so it runs on a laptop before a GPU box ever sees the model. It is
+# a bin of this package rather than its own crate because the reader it wraps is
+# `src/gguf/`, a plain module of this library, and a crate boundary between them would
+# buy nothing but a second manifest.
 [[bin]]
 name = "gguf-inspect"
 path = "src/gguf/main.rs"
 
+# `dovata`, the command line. Today it holds the `machine` commands, which report the
+# current machine's memory and GPUs. `doc = false` because the library has the same
+# name.
+[[bin]]
+name = "dovata"
+path = "src/cli/main.rs"
+required-features = ["machine"]
+doc = false
+
 # ── Capabilities ──────────────────────────────────────────────────────────────
 [features]
-# Every capability is on by default, so a plain `cargo build` produces the artifact
-# that ships. The features exist to make each capability's boundary explicit and
-# checkable — if a capability can't be switched off, its edges aren't real — and to
-# give the llama.cpp bundles (src/moe/driver/bundle/) one switch that gates the
-# Rust half and the C++ patch series together.
-default = ["compose", "batch", "moe"]
+# Every capability is on by default, so a plain `cargo build` is the whole library.
+# The features exist to make each capability's boundary explicit and checkable: if a
+# capability can't be switched off, its edges aren't real.
+default = ["moe", "quantize", "hf-hub", "machine"]
 
-# GPU offload on NVIDIA hardware for the in-process engine (forwarded to the vendored
-# llama-cpp-2). No-op on non-Linux targets, where the engine isn't compiled.
-cuda = ["llama-cpp-2/cuda"]
+# MoE expert ranking: the `expert_order` loader that says which experts are hot. The
+# planner will use it to decide which experts stay resident in VRAM.
+moe = []
 
-# Long-context answering: the KV-composition engine and its request dispatch
-# (src/compose/), plus the pure corpus/question split. Turn it off and an over-context
-# prompt is refused with an Error frame naming the capability, rather than truncated to
-# fit — a wrong answer from a silently shortened prompt is worse than no answer.
-compose = []
+# Quantizing a GGUF by running llama.cpp's `llama-quantize` program, which must be
+# installed on the machine and on PATH. Nothing of llama.cpp is compiled or linked.
+# Off, `quantize::quantize` returns an error naming this feature.
+quantize = []
 
-# Continuous batching: the pure multi-sequence scheduler and its llama-bound driver
-# (src/batch/). Nothing calls the driver today — see src/batch/README.md — so turning
-# this off changes no behaviour, only what compiles. The scheduler stays well tested
-# either way.
-batch = []
+# Fetching a GGUF from the Hugging Face Hub into the shared hf-hub cache. Off, a Hub
+# source is refused with an error naming this feature; local paths still work.
+hf-hub = ["dep:hf-hub"]
 
-# MoE expert offload: the expert_order loader, the FFI to the C driver, and the
-# llama.cpp graph seam. Turn it off and JADE_MOE_DRIVER=1 fails the load instead of
-# being ignored.
-#
-# This is the feature that shows why capabilities and llama.cpp bundles are one
-# mechanism: enabling it also enables the sys crate's `bundle-moe`, which applies this
-# capability's patch series to a staged copy of stock upstream llama.cpp. Rust half and
-# C++ seam move together, behind one switch, so they cannot drift into a build that
-# initialises a driver the graph never calls.
-moe = ["llama-cpp-2/bundle-moe"]
+# Reading the current machine's memory and GPUs, for the `dovata machine` commands. It
+# runs the system's own tools, and on macOS reads Metal's limits through objc2-metal.
+# Off, `machine::current` and `machine::usage` return an error naming this feature.
+machine = ["dep:objc2-metal"]
 
 [dependencies]
-# `version` alongside `path` is not redundant: cargo checks the submodule's actual
-# version against it, so rolling src/protocol back below the floor fails to resolve
-# instead of failing to compile somewhere confusing. 0.5.0 is the floor because the
-# provider ABI gained `ovata_provider_protocol_version` there, which packaging reads.
-ovata-infer-protocol = { path = "src/protocol", version = ">=0.5.0" }
-# Raw malloc/free for the Jade package boundary: the compiler frees the tree we
-# return, and its allocator is libc's, not Rust's. See src/jade_pkg.rs.
-libc = "0.2"
 serde_json = { version = "1", features = ["std"] }
-# The model profile capability (src/model/): TOML profiles compiled into the binary.
+# Layout files are TOML, and the plan serializes to JSON for the compiler.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# The plan records a SHA-256 of each GGUF part's header, so the program can refuse a
+# file other than the one its offsets were computed for. Pure Rust.
+sha2 = "0.10"
 
-# The llama-bound halves of the capabilities are Linux-only: they link the vendored
-# llama bindings. Gated so the pure halves still build and test on macOS.
-#
-# Default features are kept, and `common` in particular. It is ~2.2 MB we appear not to
-# need — nothing here calls json_schema_to_grammar, FitError, or LlamaSampler::accept —
-# but LlamaSampler::grammar is gated on it, and its C entry point is only compiled when
-# it is on. Dropping it is a compile error at src/sample/chain.rs, not a size win. The
-# measurement is in src/llama/bindings/README.md.
-[target.'cfg(target_os = "linux")'.dependencies]
-llama-cpp-2 = { path = "src/llama/bindings" }
-llama-cpp-sys-2 = { path = "src/llama/bindings-sys" }
-encoding_rs = "0.8"
+# 0.4 rather than 1.x: the 0.4 line has a blocking client over `ureq`, so the Jade
+# compiler's build does not pull in tokio. 1.x is async-first and its blocking
+# feature wraps a tokio runtime.
+hf-hub = { version = "0.4.3", default-features = false, features = ["ureq"], optional = true }
+
+# Metal's GPU memory limits, `recommendedMaxWorkingSetSize` and `maxBufferLength`, which
+# no command-line tool reports. Rust bindings to Apple's Metal framework; macOS only.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLDevice"], optional = true }
 
 # ── Workspace ─────────────────────────────────────────────────────────────────
 [workspace]
-# This package IS the workspace root, the way jadelang's is: `src/` holds the engine's
-# capabilities as plain modules of this crate, and the handful of directories under it
-# that are separate crates are members below — each for a reason stated where it sits.
-#
-# Everything you run rather than ship lives at the repo root: tools/ (Python),
-# tests/ (the evals), ci/, docs/, dist/.
+# This package IS the workspace root, the way jadelang's is: `src/` holds the
+# capabilities as plain modules of this crate, and the directories under it that are
+# separate crates are members below, each for a reason stated where it sits.
 members = [
-    # A git submodule with its own public repo, so the Jade language — which is public —
-    # can depend on it too; a public repo cannot take a git dependency on this private
-    # one. Both sides build the same definition.
-    "src/protocol",
-    # Ships as its own `.so`. A second cdylib needs a second package, and this one is
-    # both the worked example for writing a native provider and the dlopen fixture
-    # packaging validates against.
-    "src/echo",
-    # Vendored upstream identity, a build.rs that compiles llama.cpp from source, and a
-    # sys/safe split that is upstream's own convention. Heavy: building these needs the
-    # nested llama.cpp submodule plus cmake, so bare `cargo build --workspace` is a
-    # Linux operation; on macOS use targeted `-p` builds.
-    "src/llama/bindings",
-    "src/llama/bindings-sys",
-    # A build-dependency of the sys crate, and a member so `cargo test` runs its tests.
-    # Build scripts are not testable, which is the whole reason it is not one.
-    "src/llama/bundle-kit",
-    # The xtask that builds and stages the others. As a module of this crate, the
-    # engine would depend on its own packager.
-    "src/packaging",
+    # `dovata-chat-template`: the optional tokenizer and chat-template package for
+    # Jade users. Its own crate so dovata never depends on a tokenizer; see its README.
+    "src/chat_template",
+    # `refback`: the test-only reference backend. It sets up a plan's memory for real
+    # and checks every tensor against the model file, so it needs unsafe code and
+    # Apple's Metal framework, neither of which belongs in dovata. Never published.
+    "src/refback",
 ]
 resolver = "2"
 
@@ -123,29 +97,3 @@ edition = "2021"
 authors = ["JADE OS Contributors"]
 license = "MIT"
 
-# Shared deps for the llama bindings crates (they opt in via `{ workspace = true }`).
-# Absorbed from the former llama-cpp sub-workspace when it was merged in.
-[workspace.dependencies]
-# core library deps
-thiserror = "2"
-tracing = "0.1"
-tracing-core = "0.1"
-# examples and benchmarks
-hf-hub = { version = "0.5.0" }
-criterion = "0.5.1"
-pprof = "0.13.0"
-bindgen = "0.72.1"
-cc = "1.2.61"
-anyhow = "1.0.102"
-clap = "4.6.1"
-encoding_rs = "0.8.35"
-tracing-subscriber = { version = "0.3", features = ["json"] }
-
-# Only the src/llama crates opt into these via `[lints] workspace = true`; the
-# engine and provider crates don't reference workspace lints, so they're unaffected.
-[workspace.lints.rust]
-missing_docs = { level = "warn" }
-missing_debug_implementations = { level = "warn" }
-
-[workspace.lints.clippy]
-pedantic = { level = "warn" }

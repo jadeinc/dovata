@@ -1,0 +1,35 @@
+# The file list of https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF at commit b17cb02dd882d5b6ab62fc777ad2995f19668350,
+# from https://huggingface.co/api/models/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF on 2026-10-31.
+.gitattributes
+BF16/Qwen3-Coder-30B-A3B-Instruct-BF16-00001-of-00002.gguf
+BF16/Qwen3-Coder-30B-A3B-Instruct-BF16-00002-of-00002.gguf
+Qwen3-Coder-30B-A3B-Instruct-IQ4_NL.gguf
+Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf
+Qwen3-Coder-30B-A3B-Instruct-Q2_K.gguf
+Qwen3-Coder-30B-A3B-Instruct-Q2_K_L.gguf
+Qwen3-Coder-30B-A3B-Instruct-Q3_K_M.gguf
+Qwen3-Coder-30B-A3B-Instruct-Q3_K_S.gguf
+Qwen3-Coder-30B-A3B-Instruct-Q4_0.gguf
+Qwen3-Coder-30B-A3B-Instruct-Q4_1.gguf
+Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
+Qwen3-Coder-30B-A3B-Instruct-Q4_K_S.gguf
+Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf
+Qwen3-Coder-30B-A3B-Instruct-Q5_K_S.gguf
+Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf
+Qwen3-Coder-30B-A3B-Instruct-Q8_0.gguf
+Qwen3-Coder-30B-A3B-Instruct-UD-IQ1_M.gguf
+Qwen3-Coder-30B-A3B-Instruct-UD-IQ1_S.gguf
+Qwen3-Coder-30B-A3B-Instruct-UD-IQ2_M.gguf
+Qwen3-Coder-30B-A3B-Instruct-UD-IQ2_XXS.gguf
+Qwen3-Coder-30B-A3B-Instruct-UD-IQ3_XXS.gguf
+Qwen3-Coder-30B-A3B-Instruct-UD-Q2_K_XL.gguf
+Qwen3-Coder-30B-A3B-Instruct-UD-Q3_K_XL.gguf
+Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf
+Qwen3-Coder-30B-A3B-Instruct-UD-Q5_K_XL.gguf
+Qwen3-Coder-30B-A3B-Instruct-UD-Q6_K_XL.gguf
+Qwen3-Coder-30B-A3B-Instruct-UD-Q8_K_XL.gguf
+Qwen3-Coder-30B-A3B-Instruct-UD-TQ1_0.gguf
+README.md
+imatrix_unsloth.gguf_file
+params
+template

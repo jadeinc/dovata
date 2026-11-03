@@ -1,0 +1,24 @@
+# The file list of https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF at commit bb5d59e06d9551d752d08b292a50eb208b07ab1f,
+# from https://huggingface.co/api/models/Qwen/Qwen2.5-7B-Instruct-GGUF on 2026-10-31.
+.gitattributes
+LICENSE
+README.md
+qwen2.5-7b-instruct-fp16-00001-of-00004.gguf
+qwen2.5-7b-instruct-fp16-00002-of-00004.gguf
+qwen2.5-7b-instruct-fp16-00003-of-00004.gguf
+qwen2.5-7b-instruct-fp16-00004-of-00004.gguf
+qwen2.5-7b-instruct-q2_k.gguf
+qwen2.5-7b-instruct-q3_k_m.gguf
+qwen2.5-7b-instruct-q4_0-00001-of-00002.gguf
+qwen2.5-7b-instruct-q4_0-00002-of-00002.gguf
+qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf
+qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf
+qwen2.5-7b-instruct-q5_0-00001-of-00002.gguf
+qwen2.5-7b-instruct-q5_0-00002-of-00002.gguf
+qwen2.5-7b-instruct-q5_k_m-00001-of-00002.gguf
+qwen2.5-7b-instruct-q5_k_m-00002-of-00002.gguf
+qwen2.5-7b-instruct-q6_k-00001-of-00002.gguf
+qwen2.5-7b-instruct-q6_k-00002-of-00002.gguf
+qwen2.5-7b-instruct-q8_0-00001-of-00003.gguf
+qwen2.5-7b-instruct-q8_0-00002-of-00003.gguf
+qwen2.5-7b-instruct-q8_0-00003-of-00003.gguf

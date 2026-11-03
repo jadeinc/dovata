@@ -1,0 +1,222 @@
+# nemotron: NVIDIA's Nemotron-4 transformer as llama.cpp loads it, such as
+# Nemotron-Mini-4B-Instruct and Minitron-4B. The Llama-based Nemotrons are other
+# architectures, such as deci for Llama-3.1-Nemotron-51B.
+#
+# Translated from llama.cpp at commit 52b3df0023659b142ce29f75c7a82cf437769c33:
+#   src/models/nemotron.cpp   load_arch_hparams, load_arch_tensors, and the graph in
+#                             graph::graph
+#   src/llama-graph.cpp       build_inp_embd, build_norm, build_qkv, build_attn,
+#                             build_attn_mha, build_ffn, build_lora_mm
+#   src/llama-kv-cache.cpp    cpy_k, cpy_v, get_k, get_v, build_input_k_rot
+#   src/llama-model.cpp       create_tensor_qkv, llama_model_rope_type
+#
+# Three things set it apart from llama. Every norm is a LayerNorm with a bias
+# (LLM_NORM: ggml_norm, then the weight, then the bias), with f_norm_eps. Rope turns
+# only the first n_rot dims of each head (rope.dimension_count is half the head width
+# in Nemotron-4), which ggml_rope_ext does when n_dims is less than the head width. The
+# FFN is up, squared ReLU, down, with no gate (LLM_FFN_RELU_SQR, LLM_FFN_SEQ).
+#
+# load_arch_tensors creates Q as n_embd wide and the output projection as n_embd by
+# n_embd, so a file whose heads do not multiply out to n_embd, such as Minitron-8B, is
+# refused here, as llama.cpp refuses it.
+#
+# Ops are listed in the order the C++ creates them, which is a valid execution order.
+# ggml's own node order, from ggml_build_forward_expand, interleaves independent chains a
+# little differently (it expands Q, then V, then K before the KV writes).
+#
+# Attention is ggml_flash_attn_ext, llama.cpp's flash-attention path. It is the one path
+# that can read a quantized V cache, and with it llama.cpp keeps the V cache
+# untransposed, so K and V are written and read the same way. LoRA adapters, control
+# vectors (build_cvec) and NVFP4 sidecar scales (*.scale) are not part of this layout.
+
+schema_version = 1
+arch = "nemotron"
+description = "Nemotron-4: LayerNorm with bias, GQA attention with partial NEOX rope, squared-ReLU FFN with no gate"
+outputs = ["result_output"]
+
+# Every ggml_rope_ext call in the graph passes llm_graph_context's members, which
+# llama-context.cpp fills from the model's hparams. n_rot may be less than the head
+# width; ggml_rope_ext then leaves the remaining dims of each head as they are.
+defaults.rope.n_dims = "n_rot"
+defaults.rope.mode = "neox"              # llama_model_rope_type: LLM_ARCH_NEMOTRON is NEOX
+defaults.rope.n_ctx_orig = "n_ctx_orig"
+defaults.rope.freq_base = "freq_base"
+defaults.rope.freq_scale = "freq_scale"
+defaults.rope.ext_factor = "ext_factor"
+defaults.rope.attn_factor = "attn_factor"
+defaults.rope.beta_fast = "beta_fast"
+defaults.rope.beta_slow = "beta_slow"
+
+# llama_model_nemotron::load_arch_tensors
+weights = [
+  { name = "token_embd.weight", dims = ["n_embd", "n_vocab"] },
+  { name = "output_norm.weight", dims = ["n_embd"] },
+  { name = "output_norm.bias", dims = ["n_embd"] },
+  # Required: nemotron does not fall back to the token embeddings.
+  { name = "output.weight", dims = ["n_embd", "n_vocab"] },
+
+  { name = "blk.{L}.attn_norm.weight", dims = ["n_embd"] },
+  { name = "blk.{L}.attn_norm.bias", dims = ["n_embd"] },
+  # create_tensor_qkv(layer, i, n_embd, n_embd, n_embd_gqa, n_embd_gqa, 0): Q is
+  # n_embd wide, and LLAMA_LOAD_LOCALS defines n_embd_gqa as n_embd_v_gqa. One fused QKV
+  # weight when the file has it, else Q, K and V, each with an optional bias.
+  { name = "blk.{L}.attn_qkv.weight", dims = ["n_embd", "n_embd + n_embd_v_gqa + n_embd_v_gqa"], optional = true },
+  { name = "blk.{L}.attn_qkv.bias", dims = ["n_embd + n_embd_v_gqa + n_embd_v_gqa"], optional = true, when = "has(blk.{L}.attn_qkv.weight)" },
+  { name = "blk.{L}.attn_q.weight", dims = ["n_embd", "n_embd"], when = "!has(blk.{L}.attn_qkv.weight)" },
+  { name = "blk.{L}.attn_k.weight", dims = ["n_embd", "n_embd_v_gqa"], when = "!has(blk.{L}.attn_qkv.weight)" },
+  { name = "blk.{L}.attn_v.weight", dims = ["n_embd", "n_embd_v_gqa"], when = "!has(blk.{L}.attn_qkv.weight)" },
+  { name = "blk.{L}.attn_q.bias", dims = ["n_embd"], optional = true, when = "!has(blk.{L}.attn_qkv.weight)" },
+  { name = "blk.{L}.attn_k.bias", dims = ["n_embd_v_gqa"], optional = true, when = "!has(blk.{L}.attn_qkv.weight)" },
+  { name = "blk.{L}.attn_v.bias", dims = ["n_embd_v_gqa"], optional = true, when = "!has(blk.{L}.attn_qkv.weight)" },
+  { name = "blk.{L}.attn_output.weight", dims = ["n_embd", "n_embd"] },
+  { name = "blk.{L}.attn_output.bias", dims = ["n_embd"], optional = true },
+
+  { name = "blk.{L}.ffn_norm.weight", dims = ["n_embd"] },
+  { name = "blk.{L}.ffn_norm.bias", dims = ["n_embd"] },
+  { name = "blk.{L}.ffn_down.weight", dims = ["n_ff", "n_embd"] },
+  { name = "blk.{L}.ffn_up.weight", dims = ["n_embd", "n_ff"] },
+  { name = "blk.{L}.ffn_down.bias", dims = ["n_embd"], optional = true },
+  { name = "blk.{L}.ffn_up.bias", dims = ["n_ff"], optional = true },
+]
+
+tensors = [
+  # build_inp_embd: the token ids of this step.
+  { name = "inp_tokens", kind = "input", dtype = "i32", dims = ["n_tokens"] },
+  # build_inp_pos: one position per token.
+  { name = "inp_pos", kind = "input", dtype = "i32", dims = ["n_tokens"] },
+  # build_attn_inp_kv: the cache rows this step writes (build_input_k_idxs and
+  # build_input_v_idxs; one index per token, since V is not transposed) and the mask,
+  # which is f16 because flash attention needs it.
+  { name = "inp_k_idxs", kind = "input", dtype = "i64", dims = ["n_tokens"] },
+  { name = "inp_v_idxs", kind = "input", dtype = "i64", dims = ["n_tokens"] },
+  { name = "attn_inp_kq_mask", kind = "input", dtype = "f16", dims = ["n_kv", "n_tokens", 1, 1] },
+  # build_input_k_rot and build_input_v_rot: Hadamard matrices, present only when the
+  # cache is quantized and the head width divides by 64.
+  { name = "attn_inp_k_rot", kind = "input", dtype = "f32", dims = ["n_attn_rot_k", "n_attn_rot_k"], when = "attn_rot_k" },
+  { name = "attn_inp_v_rot", kind = "input", dtype = "f32", dims = ["n_attn_rot_v", "n_attn_rot_v"], when = "attn_rot_v" },
+  # build_inp_out_ids: the rows whose logits the step returns.
+  { name = "inp_out_ids", kind = "input", dtype = "i32", dims = ["n_outputs"] },
+  # llama_kv_cache's layers[il].k and .v: one stream of n_ctx cells per layer.
+  { name = "cache_k_l{L}", kind = "kv", dtype = "kv_k", dims = ["n_embd_k_gqa", "n_ctx"] },
+  { name = "cache_v_l{L}", kind = "kv", dtype = "kv_v", dims = ["n_embd_v_gqa", "n_ctx"] },
+]
+
+prologue = [
+  # build_inp_embd: the embedding rows of this step's tokens.
+  { op = "get_rows", in = ["token_embd.weight", "inp_tokens"], out = "inpL" },
+]
+
+block = [
+  # build_norm(inpL, attn_norm, attn_norm_b, LLM_NORM): a LayerNorm, then the weight,
+  # then the bias. build_norm names the steps norm and norm_w.
+  { op = "norm", in = ["inpL"], out = "norm", eps = "f_norm_eps" },
+  { op = "mul", in = ["norm", "blk.{L}.attn_norm.weight"], out = "norm_w" },
+  { op = "add", in = ["norm_w", "blk.{L}.attn_norm.bias"], out = "attn_norm" },
+
+  # build_qkv, fused path: one matmul, then Q, K and V as views of its rows.
+  { op = "mul_mat", when = "has(blk.{L}.attn_qkv.weight)", in = ["blk.{L}.attn_qkv.weight", "attn_norm"], out = "wqkv" },
+  { op = "add", when = "has(blk.{L}.attn_qkv.bias)", in = ["wqkv", "blk.{L}.attn_qkv.bias"], out = "wqkv" },
+  { op = "view", when = "has(blk.{L}.attn_qkv.weight)", in = ["wqkv"], out = "Qcur", ne = ["n_embd_head_v", "n_head", "n_tokens"], nb = ["row_size(n_embd_head_v)", "src.nb1"], offset = 0 },
+  { op = "view", when = "has(blk.{L}.attn_qkv.weight)", in = ["wqkv"], out = "Kcur", ne = ["n_embd_head_v", "n_head_kv", "n_tokens"], nb = ["row_size(n_embd_head_v)", "src.nb1"], offset = "row_size(n_embd_head_v * n_head)" },
+  { op = "view", when = "has(blk.{L}.attn_qkv.weight)", in = ["wqkv"], out = "Vcur", ne = ["n_embd_head_v", "n_head_kv", "n_tokens"], nb = ["row_size(n_embd_head_v)", "src.nb1"], offset = "row_size(n_embd_head_v * n_head + n_embd_head_v * n_head_kv)" },
+
+  # build_qkv, separate path: three matmuls, each with an optional bias, then a
+  # reshape to [head width, heads, tokens].
+  { op = "mul_mat", when = "!has(blk.{L}.attn_qkv.weight)", in = ["blk.{L}.attn_q.weight", "attn_norm"], out = "Qcur" },
+  { op = "add", when = "has(blk.{L}.attn_q.bias)", in = ["Qcur", "blk.{L}.attn_q.bias"], out = "Qcur" },
+  { op = "mul_mat", when = "!has(blk.{L}.attn_qkv.weight)", in = ["blk.{L}.attn_k.weight", "attn_norm"], out = "Kcur" },
+  { op = "add", when = "has(blk.{L}.attn_k.bias)", in = ["Kcur", "blk.{L}.attn_k.bias"], out = "Kcur" },
+  { op = "mul_mat", when = "!has(blk.{L}.attn_qkv.weight)", in = ["blk.{L}.attn_v.weight", "attn_norm"], out = "Vcur" },
+  { op = "add", when = "has(blk.{L}.attn_v.bias)", in = ["Vcur", "blk.{L}.attn_v.bias"], out = "Vcur" },
+  { op = "reshape", when = "!has(blk.{L}.attn_qkv.weight)", in = ["Qcur"], out = "Qcur", ne = ["n_embd_head_v", "n_head", "n_tokens"] },
+  { op = "reshape", when = "!has(blk.{L}.attn_qkv.weight)", in = ["Kcur"], out = "Kcur", ne = ["n_embd_head_v", "n_head_kv", "n_tokens"] },
+  { op = "reshape", when = "!has(blk.{L}.attn_qkv.weight)", in = ["Vcur"], out = "Vcur", ne = ["n_embd_head_v", "n_head_kv", "n_tokens"] },
+
+  # nemotron.cpp: rope Q and K over their first n_rot dims, with no frequency factors.
+  { op = "rope", in = ["Qcur", "inp_pos"], out = "Qcur" },
+  { op = "rope", in = ["Kcur", "inp_pos"], out = "Kcur" },
+
+  # build_attn: with a quantized cache, rotate Q, K and V by a Hadamard matrix before
+  # the KV write (ggml_mul_mat_aux). Q and K share the K rotation, so Q.K is unchanged.
+  # ggml_mul_mat_aux reshapes a contiguous input and copies a strided one, which is
+  # why V takes cont on the fused path.
+  { op = "reshape", when = "attn_rot_k", in = ["Qcur"], out = "Qrot", ne = ["n_attn_rot_k", "src.ne0 * src.ne1 * src.ne2 * src.ne3 / n_attn_rot_k"] },
+  { op = "mul_mat", when = "attn_rot_k", in = ["attn_inp_k_rot", "Qrot"], out = "Qrot", hint = "src0_is_hadamard" },
+  { op = "reshape", when = "attn_rot_k", in = ["Qrot"], out = "Qcur", ne = ["n_embd_head_k", "n_head", "n_tokens"] },
+  { op = "reshape", when = "attn_rot_k", in = ["Kcur"], out = "Krot", ne = ["n_attn_rot_k", "src.ne0 * src.ne1 * src.ne2 * src.ne3 / n_attn_rot_k"] },
+  { op = "mul_mat", when = "attn_rot_k", in = ["attn_inp_k_rot", "Krot"], out = "Krot", hint = "src0_is_hadamard" },
+  { op = "reshape", when = "attn_rot_k", in = ["Krot"], out = "Kcur", ne = ["n_embd_head_k", "n_head_kv", "n_tokens"] },
+  { op = "reshape", when = "attn_rot_v && !has(blk.{L}.attn_qkv.weight)", in = ["Vcur"], out = "Vrot", ne = ["n_attn_rot_v", "src.ne0 * src.ne1 * src.ne2 * src.ne3 / n_attn_rot_v"] },
+  { op = "cont", when = "attn_rot_v && has(blk.{L}.attn_qkv.weight)", in = ["Vcur"], out = "Vrot", ne = ["n_attn_rot_v", "src.ne0 * src.ne1 * src.ne2 * src.ne3 / n_attn_rot_v"] },
+  { op = "mul_mat", when = "attn_rot_v", in = ["attn_inp_v_rot", "Vrot"], out = "Vrot", hint = "src0_is_hadamard" },
+  { op = "reshape", when = "attn_rot_v", in = ["Vrot"], out = "Vcur", ne = ["n_embd_head_v", "n_head_kv", "n_tokens"] },
+
+  # llama_kv_cache::cpy_k: merge the heads into one row per token, then write this
+  # step's rows into the cache at inp_k_idxs. set_rows returns a view of the cache.
+  { op = "view", in = ["Kcur"], out = "k_cur", ne = ["n_embd_k_gqa", "n_tokens"], nb = ["src.nb2"] },
+  { op = "set_rows", in = ["cache_k_l{L}", "k_cur", "inp_k_idxs"], out = "k_cache" },
+  # llama_kv_cache::cpy_v, the untransposed branch taken with flash attention.
+  { op = "view", in = ["Vcur"], out = "v_cur", ne = ["n_embd_v_gqa", "n_tokens"], nb = ["src.nb2"] },
+  { op = "set_rows", in = ["cache_v_l{L}", "v_cur", "inp_v_idxs"], out = "v_cache" },
+
+  # llama_kv_cache::get_k and get_v: the cache as [head width, KV heads, cells].
+  # llama.cpp views the cache tensor itself and relies on graph order; reading the
+  # set_rows result instead says outright that the read comes after the write.
+  { op = "view", in = ["k_cache"], out = "k", ne = ["n_embd_head_k", "n_head_kv", "n_kv", 1], nb = ["row_size(n_embd_head_k)", "row_size(n_embd_k_gqa)", "row_size(n_embd_k_gqa * n_ctx)"] },
+  { op = "view", in = ["v_cache"], out = "v", ne = ["n_embd_head_v", "n_head_kv", "n_kv", 1], nb = ["row_size(n_embd_head_v)", "row_size(n_embd_v_gqa)", "row_size(n_embd_v_gqa * n_ctx)"] },
+
+  # build_attn_mha: one stream, so the first view is all of Q; then heads to dim 2.
+  { op = "view", in = ["Qcur"], out = "q", ne = ["src.ne0", "src.ne1", "src.ne2", 1], nb = ["src.nb1", "src.nb2", "src.nb3"] },
+  { op = "permute", in = ["q"], out = "q", axes = [0, 2, 1, 3] },
+  { op = "permute", in = ["k"], out = "k", axes = [0, 2, 1, 3] },
+  { op = "permute", in = ["v"], out = "v", axes = [0, 2, 1, 3] },
+  # Flash attention reads f16 or quantized K and V; an f32 cache is cast to f16 first.
+  { op = "cpy", when = "kv_k_f32", in = ["k"], out = "k", type = "f16" },
+  { op = "cpy", when = "kv_v_f32", in = ["v"], out = "v", type = "f16" },
+  # nemotron.cpp passes kq_scale = 1/sqrt(n_embd_head), over the whole head width, not
+  # n_rot. max_bias and logit_softcap stay 0: nemotron reads neither hparam.
+  # build_attn_mha sets F32 precision.
+  { op = "flash_attn_ext", in = ["q", "k", "v", "attn_inp_kq_mask"], out = "__fattn__", scale = "1 / sqrt(n_embd_head_v)", prec = "f32" },
+  { op = "reshape", in = ["__fattn__"], out = "kqv_out", ne = ["src.ne0 * src.ne1", "src.ne2 * src.ne3"] },
+
+  # build_attn: undo the V rotation on the attention output, then project, with the
+  # optional output bias.
+  { op = "reshape", when = "attn_rot_v", in = ["kqv_out"], out = "kqv_rot", ne = ["n_attn_rot_v", "src.ne0 * src.ne1 * src.ne2 * src.ne3 / n_attn_rot_v"] },
+  { op = "mul_mat", when = "attn_rot_v", in = ["attn_inp_v_rot", "kqv_rot"], out = "kqv_rot", hint = "src0_is_hadamard" },
+  { op = "reshape", when = "attn_rot_v", in = ["kqv_rot"], out = "kqv_out", ne = ["n_embd_head_v * n_head", "n_tokens"] },
+  { op = "mul_mat", in = ["blk.{L}.attn_output.weight", "kqv_out"], out = "attn_out" },
+  { op = "add", when = "has(blk.{L}.attn_output.bias)", in = ["attn_out", "blk.{L}.attn_output.bias"], out = "attn_out" },
+
+  # The last layer keeps only the rows whose logits are wanted, from here on.
+  # llama.cpp gathers inpSA, which is inpL under another name.
+  { op = "get_rows", when = "L == n_layer - 1", in = ["attn_out", "inp_out_ids"], out = "attn_out" },
+  { op = "get_rows", when = "L == n_layer - 1", in = ["inpL", "inp_out_ids"], out = "inpL" },
+  { op = "add", in = ["attn_out", "inpL"], out = "ffn_inp" },
+
+  # build_norm(ffn_inp, ffn_norm, ffn_norm_b, LLM_NORM)
+  { op = "norm", in = ["ffn_inp"], out = "norm", eps = "f_norm_eps" },
+  { op = "mul", in = ["norm", "blk.{L}.ffn_norm.weight"], out = "norm_w" },
+  { op = "add", in = ["norm_w", "blk.{L}.ffn_norm.bias"], out = "ffn_norm" },
+
+  # build_ffn(up, up_b, NULL, NULL, NULL, NULL, down, down_b, LLM_FFN_RELU_SQR,
+  # LLM_FFN_SEQ): with no gate, the activation reads the up projection directly, and
+  # LLM_FFN_RELU_SQR is a relu then a sqr.
+  { op = "mul_mat", in = ["blk.{L}.ffn_up.weight", "ffn_norm"], out = "ffn_up" },
+  { op = "add", when = "has(blk.{L}.ffn_up.bias)", in = ["ffn_up", "blk.{L}.ffn_up.bias"], out = "ffn_up" },
+  { op = "relu", in = ["ffn_up"], out = "ffn_relu" },
+  { op = "sqr", in = ["ffn_relu"], out = "ffn_sqr" },
+  { op = "mul_mat", in = ["blk.{L}.ffn_down.weight", "ffn_sqr"], out = "ffn_out" },
+  { op = "add", when = "has(blk.{L}.ffn_down.bias)", in = ["ffn_out", "blk.{L}.ffn_down.bias"], out = "ffn_out" },
+
+  # The residual; the result is the next layer's input.
+  { op = "add", in = ["ffn_out", "ffn_inp"], out = "inpL" },
+]
+
+epilogue = [
+  # build_norm(inpL, output_norm, output_norm_b, LLM_NORM, -1)
+  { op = "norm", in = ["inpL"], out = "norm", eps = "f_norm_eps" },
+  { op = "mul", in = ["norm", "output_norm.weight"], out = "norm_w" },
+  { op = "add", in = ["norm_w", "output_norm.bias"], out = "result_norm" },
+  # build_lora_mm(output): the LM head.
+  { op = "mul_mat", in = ["output.weight", "result_norm"], out = "result_output" },
+]

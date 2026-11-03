@@ -1,0 +1,52 @@
+[package]
+name = "dovata-chat-template"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Optional tokenizer and chat-template helpers for models planned with dovata"
+
+[features]
+# `from_hub` is on by default because a Jade user who reaches for this package usually
+# has a model id, not a tokenizer.json on disk. Off, the package is file-only and makes
+# no network calls.
+default = ["hf-hub"]
+hf-hub = ["dep:hf-hub", "dep:ureq"]
+# Keep a `serde_json::Value`'s keys in insertion order, so tools built with `json!`
+# print through `tojson` in the order they were written, as under Python. Off by
+# default because it is serde_json's feature, not ours: it changes key order for every
+# crate in the build, dovata's own JSON output included. A caller can pass structs
+# instead, whose field order serde keeps either way.
+preserve_order = ["serde_json/preserve_order"]
+
+[dependencies]
+# The GGUF reader, for the chat template and the vocabulary. No default features, so
+# dovata compiles no llama.cpp and pulls in no network code on our account.
+dovata = { path = "../..", default-features = false }
+
+# Hugging Face's tokenizer, reading tokenizer.json. Its default features are C and C++:
+# `onig` is the Oniguruma regex library and `esaxx_fast` is a C++ suffix array used only
+# for training. `fancy-regex` is the pure-Rust regex backend the crate selects when
+# `onig` is off. Pinned to the 0.23 line, the newest stable one; 1.0 is still a release
+# candidate.
+tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
+
+# Jinja, for the chat templates. `loop_controls` is `{% break %}` and `{% continue %}`,
+# which the Hugging Face renderer enables. `preserve_order` keeps a map's keys in the
+# order they were serialized, so a tool schema reaches the prompt in the caller's order
+# the way Python's dict does, instead of sorted.
+minijinja = { version = "3.0.5", features = ["loop_controls", "preserve_order", "serde"] }
+# `pycompat` maps Python string and dict methods (`strip`, `split`, `startswith`,
+# `items`) onto Jinja values. Qwen and DeepSeek templates call them directly.
+minijinja-contrib = { version = "3.0.5", features = ["pycompat"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The same pin and features dovata uses, so a build with both resolves to one copy.
+hf-hub = { version = "0.4.3", default-features = false, features = ["ureq"], optional = true }
+# hf-hub's sync client is `ureq` 2, and its request builder is private. The header of a
+# GGUF is fetched with an HTTP range request, which needs a client of our own; this is
+# the same crate at the same major version, so it adds no second copy. `json` reads the
+# repo info, which hf-hub parses into a struct without the model card.
+ureq = { version = "2", features = ["json"], optional = true }

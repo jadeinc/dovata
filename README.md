@@ -1,152 +1,128 @@
-# dovata — the JADE OS inference engine
+# dovata: the JADE OS model memory and inference layout planner
 
-A library, not a daemon. `dovata` is an `ovata-infer-protocol` provider built as a
-`cdylib`, wrapping llama.cpp. A compiled Jade program `dlopen`s it once and calls `infer`
-in-process for every `?p` dereference, so the chain is
-`jadelang -> dovata.so -> nvidia.ko`, with no socket and no second process.
+A Rust library the Jade compiler uses at build time. dovata reads a model's GGUF file
+and a layout file describing its compute graph, decides where every tensor lives on the
+target machine, and quantizes the weights with existing open-source tools. It hands the
+compiler that placement as data: for each tensor, a memory region and a byte offset into
+it. The compiler generates the GPU code from that. dovata never runs a model.
 
-## Why there is no daemon
+The first targets are NVIDIA GPUs on Linux, Apple Silicon on macOS, and CPU only.
 
-It used to be one: a Unix socket at `~/.jade/llm.sock`, and a host that read framed
-requests and routed each to a provider.
+## What changed in 3.0
 
-The work is almost entirely GPU-bound, so a socket, a framing layer, and a second process
-in front of it bought nothing and cost real time on every request — plus a second thing to
-install, supervise, and explain. The engine was already reachable in-process, because it
-implements `Provider` and that is all `export_provider!` needs, so the host came out
-without the engine changing at all.
+Up to 2.x, dovata was a runtime: a provider library a running Jade program loaded to do
+inference through llama.cpp, with request paths, sampling, a wire protocol, and remote
+providers next to it. That code is on `main` and in the `v2.*` tags.
 
-Dropping the process boundary does not mean every program pays for its own copy of the
-model. Weights are `mmap`ed out of the GGUF, and MoE cold experts sit in the CPU backend's
-default buffer type, so the kernel's page cache shares them across every process that maps
-the same `model.gguf`. The model costs the machine once, not once per program.
+3.0 moves the work to build time. The work is GPU-bound, and the compiler is what should
+emit the machine code, so a runtime engine between the program and the GPU was overhead.
+The interface is a Rust crate the compiler takes as a cargo dependency; there is no
+protocol and no C ABI.
 
-The one job that genuinely wants a resident process is checking whether the GPU is
-healthy. That lives in a separate daemon, outside this repo.
+## Where the rewrite stands
 
-## How the source is organized
-
-Every child of `src/` is one *capability* — a slice of the engine, named for what it does,
-behind a cargo feature that can compile it out whole. They are flat: `ls src/` is a list,
-and the grouping lives here rather than in a directory tree.
-
-**The shape of a request.** Nothing reaches backwards.
-
-```
-dlopen -> load -> model + context built
-per request: dispatch -> decode | compose | batch  -> frames out
-             each built on tokenize + kv + sample
-```
-
-**Admission** — once, before any request
+The runtime has been removed. dovata now has these parts:
 
 | | |
 |---|---|
-| [`src/load/`](src/load/README.md) | env, preflight, VRAM sizing. The only thing that can refuse the load. |
-| [`src/model/`](src/model/README.md) | per-model vocabulary as data; the profiles themselves |
-| [`src/gguf/`](src/gguf/README.md) | GGUF header reader + `gguf-inspect`. Vets a model on a laptop. |
+| [`src/gguf/`](src/gguf/README.md) | GGUF header reader and the `gguf-inspect` CLI: metadata, the tensor index, each tensor's size and file offset, split parts. No llama.cpp. |
+| [`src/load/`](src/load/README.md) | preflight, which refuses a file that cannot be planned; `Model`, which treats a split GGUF as one model; the model's shape and KV cost |
+| [`src/layout/`](src/layout/README.md) | layouts: each architecture's compute graph as data in ggml's op names, and the binder that resolves one against a model. A built-in layout is one supported architecture. |
+| [`src/hf_hub/`](src/hf_hub/README.md) | getting a model: a local path, or one GGUF from the Hugging Face Hub, all parts of a split one. Never quantizes; the code default is the unquantized file. |
+| [`src/quantize/`](src/quantize/README.md) | quantizing by running llama.cpp's `llama-quantize` program, only when a program such as the Jade compiler asks |
+| [`src/target/`](src/target/README.md) | the machine a plan is for: its memory, largest GPU buffer and page size, as Apple, CPU or CUDA, and the kinds of memory a region can be |
+| [`src/window/`](src/window/README.md) | splits a mapped model file into page-aligned windows no larger than one GPU buffer, so every weight fits in one |
+| [`src/arena/`](src/arena/README.md) | packs one step's short-lived tensors into shared memory, reusing bytes between tensors that are never alive together |
+| [`src/memplan/`](src/memplan/README.md) | the planner: binds a layout, works out each tensor's lifetime, gives every tensor a region and offset on one target using `window` and `arena`, checks and hashes the result, and carries the step's ops for the compiler |
+| [`src/moe/`](src/moe/README.md) | MoE expert ranking: which experts each layer uses most |
+| [`src/chat_template/`](src/chat_template/README.md) | `dovata-chat-template`, an optional package for Jade users: builds a model's prompt from the chat template in its GGUF, and turns the prompt into token ids and back. It does not run the model. Its own crate; dovata never depends on it. |
+| [`src/machine/`](src/machine/README.md) | the current machine: its memory, page size, GPUs and their limits, and how memory is used right now |
+| [`src/cli/`](src/cli/README.md) | `dovata`, the command line: `dovata machine` reports this machine, and `dovata plan` plans a model, downloading or quantizing it first when asked |
+| [`src/refback/`](src/refback/README.md) | `refback`, the test-only reference backend: sets up a plan's memory for real and checks every tensor against the model file. Its own crate, never published. |
 
-**Primitives over the context** — shared by all three request paths
+Still to come: CUDA in `refback`, which needs an NVIDIA machine to test on; placing
+part of a model in host memory when it does not fit in VRAM, which waits on a design;
+the hybrid architectures with recurrent state, such as Qwen3.6; and CI.
+
+## Why each capability sits where it does
+
+Every child of `src/` is one capability, named for what it does, and the ones that can
+be compiled out sit behind a cargo feature. They are flat rather than nested, because
+the grouping that helps a reader is the table above, not a directory tree. A flat tree
+invites one question about each directory: why is it here, and not inside a neighbor?
+
+- `load/` is separate from `gguf/` because it is policy. The GGUF reader reports what
+  any file says, even a truncated one, and `load/` decides whether that is enough to
+  plan from.
+- `gguf/` has no dependencies, because it has to run on a laptop against a model no GPU
+  has touched. `load::preflight` reads every model through it, and `gguf-inspect`, a
+  binary of this package, is its command-line tool.
+- `hf_hub/` is a peer of `load/`, not part of it, because it is the one capability that
+  talks to the network. Its pure half, which picks the file to download, always builds;
+  the download itself is behind the `hf-hub` feature.
+- `quantize/` is never called implicitly. Fetching and planning never quantize, so a
+  program that wants a smaller model, such as the Jade compiler, calls it directly. The
+  quant-type table always builds; running `llama-quantize` is behind the `quantize`
+  feature. llama.cpp is not in this repo: `llama-quantize` must be installed on the
+  machine, and it is the only part of llama.cpp dovata uses.
+- `layout/` is separate from the planner because a layout is the contract with the Jade
+  compiler's kernels, and the planner only decides where its tensors live. Each built-in
+  layout is one architecture dovata supports.
+- `memplan/` is separate from `layout/` because the same layout plans differently on every
+  target machine. It hands the compiler an address table of region and offset pairs.
+- `target/` is separate from `memplan/` because four capabilities share it: `memplan/`,
+  `machine/`, `cli/` and `refback/`. It is not in `machine/` because `machine/` can be
+  compiled out, and the planner needs a target in every build.
+- `window/` and `arena/` are separate from `memplan/` because each is one packing method,
+  a pure function of sizes and offsets that knows nothing about models. The planner
+  decides what goes where; `window` decides how a mapped file fits in GPU buffers, and
+  `arena` decides how short-lived tensors share bytes.
+- `moe/` is behind the `moe` feature. The planner will use its ranking to decide which
+  experts stay resident in VRAM.
+- `machine/` is separate from `memplan/` because the planner never reads hardware: the Jade
+  compiler may build on one machine for another. `machine` reads only the machine it
+  runs on, and `Machine::target` turns that into a planner target when the two are the
+  same. Its parsers always build; running the system tools is behind the `machine`
+  feature.
+- `cli/` is the one place that prints for a person. The library returns values, and the
+  `dovata` program formats them.
+- `refback/` is a separate crate because it is the one part that runs real memory: it
+  maps files, allocates buffers and talks to Metal, which takes unsafe code and Apple's
+  framework. Neither belongs in a library the compiler links.
+
+Outside `src/`:
 
 | | |
 |---|---|
-| [`src/tokenize/`](src/tokenize/README.md) | text to tokens, and the UTF-8 decoder that spans them |
-| [`src/kv/`](src/kv/README.md) | prefix reuse, sequence ops, save/restore |
-| [`src/sample/`](src/sample/README.md) | the sampler chain, and the constrained-decode machine |
-
-**The three request paths**
-
-| | |
-|---|---|
-| [`src/dispatch/`](src/dispatch/README.md) | the `Provider` impl and the routing decision |
-| [`src/decode/`](src/decode/README.md) | the default: one sequence, streamed |
-| [`src/compose/`](src/compose/README.md) | long-context answering by KV composition |
-| [`src/batch/`](src/batch/README.md) | continuous batching. Compiles; nothing calls it. |
-
-**Acceleration**
-
-| | |
-|---|---|
-| [`src/moe/`](src/moe/README.md) | expert offload: Rust, the C++/CUDA driver, and its llama.cpp bundle |
-| [`src/llama/`](src/llama/README.md) | the vendored bindings over stock upstream. The one directory that nests. |
-
-**Providers and the wire**
-
-| | |
-|---|---|
-| [`src/protocol/`](src/protocol/README.md) | the wire protocol (git submodule) |
-| [`src/echo/`](src/echo/README.md) | the reference native provider. Copy it to write one. |
-| [`src/anthropic/`](src/anthropic/README.md), [`src/openai/`](src/openai/README.md) | remote providers, written in Jade |
-
-**Outside `src/`** — what you run, rather than what ships
-
-| | |
-|---|---|
-| [`src/packaging/`](src/packaging/README.md) | the xtask that builds `dist/` |
-| [`tools/`](tools/README.md) | all the Python: `scripts/` local, `ec2/` remote |
-| [`tests/`](tests/README.md) | the end-to-end evals in Jade, plus their runner |
-| [`ci/`](ci/README.md) | pinned model build inputs |
-| `docs/` | `blended-rag-rlm.md` (KV composition, with measured numbers), `moe-expert-offload.md` |
-
-## Two entry points, and only one of them reaches Jade
-
-`export_provider!` emits the `ovata_provider_*` C ABI. That is the right surface for a
-host that speaks plain C, and it is **not** what the Jade compiler calls. The compiler
-loads a provider through its own native-package machinery: `dlopen`, then `jade_pkg_init`
-to collect name-to-function-pointer bindings, then a binding called `infer`.
-
-The two drifted apart quietly. The compiler dropped its dependency on the protocol's Rust
-half in jade v1.1.30 and kept only `jade/infer.jde`, which declares the *messages* and
-says nothing about the entry point — so both sides agreed on `InferRequest`, `Token`,
-`Done` and `Error`, and disagreed on how to start the conversation. Loading the engine
-from Jade failed with "missing `jade_pkg_init` symbol".
-
-`src/jade_pkg.rs` is the conforming half, and both entry points sit in one library over
-one `Provider` impl. Read its module docs before touching either: two things in it are
-load-bearing and easy to get wrong.
+| `docs/` | `moe-expert-offload.md`, the design of the 2.x expert pager |
 
 ## Building and testing
 
 ```sh
-# The pure half. macOS or Linux; no model, no GPU, no llama.cpp.
-cargo test                                    # the engine
-cargo test -p ovata-infer-protocol -p ovata-provider-echo -p bundle-kit -p packaging
+# The library. Runs anywhere; no model and no GPU. The quantize tests also run
+# llama.cpp's llama-quantize, and skip when it is not installed: brew install llama.cpp
+cargo test -p dovata
 
-# One test
-cargo test sample::control::tests::stop_anchor_split_across_tokens
+# With every capability compiled out, the check that the boundaries are real
+cargo test -p dovata --lib --no-default-features
 
-# With every capability compiled out — the check that the boundaries are real
-cargo test --lib --no-default-features
-
-# The shipping library, with the GPU backend (Linux, NVIDIA)
-cargo build --release --features cuda
-
-# Vet a model file before a GPU box ever sees it
+# Look at a model file
 cargo run --bin gguf-inspect -- /path/to/model.gguf
 
-# The dist/ bundle
-cargo run -p packaging -- release --cuda
+# This machine's memory and GPUs, and their use
+cargo run --bin dovata -- machine info
+cargo run --bin dovata -- machine watch
+
+# Plan a model for this machine
+cargo run --bin dovata -- plan /path/to/model.gguf
+
+# Check a plan on real memory: the CPU, then Metal on a Mac
+cargo test -p refback
+cargo test -p refback --features metal
 ```
 
-`cargo build --workspace` compiles llama.cpp from source and is effectively a Linux
-operation.
+The repo is pure Rust: nothing builds C or C++ code, so `cargo build --workspace` needs
+only a Rust toolchain.
 
-## What a green test run does not tell you
-
-Everything named `exec.rs` is `#[cfg(target_os = "linux")]`, and `src/kv/` and
-`src/tokenize/` are llama-bound end to end. The suite is fast and broad and compiles none
-of it.
-
-That gap is narrower than it looks, though, and worth closing before you push:
-
-```sh
-python3 tools/scripts/check-engine.py
-```
-
-It copies the repo to a scratch directory, drops the platform gate in the copy, and runs
-`cargo check` — so the engine is typechecked here, without slowing the default build or
-touching your tree. llama.cpp builds fine on macOS; nothing in the engine's Linux-only
-code is actually Linux-specific, only its dependency is.
-
-What still needs the GPU box: anything about CUDA, and anything at run time. The evals in
-[`tests/`](tests/README.md) are the real gate.
+There is no CI on the 3.0 branch yet. The 2.x workflows released and published the
+runtime, and went with it.

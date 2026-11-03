@@ -1,0 +1,54 @@
+[package]
+name = "refback"
+version = "0.0.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Test-only reference backend: sets up a dovata plan's memory for real and checks every tensor"
+
+[lib]
+name = "refback"
+path = "src/lib.rs"
+
+# `refback <model.gguf> [--target cpu|apple]`: plans a model the way `dovata plan` does
+# and runs every check on it. A dev tool for trying a real model, not a runtime.
+[[bin]]
+name = "refback"
+path = "src/main.rs"
+
+[features]
+# Apple's Metal: unified regions become shared MTLBuffers, mapped windows become no-copy
+# MTLBuffers, and the compute check runs as a Metal shader bound at (buffer, offset).
+# The crates behind it are macOS only, so on other systems the feature builds nothing.
+metal = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-metal"]
+
+[dependencies]
+# The planner and the GGUF reader and writer. Of dovata's capabilities only `machine`
+# is on, so the dev CLI can plan for this machine's limits the way `dovata plan` does.
+# refback reads plans; it does not download or quantize models.
+dovata = { path = "../..", default-features = false, features = ["machine"] }
+# Maps each part file once, read-only, as the program dovata plans for does.
+memmap2 = "0.9"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+# NSString for the shader source and NSPageSize for rounding a no-copy buffer to pages.
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSError", "NSZone"], optional = true }
+# The version dovata pins. `block2` is needed only for the signature of
+# newBufferWithBytesNoCopy, whose deallocator refback leaves empty.
+objc2-metal = { version = "0.3.2", default-features = false, optional = true, features = [
+    "std",
+    "block2",
+    "MTLAllocation",
+    "MTLBuffer",
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLCommandQueue",
+    "MTLComputeCommandEncoder",
+    "MTLComputePipeline",
+    "MTLDevice",
+    "MTLLibrary",
+    "MTLResource",
+    "MTLTypes",
+] }
