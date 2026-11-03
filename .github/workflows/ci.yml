@@ -1,0 +1,108 @@
+# Author: Joe Ricks
+# File: .github/workflows/ci.yml
+# Description: Builds and tests dovata on Linux and macOS for every pull request and
+# push to main, and tags a release when main's version is new.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The two platforms the release ships. macOS is the one that counts most
+        # for now, since Apple Metal is the first target.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # The quantize tests run llama.cpp's llama-quantize and skip when it is not
+      # installed. Homebrew is how a Mac gets it, so the macOS run covers them.
+      - name: Install llama.cpp (macOS)
+        if: runner.os == 'macOS'
+        run: brew install llama.cpp
+
+      - name: Build
+        run: cargo build --workspace --locked --verbose
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      # A defaults-on build never takes the other arm of a `#[cfg(feature = ...)]`,
+      # so this is where a stale one shows up.
+      - name: Test with every capability compiled out
+        run: cargo test -p dovata --lib --locked --no-default-features
+
+      # refback sets up a plan's memory as Metal buffers and checks every tensor
+      # through them. It needs a Metal device, which the macOS runner has.
+      - name: Test refback on Metal (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test -p refback --locked --features metal
+
+      # The installed program reads the machine it runs on. A runner with no GPU
+      # must still get an answer, not an error.
+      - name: Run dovata on this runner
+        run: |
+          cargo run --locked --bin dovata -- --version
+          cargo run --locked --bin dovata -- machine info
+          cargo run --locked --bin dovata -- machine target
+
+      # Not `-D warnings`, the same as jadelang: clippy's correctness lints are
+      # errors by default, which is the class that matters.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked
+
+      # There is deliberately no `cargo fmt --check`. dovata puts each parameter on
+      # its own line with the brace below, which stable rustfmt cannot produce.
+
+  tag-release:
+    name: Tag release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create version tag if new
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          TAG="v$VERSION"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
+            echo "Tag $TAG already exists, so there is nothing to release."
+            echo "NEW_TAG=false" >> "$GITHUB_ENV"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+            echo "NEW_TAG=true" >> "$GITHUB_ENV"
+            echo "TAG=$TAG" >> "$GITHUB_ENV"
+            echo "Pushed $TAG"
+          fi
+
+      # A tag pushed with the workflow's own token starts no other workflow, so
+      # the release workflow is started by a dispatch instead.
+      - name: Dispatch release workflow
+        if: env.NEW_TAG == 'true'
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/dispatches" \
+            --method POST \
+            -f event_type=release \
+            -f "client_payload[tag]=$TAG"
+          echo "Dispatched the release workflow for $TAG."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

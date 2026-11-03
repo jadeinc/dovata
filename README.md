@@ -12,7 +12,7 @@ The first targets are NVIDIA GPUs on Linux, Apple Silicon on macOS, and CPU only
 
 Up to 2.x, dovata was a runtime: a provider library a running Jade program loaded to do
 inference through llama.cpp, with request paths, sampling, a wire protocol, and remote
-providers next to it. That code is on `main` and in the `v2.*` tags.
+providers next to it. That code is in the `v2.*` tags.
 
 3.0 moves the work to build time. The work is GPU-bound, and the compiler is what should
 emit the machine code, so a runtime engine between the program and the GPU was overhead.
@@ -42,7 +42,7 @@ The runtime has been removed. dovata now has these parts:
 
 Still to come: CUDA in `refback`, which needs an NVIDIA machine to test on; placing
 part of a model in host memory when it does not fit in VRAM, which waits on a design;
-the hybrid architectures with recurrent state, such as Qwen3.6; and CI.
+and the hybrid architectures with recurrent state, such as Qwen3.6.
 
 ## Why each capability sits where it does
 
@@ -121,8 +121,31 @@ cargo test -p refback
 cargo test -p refback --features metal
 ```
 
-The repo is pure Rust: nothing builds C or C++ code, so `cargo build --workspace` needs
-only a Rust toolchain.
+The repo is pure Rust. One dependency, `ring`, which the Hugging Face downloads use for
+HTTPS, compiles a little C, so a build needs a C compiler too. Xcode's command line tools
+and every Linux distribution's build tools have one.
 
-There is no CI on the 3.0 branch yet. The 2.x workflows released and published the
-runtime, and went with it.
+## Installing
+
+The programs `dovata` and `gguf-inspect` are released for Apple Silicon Macs and for
+x86_64 Linux. This installs the latest release into `/usr/local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jadeinc/dovata/main/install.sh | sh
+```
+
+`DOVATA_INSTALL_DIR` picks another directory. The script checks the download against
+the release's `checksums.txt` before installing anything.
+
+The Jade compiler takes the library as a cargo dependency on a release tag:
+
+```toml
+dovata = { git = "https://github.com/jadeinc/dovata", tag = "v3.0.1" }
+```
+
+## Releasing
+
+A release is a version bump. Change `version` in `Cargo.toml`, run `cargo build` so
+`Cargo.lock` follows, and merge to `main`. When CI passes on `main`, it tags the new
+version and the release workflow publishes the programs. The details are in
+[`.github/workflows/README.md`](.github/workflows/README.md).
