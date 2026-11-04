@@ -32,6 +32,10 @@ pub mod memplan;
 /// Reads the current machine's memory capacity, its GPUs and their use.
 pub mod machine;
 
+/// Runs dovata as a process that holds one model in memory, and lets programs start it,
+/// map its memory and stop it.
+pub mod host;
+
 /// Ranks each MoE layer's experts by how often they are used.
 #[cfg(feature = "moe")]
 pub mod moe;
@@ -39,7 +43,8 @@ pub mod moe;
 #[cfg(test)]
 mod capabilities {
     //! That each feature-gated capability is reachable under default features: the
-    //! `moe` module, and the halves of `quantize`, `hf_hub` and `machine` that reach outside dovata.
+    //! `moe` module, and the halves of `quantize`, `hf_hub`, `machine` and `host` that
+    //! reach outside dovata.
     //!
     //! A `#[cfg(feature = "…")]` with a mis-typed feature name compiles fine and
     //! silently drops the module. These name each feature once more, so a typo in
@@ -92,5 +97,15 @@ mod capabilities {
     {
         // With the feature, the machine reads; without it, it is NotBuilt.
         assert!(crate::machine::current().is_ok_and(|m| m.memory_bytes > 0));
+    }
+
+    #[test]
+    #[cfg(all(feature = "host", unix))]
+    fn host_process_half_is_present()
+    {
+        // With the feature, a bad name is refused before any socket is touched; without
+        // it, every call is NotBuilt.
+        use crate::host::{attach, HostError};
+        assert!(matches!(attach("Not A Name"), Err(HostError::BadName(_))));
     }
 }

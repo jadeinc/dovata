@@ -66,15 +66,15 @@ enum Kind {
 
 /// Purpose: This struct holds the options of one `dovata plan` command line.
 #[derive(Debug, Clone, PartialEq)]
-struct Opts {
+pub(crate) struct Opts {
     /// The model, as written on the command line.
-    model: String,
+    pub(crate) model: String,
     /// `--quant`.
     quant: Option<Ftype>,
     /// `--allow-requantize`.
     allow_requantize: bool,
     /// `--layout`.
-    layout: Option<PathBuf>,
+    pub(crate) layout: Option<PathBuf>,
     /// `--target`.
     kind: Option<Kind>,
     /// `--memory`.
@@ -84,9 +84,9 @@ struct Opts {
     /// `--page`.
     page: Option<u64>,
     /// `--ctx`, `--tokens`, `--outputs`, `--kv`, `--kv-k` and `--kv-v`.
-    step: BindOptions,
+    pub(crate) step: BindOptions,
     /// `--json`.
-    json: bool,
+    pub(crate) json: bool,
 }
 
 /// Purpose: This function runs `dovata plan`.
@@ -114,7 +114,7 @@ pub(crate) fn main(
 /// - `args`: the arguments after `plan`, such as `["model.gguf", "--ctx", "8192"]`.
 ///
 /// Outputs: the [`Opts`], or a message saying what is wrong with the arguments.
-fn parse(
+pub(crate) fn parse(
     args: &[String],
 ) -> Result<Opts, String>
 {
@@ -289,7 +289,7 @@ fn target(
 /// - `o`: the command line's options.
 ///
 /// Outputs: the files to plan, part 1 first, or a [`Fail`].
-fn model_files(
+pub(crate) fn model_files(
     o: &Opts,
 ) -> Result<Vec<PathBuf>, Fail>
 {
@@ -442,7 +442,7 @@ fn summary(
     }
     s += "  regions\n";
     for r in &plan.regions {
-        s += &format!("    {:<3} {:<8} {:>10}  {}\n", r.id, kind(r), size(r.bytes), holds(plan, r));
+        s += &format!("    {:<3} {:<8} {:>10}  {}\n", r.id, super::host::kind(r.kind), size(r.bytes), holds(plan, r));
     }
     let allocated: u64 = plan.totals.allocated.values().sum();
     s += &format!("  total      {} mapped from the model file, {} allocated\n", size(plan.totals.mapped), size(allocated));
@@ -452,25 +452,6 @@ fn summary(
     s += &format!("  table hash {}\n", plan.table_hash);
     s += "Add --json for every tensor's region and offset.\n";
     s
-}
-
-/// Purpose: This function names the kind of memory a region is.
-///
-/// Inputs:
-/// - `r`: the region.
-///
-/// Outputs: a name such as `mmap` or `unified`.
-fn kind(
-    r: &dovata::memplan::Region,
-) -> &'static str
-{
-    use dovata::target::RegionKind;
-    match r.kind {
-        RegionKind::Mmap => "mmap",
-        RegionKind::Host => "host",
-        RegionKind::Vram => "vram",
-        RegionKind::Unified => "unified",
-    }
 }
 
 /// Purpose: This function says what a region holds.

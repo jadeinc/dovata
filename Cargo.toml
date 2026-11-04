@@ -4,7 +4,7 @@ version = "3.0.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "JADE OS model memory and inference layout planner, used by the Jade compiler at build time"
+description = "JADE OS model memory and inference layout planner, used by the Jade compiler at build time, and the process that holds a model in memory"
 
 [lib]
 name = "dovata"
@@ -23,21 +23,30 @@ crate-type = ["rlib"]
 name = "gguf-inspect"
 path = "src/gguf/main.rs"
 
-# `dovata`, the command line. Today it holds the `machine` commands, which report the
-# current machine's memory and GPUs. `doc = false` because the library has the same
-# name.
+# `dovata`, the command line: `dovata start`, `status` and `kill` run a model's process,
+# `dovata plan` plans a model, and `dovata machine` reports the current machine.
+# `doc = false` because the library has the same name.
 [[bin]]
 name = "dovata"
 path = "src/cli/main.rs"
-required-features = ["machine"]
+required-features = ["machine", "host"]
 doc = false
+
+# Starts the real `dovata` program on a tiny model, maps its memory from this process,
+# and stops it. An integration test, so cargo builds the program first and names it in
+# CARGO_BIN_EXE_dovata. It sits with the code it tests rather than in a `tests/`
+# directory, the way every other file of this crate sits under `src/`.
+[[test]]
+name = "host-process"
+path = "src/host/process_test.rs"
+required-features = ["machine", "host"]
 
 # ── Capabilities ──────────────────────────────────────────────────────────────
 [features]
 # Every capability is on by default, so a plain `cargo build` is the whole library.
 # The features exist to make each capability's boundary explicit and checkable: if a
 # capability can't be switched off, its edges aren't real.
-default = ["moe", "quantize", "hf-hub", "machine"]
+default = ["moe", "quantize", "hf-hub", "machine", "host"]
 
 # MoE expert ranking: the `expert_order` loader that says which experts are hot. The
 # planner will use it to decide which experts stay resident in VRAM.
@@ -57,6 +66,13 @@ hf-hub = ["dep:hf-hub"]
 # Off, `machine::current` and `machine::usage` return an error naming this feature.
 machine = ["dep:objc2-metal"]
 
+# Running a model's process: `host::serve` holds a model's memory and answers requests on
+# a Unix socket, and `host::start`, `attach` and `Hosted` start, map and stop it from
+# another program. It maps memory and passes file descriptors between processes, which
+# takes libc. It reads this machine to plan for it, so it turns on `machine`. Unix only.
+# Off, every call returns an error naming this feature.
+host = ["machine", "dep:libc"]
+
 [dependencies]
 serde_json = { version = "1", features = ["std"] }
 # Layout files are TOML, and the plan serializes to JSON for the compiler.
@@ -70,6 +86,11 @@ sha2 = "0.10"
 # compiler's build does not pull in tokio. 1.x is async-first and its blocking
 # feature wraps a tokio runtime.
 hf-hub = { version = "0.4.3", default-features = false, features = ["ureq"], optional = true }
+
+# mmap, shared memory, mincore, and passing file descriptors over a Unix socket, for
+# the `host` capability. Already in the build through other crates.
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
 
 # Metal's GPU memory limits, `recommendedMaxWorkingSetSize` and `maxBufferLength`, which
 # no command-line tool reports. Rust bindings to Apple's Metal framework; macOS only.

@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use dovata::host::Status;
 use dovata::machine::{self, Gpu, Machine, Pressure, Usage};
 
 use super::{json, out, size, target_text, Fail};
@@ -16,7 +17,8 @@ use super::{json, out, size, target_text, Fail};
 pub(crate) const HELP: &str = "\
 usage: dovata machine <command> [options]
 
-Report this machine's memory and GPUs.
+Report this machine's memory and GPUs. `usage` and `watch` also show each model a
+`dovata start` process holds, and how much of it is resident.
 
 commands:
   info              memory capacity, page size, and GPU memory limits
@@ -146,7 +148,7 @@ fn run(
             if as_json {
                 out(&format!("{}\n", json(&u)));
             } else {
-                out(&usage_text(&u, process.as_deref()));
+                out(&usage_text(&u, process.as_deref(), &super::host::statuses()));
             }
         }
         Cmd::Watch { every, process, lines } => watch(every, process.as_deref(), lines)?,
@@ -185,7 +187,7 @@ fn watch(
     if lines || !std::io::stdout().is_terminal() {
         loop {
             let u = machine::usage(process).map_err(|e| e.to_string())?;
-            let line = format!("{:>8.1}s  {}\n", start.elapsed().as_secs_f64(), usage_line(&u));
+            let line = format!("{:>8.1}s  {}\n", start.elapsed().as_secs_f64(), usage_line(&u, &super::host::statuses()));
             if !write_out(&line) {
                 return Ok(());
             }
@@ -203,7 +205,7 @@ fn watch(
             "dovata machine watch: {chip}, every {} s, running {} s\n\n{}\nPress q to quit.",
             every.as_secs_f64(),
             start.elapsed().as_secs(),
-            usage_text(&u, process)
+            usage_text(&u, process, &super::host::statuses())
         );
         if !write_out(&frame(&text)) || screen.wait(every) {
             return Ok(());
@@ -430,11 +432,13 @@ fn target_block(
 /// Inputs:
 /// - `u`: the reading.
 /// - `process`: the program name that was asked about, if any.
+/// - `models`: the status of every running dovata process.
 ///
 /// Outputs: the text, one item per line.
 fn usage_text(
     u: &Usage,
     process: Option<&str>,
+    models: &[Status],
 ) -> String
 {
     let m = &u.memory;
@@ -466,6 +470,9 @@ fn usage_text(
             s += &format!("  process    {} {}, {} resident\n", p.pid, p.command, size(p.rss_bytes));
         }
     }
+    for m in models {
+        s += &format!("  model      {}\n", super::host::status_line(m));
+    }
     s
 }
 
@@ -474,10 +481,12 @@ fn usage_text(
 ///
 /// Inputs:
 /// - `u`: the reading.
+/// - `models`: the status of every running dovata process.
 ///
 /// Outputs: the line.
 fn usage_line(
     u: &Usage,
+    models: &[Status],
 ) -> String
 {
     let m = &u.memory;
@@ -490,6 +499,9 @@ fn usage_line(
     }
     for p in &u.processes {
         s += &format!(" | pid {} {}", p.pid, size(p.rss_bytes));
+    }
+    for m in models {
+        s += &format!(" | {} {}", m.name, size(m.resident_bytes()));
     }
     s
 }
@@ -603,11 +615,11 @@ mod tests {
             nvidia: machine::parse_nvidia_smi(include_str!("../machine/testdata/nvidia-smi.csv")).unwrap(),
             processes: machine::parse_ps(include_str!("../machine/testdata/macos-ps.txt"), "qwen-chat"),
         };
-        let text = usage_text(&u, Some("qwen-chat"));
+        let text = usage_text(&u, Some("qwen-chat"), &[]);
         assert!(text.contains("used of 24.0 GiB") && text.contains("immovable") && text.contains("compressed"), "{text}");
         assert!(text.contains("NVIDIA 0") && text.contains("load 97%, 71 C"), "{text}");
         assert!(text.contains("process    5120 /Users/dev/models/qwen-chat, 2.3 GiB resident"), "{text}");
         let none = Usage { processes: vec![], ..u };
-        assert!(usage_text(&none, Some("absent")).contains("no running program named absent"));
+        assert!(usage_text(&none, Some("absent"), &[]).contains("no running program named absent"));
     }
 }

@@ -334,6 +334,7 @@ name = "dovata"
 version = "3.0.1"
 dependencies = [
  "hf-hub",
+ "libc",
  "objc2-metal",
  "serde",
  "serde_json",

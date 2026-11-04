@@ -1,8 +1,10 @@
 //! Author: Joe Ricks
 //! File: src/cli/main.rs
-//! Description: The `dovata` command line: `dovata machine` reports this machine, and
-//! `dovata plan` places a model's tensors in memory.
+//! Description: The `dovata` command line: `dovata start`, `status` and `kill` run a
+//! model in a process of its own, `dovata plan` places a model's tensors in memory, and
+//! `dovata machine` reports this machine.
 
+mod host;
 mod machine;
 mod plan;
 
@@ -14,9 +16,14 @@ const HELP: &str = "\
 usage: dovata <command> ...
 
 commands:
-  machine   report this machine's memory and GPUs; see `dovata machine help`
+  start     load a model into memory in a process of its own, which keeps running
+  status    show each running model's memory, region by region
+  kill      stop a running model
   plan      place a model's tensors in memory for one machine; see `dovata plan --help`
+  machine   report this machine's memory and GPUs; see `dovata machine help`
   version   print dovata's version, also as --version
+
+Each command takes --help.
 ";
 
 /// Purpose: This enum lists the ways a `dovata` command can fail.
@@ -44,6 +51,12 @@ fn main() -> ExitCode
             out(&version());
             Ok(())
         }
+        Some("start") => host::start(&args[1..]),
+        Some("status") => host::status(&args[1..]),
+        Some("kill") => host::kill(&args[1..]),
+        // The process itself, which `dovata start` runs in the background. Not in the
+        // help, since people use `dovata start --foreground` instead.
+        Some("host") => host::serve(&args[1..]),
         Some("machine") => machine::main(&args[1..]),
         Some("plan") => plan::main(&args[1..]),
         Some(other) => Err(Fail::Usage(format!("unknown command {other:?}\n\n{HELP}"))),
@@ -91,7 +104,8 @@ pub(crate) fn out(
 /// Purpose: This function writes a value as indented JSON.
 ///
 /// Inputs:
-/// - `v`: a machine, a usage reading, a planner target or a plan.
+/// - `v`: a machine, a usage reading, a planner target, a plan or a running model's
+///   status.
 ///
 /// Outputs: the JSON text.
 pub(crate) fn json<T: serde::Serialize>(
