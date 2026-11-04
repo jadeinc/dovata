@@ -2,10 +2,10 @@
 //! File: src/target/mod.rs
 //! Description: Describes the machine a plan is for and its kinds of memory.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Purpose: This enum describes the machine a plan is for, with at most one GPU.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Target {
     /// Apple Silicon. CPU and GPU share one memory pool, so nothing is copied to a
@@ -110,7 +110,7 @@ pub enum ExecSite {
 }
 
 /// Purpose: This enum lists the kinds of memory a plan's regions can be.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RegionKind {
     /// A window of a mapped GGUF part file. The program maps each part once, and the

@@ -5,8 +5,9 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use serde::de::Error as _;
 use serde::ser::SerializeStruct;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::load::{KvType, Model};
 
@@ -32,6 +33,33 @@ pub struct BindOptions {
     pub kv_k: KvType,
     /// The V cache's element type, chosen separately from K.
     pub kv_v: KvType,
+}
+
+impl<'de> Deserialize<'de> for BindOptions {
+    /// Purpose: This function reads bind options from JSON, with the KV cache types by
+    /// name, the form [`BindOptions`]'s `Serialize` writes.
+    ///
+    /// Inputs:
+    /// - `d`: the deserializer.
+    ///
+    /// Outputs: the options, or an error naming an unknown KV cache type.
+    fn deserialize<D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BindOptions, D::Error>
+    {
+        /// Purpose: This struct holds bind options as JSON writes them.
+        #[derive(Deserialize)]
+        struct Named {
+            n_ctx: u32,
+            n_tokens: u32,
+            n_outputs: u32,
+            kv_k: String,
+            kv_v: String,
+        }
+        let n = Named::deserialize(d)?;
+        let kv = |s: &str| KvType::parse(s).ok_or_else(|| D::Error::custom(format!("unknown KV cache type {s:?}")));
+        Ok(BindOptions { n_ctx: n.n_ctx, n_tokens: n.n_tokens, n_outputs: n.n_outputs, kv_k: kv(&n.kv_k)?, kv_v: kv(&n.kv_v)? })
+    }
 }
 
 impl Serialize for BindOptions {
