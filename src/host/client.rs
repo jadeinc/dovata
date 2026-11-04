@@ -1,7 +1,8 @@
 //! Author: Joe Ricks
 //! File: src/host/client.rs
-//! Description: Starts a dovata process from another program, finds running ones, and
-//! asks them for their status, their plan, their memory and to stop.
+//! Description: Starts the dovata process from another program, finds it when it runs,
+//! and asks it to add and remove models, for its status, for a model's plan and memory,
+//! and to stop.
 
 use std::io::{self, BufRead, BufReader};
 use std::os::fd::{AsFd, OwnedFd};
@@ -16,64 +17,43 @@ use crate::hf_hub::{self, ModelSource};
 
 use super::memory::{self, Map};
 use super::{
-    check_name, log_path, run_dir, socket_path, spec, wire, Ask, HostError, Hosted, MapReply, MappedRegion, Mapping, Reply, Request, StartLine,
-    StartOptions, Status, PROTOCOL,
+    log_path, run_dir, socket_path, spec, wire, AddOptions, Ask, HostError, MapReply, MappedRegion, Mapping, ModelStatus, Process, Reply, Request,
+    StartLine, StartOptions, State, Status, PROTOCOL,
 };
 
-/// How long [`Hosted::kill`] waits for a stopped process to exit.
+/// How long [`Process::kill`] waits for a stopped process to exit.
 const STOP_WAIT: Duration = Duration::from_secs(10);
 
-/// Purpose: This function gets a model and starts a dovata process that holds it.
-///
-/// Inputs:
-/// - `model`: a GGUF file, or a Hugging Face link to a repo or to one file in it.
-/// - `opts`: the start options. A repo's model is the one `opts.want` names, the
-///   unquantized one by default; nothing is quantized.
-///
-/// Outputs: the [`Hosted`] process once its model is in memory, or a [`HostError`].
-pub fn start(
-    model: &str,
-    opts: &StartOptions,
-) -> Result<Hosted, HostError>
-{
-    let source = ModelSource::parse(model).map_err(|e| HostError::Model(e.to_string()))?;
-    let fetched = hf_hub::fetch(&source, opts.want, &opts.fetch).map_err(|e| HostError::Model(e.to_string()))?;
-    start_parts(&fetched.parts, opts)
-}
+/// How often [`Process::add`] asks whether the model it added is in memory yet.
+const LOAD_POLL: Duration = Duration::from_millis(50);
 
-/// Purpose: This function starts a dovata process that holds a model already on disk.
+/// Purpose: This function starts the dovata process, with no models in it.
 ///
 /// Inputs:
-/// - `parts`: every part file of the model, part 1 first.
-/// - `opts`: the start options; `want` and `fetch` are not used.
+/// - `opts`: which `dovata` program to run.
 ///
-/// Outputs: the [`Hosted`] process once its model is in memory, or a [`HostError`],
-/// such as [`HostError::AlreadyRunning`] or the process's own reason for stopping.
-pub fn start_parts(
-    parts: &[PathBuf],
+/// Outputs: the [`Process`] once it answers on its socket, or a [`HostError`], such as
+/// [`HostError::AlreadyRunning`] or the process's own reason for stopping.
+pub fn start(
     opts: &StartOptions,
-) -> Result<Hosted, HostError>
+) -> Result<Process, HostError>
 {
-    let spec = spec(parts, opts)?;
     let dir = run_dir()?;
-    if attach_at(&spec.name, &socket_path(&dir, &spec.name)?).is_ok() {
-        return Err(HostError::AlreadyRunning(spec.name));
+    let socket = socket_path(&dir)?;
+    if let Ok(s) = status(&Process { socket: socket.clone() }) {
+        return Err(HostError::AlreadyRunning(s.pid));
     }
     let io = |e: io::Error, what: &Path| HostError::Io(format!("{}: {e}", what.display()));
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(|e| io(e, &dir))?;
-    let log = log_path(&dir, &spec.name);
-    let log_file = std::fs::File::create(&log).map_err(|e| io(e, &log))?;
+    let log = log_path(&dir);
+    let log_file = std::fs::OpenOptions::new().create(true).append(true).open(&log).map_err(|e| io(e, &log))?;
 
     let program = opts.program.clone().or_else(|| std::env::var_os("DOVATA_PROGRAM").map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("dovata"));
-    // `dovata host` takes the spec as its argument, writes one line to standard output
-    // when the model is loaded, and writes its log to standard error. An argument rather
-    // than a pipe, so a program that does not ignore SIGPIPE cannot be stopped by a
-    // child that exits before reading it. Its own process group keeps a Ctrl-C at this
+    // `dovata host` writes one line to standard output once it answers on its socket,
+    // and its log to standard error. Its own process group keeps a Ctrl-C at this
     // program's terminal from reaching it.
-    let text = serde_json::to_string(&spec).map_err(|e| HostError::Protocol(e.to_string()))?;
     let mut child = Command::new(&program)
         .arg("host")
-        .arg(&text)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(log_file)
@@ -85,8 +65,7 @@ pub fn start_parts(
     if let Some(stdout) = child.stdout.take() {
         let _ = BufReader::new(stdout).read_line(&mut line);
     }
-    let started = serde_json::from_str::<StartLine>(line.trim());
-    match started {
+    match serde_json::from_str::<StartLine>(line.trim()) {
         Ok(StartLine::Ready(r)) if r.protocol == PROTOCOL => {
             // The process outlives this call. Waiting for it on a thread of its own
             // reaps it when it exits, so it does not linger as a zombie while this
@@ -94,11 +73,10 @@ pub fn start_parts(
             std::thread::spawn(move || {
                 let _ = child.wait();
             });
-            Ok(Hosted { name: r.name, socket: r.socket })
+            Ok(Process { socket: r.socket })
         }
         Ok(StartLine::Ready(r)) => {
-            let h = Hosted { name: r.name, socket: r.socket };
-            let _ = kill(&h);
+            let _ = kill(&Process { socket: r.socket });
             let _ = child.wait();
             Err(HostError::Start(format!(
                 "{} speaks protocol {} and dovata {}, and this program speaks protocol {PROTOCOL}; use the same dovata version",
@@ -113,98 +91,51 @@ pub fn start_parts(
         }
         Err(_) => {
             let code = child.wait().map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
-            let tail = std::fs::read_to_string(&log).unwrap_or_default();
-            let tail: Vec<&str> = tail.lines().rev().take(5).collect();
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            let tail: Vec<&str> = text.lines().rev().take(5).collect();
             let tail: Vec<&str> = tail.into_iter().rev().collect();
-            Err(HostError::Start(format!("{} {code} before the model was loaded; its log {} ends:\n{}", program.display(), log.display(), tail.join("\n"))))
+            Err(HostError::Start(format!("{} {code}; its log {} ends:\n{}", program.display(), log.display(), tail.join("\n"))))
         }
     }
 }
 
-/// Purpose: This function finds the running dovata process with a given name.
-///
-/// Inputs:
-/// - `name`: the process's name.
-///
-/// Outputs: the [`Hosted`] process, or [`HostError::NotRunning`] when none answers.
-pub fn attach(
-    name: &str,
-) -> Result<Hosted, HostError>
-{
-    check_name(name)?;
-    attach_at(name, &socket_path(&run_dir()?, name)?)
-}
-
-/// Purpose: This function finds the running dovata process on a given socket.
-///
-/// Inputs:
-/// - `name`: the process's name.
-/// - `socket`: its socket.
-///
-/// Outputs: the [`Hosted`] process, or [`HostError::NotRunning`] when none answers. A
-/// socket file no process answers on, left by one that was killed, is removed.
-pub(crate) fn attach_at(
-    name: &str,
-    socket: &Path,
-) -> Result<Hosted, HostError>
-{
-    let h = Hosted { name: name.to_owned(), socket: socket.to_path_buf() };
-    match status(&h) {
-        Ok(_) => Ok(h),
-        Err(HostError::NotRunning(n)) => {
-            if socket.exists() {
-                let _ = std::fs::remove_file(socket);
-            }
-            Err(HostError::NotRunning(n))
-        }
-        Err(e) => Err(e),
-    }
-}
-
-/// Purpose: This function lists every running dovata process.
+/// Purpose: This function finds the running dovata process.
 ///
 /// Inputs: none.
 ///
-/// Outputs: the processes, sorted by name, or a [`HostError`] when the run directory
-/// cannot be read. A missing run directory means none are running.
-pub fn running() -> Result<Vec<Hosted>, HostError>
+/// Outputs: the [`Process`], or [`HostError::NotRunning`] when none answers.
+pub fn connect() -> Result<Process, HostError>
 {
-    let dir = run_dir()?;
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(HostError::Io(format!("{}: {e}", dir.display()))),
-    };
-    let mut names: Vec<String> =
-        entries.flatten().filter_map(|e| e.file_name().to_str()?.strip_suffix(".sock").map(str::to_owned)).filter(|n| check_name(n).is_ok()).collect();
-    names.sort();
-    Ok(names.iter().filter_map(|n| attach(n).ok()).collect())
+    let p = Process { socket: socket_path(&run_dir()?)? };
+    status(&p)?;
+    Ok(p)
 }
 
 /// Purpose: This function sends one request and reads the reply.
 ///
 /// Inputs:
-/// - `h`: the process.
+/// - `p`: the process.
 /// - `request`: the request.
 ///
 /// Outputs: the reply and any file descriptors sent with it, or a [`HostError`]:
 /// [`HostError::NotRunning`] when nothing answers on the socket, and
 /// [`HostError::Refused`] when the process answers with an error.
 fn ask(
-    h: &Hosted,
+    p: &Process,
     request: Request,
 ) -> Result<(Reply, Vec<OwnedFd>), HostError>
 {
-    let sock = match UnixStream::connect(&h.socket) {
+    let sock = match UnixStream::connect(&p.socket) {
         Ok(s) => s,
-        Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) => return Err(HostError::NotRunning(h.name.clone())),
-        Err(e) => return Err(HostError::Io(format!("{}: {e}", h.socket.display()))),
+        Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) => return Err(HostError::NotRunning),
+        Err(e) => return Err(HostError::Io(format!("{}: {e}", p.socket.display()))),
     };
     wire::quiet(&sock);
-    let _ = sock.set_read_timeout(Some(Duration::from_secs(60)));
+    // An add plans the model before it answers, which takes a few seconds for a large one.
+    let _ = sock.set_read_timeout(Some(Duration::from_secs(300)));
     let _ = sock.set_write_timeout(Some(Duration::from_secs(10)));
     let text = serde_json::to_string(&Ask { protocol: PROTOCOL, request }).map_err(|e| HostError::Protocol(e.to_string()))?;
-    let io = |e: io::Error| HostError::Io(format!("{}: {e}", h.socket.display()));
+    let io = |e: io::Error| HostError::Io(format!("{}: {e}", p.socket.display()));
     wire::send(&sock, format!("{text}\n").as_bytes(), &[]).map_err(io)?;
     let (line, fds) = wire::recv(&sock).map_err(io)?;
     match serde_json::from_slice::<Reply>(&line) {
@@ -214,51 +145,125 @@ fn ask(
     }
 }
 
-/// Purpose: This function asks a process for its status.
+/// Purpose: This function asks the process for its status.
 ///
 /// Inputs:
-/// - `h`: the process.
+/// - `p`: the process.
 ///
 /// Outputs: the [`Status`], or a [`HostError`].
 pub(crate) fn status(
-    h: &Hosted,
+    p: &Process,
 ) -> Result<Status, HostError>
 {
-    match ask(h, Request::Status)? {
+    match ask(p, Request::Status)? {
         (Reply::Status(s), _) => Ok(*s),
         (other, _) => Err(unexpected("status", &other)),
     }
 }
 
-/// Purpose: This function asks a process for its whole plan.
+/// Purpose: This function gets a model and adds it to the process.
 ///
 /// Inputs:
-/// - `h`: the process.
+/// - `p`: the process.
+/// - `model`: a GGUF file, or a Hugging Face link to a repo or to one file in it.
+/// - `opts`: the add options.
+///
+/// Outputs: the model's status once it is in memory, or a [`HostError`].
+pub(crate) fn add(
+    p: &Process,
+    model: &str,
+    opts: &AddOptions,
+) -> Result<ModelStatus, HostError>
+{
+    // Asking first means a stopped process is reported before anything is downloaded.
+    status(p)?;
+    let source = ModelSource::parse(model).map_err(|e| HostError::Model(e.to_string()))?;
+    let fetched = hf_hub::fetch(&source, opts.want, &opts.fetch).map_err(|e| HostError::Model(e.to_string()))?;
+    add_parts(p, &fetched.parts, opts)
+}
+
+/// Purpose: This function adds a model already on disk to the process, and waits until
+/// it is in memory.
+///
+/// Inputs:
+/// - `p`: the process.
+/// - `parts`: every part file of the model, part 1 first.
+/// - `opts`: the add options.
+///
+/// Outputs: the model's status once it is in memory, or a [`HostError`].
+pub(crate) fn add_parts(
+    p: &Process,
+    parts: &[PathBuf],
+    opts: &AddOptions,
+) -> Result<ModelStatus, HostError>
+{
+    let spec = spec(parts, opts)?;
+    let name = spec.name.clone();
+    match ask(p, Request::Add { spec })? {
+        (Reply::Added, _) => {}
+        (other, _) => return Err(unexpected("add", &other)),
+    }
+    loop {
+        let s = status(p)?;
+        match s.model(&name) {
+            Some(m) if m.state == State::Ready => return Ok(m.clone()),
+            Some(_) => std::thread::sleep(LOAD_POLL),
+            None => return Err(HostError::Refused(format!("{name} was removed before it finished loading"))),
+        }
+    }
+}
+
+/// Purpose: This function removes a model from the process.
+///
+/// Inputs:
+/// - `p`: the process.
+/// - `name`: the model's name.
+///
+/// Outputs: `Ok(())`, or a [`HostError`].
+pub(crate) fn remove(
+    p: &Process,
+    name: &str,
+) -> Result<(), HostError>
+{
+    match ask(p, Request::Remove { name: name.to_owned() })? {
+        (Reply::Removed, _) => Ok(()),
+        (other, _) => Err(unexpected("remove", &other)),
+    }
+}
+
+/// Purpose: This function asks the process for one model's whole plan.
+///
+/// Inputs:
+/// - `p`: the process.
+/// - `name`: the model's name.
 ///
 /// Outputs: the plan as JSON, or a [`HostError`].
 pub(crate) fn plan(
-    h: &Hosted,
+    p: &Process,
+    name: &str,
 ) -> Result<serde_json::Value, HostError>
 {
-    match ask(h, Request::Plan)? {
-        (Reply::Plan(p), _) => Ok(p),
+    match ask(p, Request::Plan { name: name.to_owned() })? {
+        (Reply::Plan(v), _) => Ok(v),
         (other, _) => Err(unexpected("plan", &other)),
     }
 }
 
-/// Purpose: This function maps a process's memory into this program.
+/// Purpose: This function maps one model's memory into this program.
 ///
 /// Inputs:
-/// - `h`: the process.
+/// - `p`: the process.
+/// - `name`: the model's name.
 /// - `table_hash`: the table hash of the plan this program's offsets came from.
 ///
 /// Outputs: the [`Mapping`], or a [`HostError`].
 pub(crate) fn map(
-    h: &Hosted,
+    p: &Process,
+    name: &str,
     table_hash: &str,
 ) -> Result<Mapping, HostError>
 {
-    let (reply, fds) = ask(h, Request::Map { table_hash: table_hash.to_owned() })?;
+    let (reply, fds) = ask(p, Request::Map { name: name.to_owned(), table_hash: table_hash.to_owned() })?;
     let map = match reply {
         Reply::Map(m) => m,
         other => return Err(unexpected("map", &other)),
@@ -307,28 +312,28 @@ fn mapping(
     Ok(Mapping { table_hash: reply.table_hash, regions })
 }
 
-/// Purpose: This function stops a process and waits until it has gone.
+/// Purpose: This function stops the process and waits until it has gone.
 ///
 /// Inputs:
-/// - `h`: the process.
+/// - `p`: the process.
 ///
 /// Outputs: `Ok(())` once nothing answers on its socket, or a [`HostError`].
 pub(crate) fn kill(
-    h: &Hosted,
+    p: &Process,
 ) -> Result<(), HostError>
 {
-    match ask(h, Request::Stop)? {
+    match ask(p, Request::Stop)? {
         (Reply::Stopping, _) => {}
         (other, _) => return Err(unexpected("stop", &other)),
     }
     let start = Instant::now();
     while start.elapsed() < STOP_WAIT {
-        if UnixStream::connect(&h.socket).is_err() {
+        if UnixStream::connect(&p.socket).is_err() {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    Err(HostError::Io(format!("{} said it would stop, and still answers after {} s", h.name, STOP_WAIT.as_secs())))
+    Err(HostError::Io(format!("dovata said it would stop, and still answers after {} s", STOP_WAIT.as_secs())))
 }
 
 /// Purpose: This function describes a reply of the wrong kind.
@@ -345,6 +350,8 @@ fn unexpected(
 {
     let kind = match got {
         Reply::Status(_) => "a status",
+        Reply::Added => "an add",
+        Reply::Removed => "a remove",
         Reply::Plan(_) => "a plan",
         Reply::Map(_) => "a map",
         Reply::Stopping => "a stop",

@@ -103,9 +103,9 @@ mod capabilities {
     #[cfg(all(feature = "host", unix))]
     fn host_process_half_is_present()
     {
-        // With the feature, a bad name is refused before any socket is touched; without
-        // it, every call is NotBuilt.
-        use crate::host::{attach, HostError};
-        assert!(matches!(attach("Not A Name"), Err(HostError::BadName(_))));
+        // With the feature, looking for the process reaches the socket, whether or not
+        // one runs; without it, every call is NotBuilt.
+        use crate::host::{connect, HostError};
+        assert!(!matches!(connect(), Err(HostError::NotBuilt)));
     }
 }

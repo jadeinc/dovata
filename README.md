@@ -6,11 +6,13 @@ target machine, and quantizes the weights with existing open-source tools. It ha
 compiler that placement as data: for each tensor, a memory region and a byte offset into
 it. The compiler generates the GPU code from that.
 
-dovata is also a process that holds a model in memory. `dovata start` loads one model,
-from a file or a Hugging Face link, and keeps running until `dovata kill` stops it. A
-compiled Jade program maps that memory into itself, every region where its offsets
-expect it, and runs its own kernels on it. Starting, mapping and stopping work the same
-from the command line and from code. dovata never runs a model's math.
+dovata is also the process that holds models in memory. `dovata start` starts it, with
+no models; `dovata add` loads a model into it, from a file or a Hugging Face link; and
+it runs until `dovata kill` stops it. There is one dovata process per user, so every
+model's memory is managed in one place. A compiled Jade program maps a model's memory
+into itself, every region where its offsets expect it, and runs its own kernels on it.
+All of it works the same from the command line and from code. dovata never runs a
+model's math.
 
 The first targets are NVIDIA GPUs on Linux, Apple Silicon on macOS, and CPU only.
 
@@ -25,8 +27,8 @@ emit the machine code, so a runtime engine between the program and the GPU was o
 The interface is a Rust crate the compiler takes as a cargo dependency, with no C ABI.
 
 The process came back on 2026-11-03, without the request path. The 2.x daemon took a
-message per inference step. A dovata process takes messages only to start, report, hand
-out its memory and stop; the program's kernels then use that memory directly. The
+message per inference step. The dovata process takes messages only to add and remove
+models, report, hand out memory and stop; the program's kernels then use that memory directly. The
 messages are dovata's own, between the library and the program of the same version, not
 a protocol other projects implement.
 
@@ -48,8 +50,8 @@ The runtime has been removed. dovata now has these parts:
 | [`src/moe/`](src/moe/README.md) | MoE expert ranking: which experts each layer uses most |
 | [`src/chat_template/`](src/chat_template/README.md) | `dovata-chat-template`, an optional package for Jade users: builds a model's prompt from the chat template in its GGUF, and turns the prompt into token ids and back. It does not run the model. Its own crate; dovata never depends on it. |
 | [`src/machine/`](src/machine/README.md) | the current machine: its memory, page size, GPUs and their limits, and how memory is used right now |
-| [`src/host/`](src/host/README.md) | the dovata process: holds one model's memory, loaded, reports how much of it is resident, and hands it to programs to map as file descriptors over a Unix socket; and the library calls that start, map and stop it |
-| [`src/cli/`](src/cli/README.md) | `dovata`, the command line: `dovata start`, `status` and `kill` run a model's process, `dovata machine` reports this machine, and `dovata plan` plans a model, downloading or quantizing it first when asked |
+| [`src/host/`](src/host/README.md) | the dovata process: holds every model added to it, loaded, checks each fits beside the others, reports how much is resident, and hands a model's memory to programs to map as file descriptors over a Unix socket; and the library calls that start it, add and remove models, map them and stop it |
+| [`src/cli/`](src/cli/README.md) | `dovata`, the command line: `dovata start`, `add`, `remove`, `status` and `kill` run the dovata process and its models, `dovata machine` reports this machine, and `dovata plan` plans a model, downloading or quantizing it first when asked |
 | [`src/refback/`](src/refback/README.md) | `refback`, the test-only reference backend: sets up a plan's memory for real and checks every tensor against the model file. Its own crate, never published. |
 
 Still to come: CUDA in `refback` and in the dovata process, which need an NVIDIA
@@ -135,12 +137,13 @@ cargo run --bin dovata -- machine watch
 # Plan a model for this machine
 cargo run --bin dovata -- plan /path/to/model.gguf
 
-# Hold a model in memory in a process of its own, look at it, and stop it
-cargo run --bin dovata -- start https://huggingface.co/unsloth/Qwen3-0.6B-GGUF --quant Q4_K_M
+# Start the dovata process, hold a model in it, look at it, and stop it
+cargo run --bin dovata -- start
+cargo run --bin dovata -- add https://huggingface.co/unsloth/Qwen3-0.6B-GGUF --quant Q4_K_M
 cargo run --bin dovata -- status
 cargo run --bin dovata -- kill
 
-# The process test: starts the real program, maps its memory, and stops it
+# The process test: starts the real program, adds a model, maps it, and stops it
 cargo test -p dovata --test host-process
 
 # Check a plan on real memory: the CPU, then Metal on a Mac

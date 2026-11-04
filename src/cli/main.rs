@@ -1,8 +1,8 @@
 //! Author: Joe Ricks
 //! File: src/cli/main.rs
-//! Description: The `dovata` command line: `dovata start`, `status` and `kill` run a
-//! model in a process of its own, `dovata plan` places a model's tensors in memory, and
-//! `dovata machine` reports this machine.
+//! Description: The `dovata` command line: `dovata start`, `add`, `remove`, `status`
+//! and `kill` run the dovata process and the models in it, `dovata plan` places a
+//! model's tensors in memory, and `dovata machine` reports this machine.
 
 mod host;
 mod machine;
@@ -16,9 +16,11 @@ const HELP: &str = "\
 usage: dovata <command> ...
 
 commands:
-  start     load a model into memory in a process of its own, which keeps running
-  status    show each running model's memory, region by region
-  kill      stop a running model
+  start     start the dovata process, which holds models in memory
+  add       load a model into the dovata process
+  remove    take a model out of the dovata process
+  status    show the dovata process and each model's memory, region by region
+  kill      stop the dovata process
   plan      place a model's tensors in memory for one machine; see `dovata plan --help`
   machine   report this machine's memory and GPUs; see `dovata machine help`
   version   print dovata's version, also as --version
@@ -52,6 +54,8 @@ fn main() -> ExitCode
             Ok(())
         }
         Some("start") => host::start(&args[1..]),
+        Some("add") => host::add(&args[1..]),
+        Some("remove") => host::remove(&args[1..]),
         Some("status") => host::status(&args[1..]),
         Some("kill") => host::kill(&args[1..]),
         // The process itself, which `dovata start` runs in the background. Not in the

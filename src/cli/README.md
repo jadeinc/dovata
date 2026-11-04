@@ -1,8 +1,8 @@
 # cli: the `dovata` command line
 
 `dovata` is the package's command-line program. It has three groups of commands:
-`dovata start`, `status` and `kill` run a model in a process of its own through
-[`src/host/`](../host/README.md), `dovata machine` reports the current machine's memory
+`dovata start`, `add`, `remove`, `status` and `kill` run the dovata process and the
+models in it through [`src/host/`](../host/README.md), `dovata machine` reports the current machine's memory
 and GPUs through [`src/machine/`](../machine/README.md), and `dovata plan` places a
 model's tensors in memory through [`src/memplan/`](../memplan/README.md). `dovata version`, or
 `dovata --version`, prints a line such as `dovata 3.0.0`; the release workflow checks it
@@ -10,22 +10,30 @@ against the tag it builds. `gguf-inspect` can join it later as
 `dovata inspect`, so dovata has one program with subcommands instead of one program per
 job.
 
-## `dovata start`, `status` and `kill`
+## `dovata start`, `add`, `remove`, `status` and `kill`
 
 ```text
-dovata start <model> [--name NAME] [--cpu] [--foreground] [--json] [model and step options]
+dovata start [--foreground]
+dovata add <model> [--name NAME] [--cpu] [--json] [model and step options]
+dovata remove <name>
 dovata status [NAME] [--json]
-dovata kill [NAME | --all]
+dovata kill
 ```
 
-`dovata start` gets the model the way `dovata plan` does, plans it for this machine,
-and starts a process that loads it into memory and keeps running. It returns once the
-model is in memory, and prints the process's status:
+There is one dovata process per user. `dovata start` starts it with no models, and
+returns once it answers; a second `dovata start` finds it running and says so.
+`dovata add` puts a model in it: it gets the model the way `dovata plan` does, has the
+process plan it for this machine and load it, and returns once the model is in memory,
+printing its status:
 
 ```text
-$ dovata start https://huggingface.co/unsloth/Qwen3-0.6B-GGUF --quant Q4_K_M
-dovata: loading .../Qwen3-0.6B-Q4_K_M.gguf into memory as qwen3-0.6b
-qwen3-0.6b, pid 74532, up 1 s, dovata 3.0.1
+$ dovata start
+dovata is running, pid 88464. Add a model with `dovata add <model>`.
+Its log is /Users/joericks/.dovata/run/dovata.log.
+
+$ dovata add https://huggingface.co/unsloth/Qwen3-0.6B-GGUF --quant Q4_K_M
+dovata: adding .../Qwen3-0.6B-Q4_K_M.gguf as qwen3-0.6b
+qwen3-0.6b, added 0 s ago
   model      Qwen3-0.6B, qwen3, Q4_K_M
   machine    apple target, 17.8 GiB, buffers up to 13.3 GiB
   state      ready
@@ -37,24 +45,28 @@ qwen3-0.6b, pid 74532, up 1 s, dovata 3.0.1
     2   unified    24.0 MiB    24.0 MiB resident  step inputs, scratch and outputs
   memory     850.3 MiB resident of 850.3 MiB, the file once and every allocation
   mapped by  no program yet
-  table hash 2cd31dc7553946b6a4fe4d5c83cba44dee0047d1acae313b9d38aa74fbd3a281
-Stop it with `dovata kill qwen3-0.6b`. Its log is /Users/joericks/.dovata/run/qwen3-0.6b.log.
+  table hash e3ff8851474af81d8e9e24a39889a70de3efc2b726e085a8053c3e0e5a518f22
 ```
 
-The name comes from the model unless `--name` gives one. `--cpu` plans for the CPU even
-on a machine with a GPU. `--foreground` runs the process in the terminal instead, with
-its log on standard error, until Ctrl-C or `dovata kill` stops it. The model and step
-options are `dovata plan`'s, below; the machine options are not, since the process
-holds the model on this machine.
+The table hash is the one `dovata plan` prints for the same model and options, which is
+what a program compiled against that plan asks for when it maps the model.
 
-`dovata status` shows the same report for a running model, or for every one when no
-name is given, with each region's resident bytes read again. `--json` prints a list of
-statuses, the form a program reads. `dovata kill` stops a model and waits until it has
-exited; with no name it stops the only one running, and `--all` stops them all.
+The model's name comes from the model unless `--name` gives one, and the process holds
+each name once. `--cpu` plans for the CPU even on a machine with a GPU. The model and
+step options are `dovata plan`'s, below; the machine options are not, since the process
+holds models on this machine. A model that does not fit beside the ones already held is
+refused, and `dovata remove` makes room. `dovata add` with no process running stops
+before downloading anything and says to run `dovata start`.
 
-`dovata host` is the process itself: it takes a model's spec as JSON in its argument
-and writes one line when ready. `dovata start` and the library run it; it is not in the
-help, since people use `--foreground` instead.
+`dovata status` shows the process and every model in it, each with its regions' resident
+bytes read again; with a name, that model alone. `--json` prints the same as JSON, the
+form a program reads. `dovata remove` takes one model out; programs that mapped it keep
+their mappings. `dovata kill` stops the process with every model in it.
+
+`dovata start --foreground` runs the process in the terminal instead, with its log on
+standard error, until Ctrl-C or `dovata kill` stops it. `dovata host` is the process
+itself, which `dovata start` and the library run in the background: it writes one line
+when it answers on its socket. It is not in the help.
 
 ## `dovata machine`
 
@@ -101,10 +113,12 @@ such as Claude Code, which reads the output rather than watching a screen, gets 
 per reading. Line mode stops when Ctrl-C ends it or when its output is closed, as when it
 is piped into `head`.
 
-`usage` and `watch` also show each model a `dovata start` process holds, one line each:
+`usage` and `watch` also show the dovata process when it runs, and one line per model:
 
 ```text
-  model      qwen3-0.6b, pid 74532, 850.3 MiB resident of 850.3 MiB
+  dovata     pid 88464, 2 models, 1.0 GiB resident of 1.0 GiB
+  model      qwen3-0.6b, 850.3 MiB resident of 850.3 MiB
+  model      smol, 204.7 MiB resident of 204.7 MiB
 ```
 
 `--process NAME` matches running programs whose command, or the last part of its path,
@@ -200,10 +214,11 @@ read, exits with 1.
   when the output is closed, and the size formatting and parsing.
 - `machine.rs` is `dovata machine`: argument parsing, the four commands, and their text.
 - `plan.rs` is `dovata plan`: argument parsing, getting and quantizing the model,
-  building the target, and the plan's summary. `dovata start` reuses its parsing and
-  its model download.
-- `host.rs` is `dovata start`, `status`, `kill` and `host`: their parsing, the status
-  text, and the one line per model that `machine usage` and `watch` show.
+  building the target, and the plan's summary. `dovata add` reuses its parsing and its
+  model download.
+- `host.rs` is `dovata start`, `add`, `remove`, `status`, `kill` and `host`: their
+  parsing, the status text, and the lines `machine usage` and `watch` show for the
+  process.
 
 Each file's tests cover its parser and its text.
 
@@ -220,4 +235,4 @@ cargo run --bin dovata -- plan /path/to/model.gguf
 
 People, at a terminal. Programs such as the Jade compiler call `dovata::machine`,
 `dovata::memplan` and `dovata::host` directly. The library's `host::start` runs this
-program as `dovata host`, so a machine that starts models from code needs it installed.
+program as `dovata host`, so a machine that starts dovata from code needs it installed.

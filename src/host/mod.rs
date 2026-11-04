@@ -1,7 +1,8 @@
 //! Author: Joe Ricks
 //! File: src/host/mod.rs
-//! Description: Runs dovata as a process that holds one model in memory, and lets other
-//! programs start it, map its memory, read its status and stop it.
+//! Description: Runs dovata as the one process that holds models in memory, and lets
+//! other programs start it, add and remove models, map their memory, read its status and
+//! stop it.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -30,35 +31,35 @@ mod tests;
 mod wire;
 
 #[cfg(all(feature = "host", unix))]
-pub use client::{attach, running, start, start_parts};
+pub use client::{connect, start};
 #[cfg(all(feature = "host", unix))]
 pub use server::serve;
 
 /// The version of the messages between a dovata process and the programs that talk to
 /// it. Both sides refuse a message of another version.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
-/// The longest name a process can have.
+/// The longest name a model can have.
 pub const MAX_NAME: usize = 48;
 
 /// The longest socket path macOS accepts, which is 104 bytes with the closing NUL. Linux
 /// accepts 108, so this limit holds on both.
 const MAX_SOCKET_PATH: usize = 103;
 
-/// Purpose: This struct holds a running dovata process that this program can talk to.
+/// Purpose: This struct holds the running dovata process, as a program talks to it.
+/// There is one per user: every model is added to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Hosted {
-    /// The process's name, such as `qwen3-8b`.
-    name: String,
+pub struct Process {
     /// The process's socket.
     socket: PathBuf,
 }
 
-/// Purpose: This struct holds what a dovata process needs to load a model: the model's
-/// files, its layout, the step to plan for, and the process's name.
+/// Purpose: This struct holds what the dovata process needs to add a model: the
+/// model's files, its layout, the step to plan for, and the model's name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Spec {
-    /// The process's name. [`spec`] derives one from the model when none is given.
+    /// The model's name in the process. [`spec`] derives one from the model when none is
+    /// given.
     pub name: String,
     /// Every part file of the model, part 1 first, as absolute paths.
     pub parts: Vec<PathBuf>,
@@ -70,10 +71,19 @@ pub struct Spec {
     pub cpu: bool,
 }
 
-/// Purpose: This struct holds the options for starting a dovata process from code.
-#[derive(Debug, Clone)]
+/// Purpose: This struct holds the options for starting the dovata process from code.
+#[derive(Debug, Clone, Default)]
 pub struct StartOptions {
-    /// The process's name. `None` derives one from the model, such as `qwen3-8b`.
+    /// The `dovata` program to run. `None` uses `DOVATA_PROGRAM`, else `dovata` on
+    /// `PATH`.
+    pub program: Option<PathBuf>,
+}
+
+/// Purpose: This struct holds the options for adding a model to the dovata process.
+#[derive(Debug, Clone)]
+pub struct AddOptions {
+    /// The model's name in the process. `None` derives one from the model, such as
+    /// `qwen3-8b`.
     pub name: Option<String>,
     /// Which model of a Hugging Face repo to download. The default is the unquantized
     /// one; quantizing is a separate call, [`crate::quantize::quantize`].
@@ -87,38 +97,32 @@ pub struct StartOptions {
     pub step: BindOptions,
     /// Plan for the CPU even when the machine has a GPU.
     pub cpu: bool,
-    /// The `dovata` program to run. `None` uses `DOVATA_PROGRAM`, else `dovata` on
-    /// `PATH`.
-    pub program: Option<PathBuf>,
 }
 
-impl Default for StartOptions {
-    /// Purpose: This function gives the default start options.
+impl Default for AddOptions {
+    /// Purpose: This function gives the default options for adding a model.
     ///
     /// Inputs: none.
     ///
     /// Outputs: options with no name, the unquantized model, the built-in layout,
     /// `dovata plan`'s step, and this machine's GPU when it has one.
-    fn default() -> StartOptions
+    fn default() -> AddOptions
     {
-        StartOptions {
+        AddOptions {
             name: None,
             want: Want::Unquantized,
             fetch: FetchOptions::default(),
             layout: None,
             step: BindOptions { n_ctx: 4096, n_tokens: 512, n_outputs: 1, kv_k: KvType::F16, kv_v: KvType::F16 },
             cpu: false,
-            program: None,
         }
     }
 }
 
-/// Purpose: This struct holds what a dovata process reports once its model is in
-/// memory.
+/// Purpose: This struct holds what the dovata process reports once it answers on its
+/// socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ready {
-    /// The process's name.
-    pub name: String,
     /// Its process id.
     pub pid: u32,
     /// Its socket.
@@ -129,36 +133,46 @@ pub struct Ready {
     pub version: String,
 }
 
-/// Purpose: This enum holds the one line a dovata process started by [`start`] writes to
-/// its standard output: that it is ready, or why it stopped.
+/// Purpose: This enum holds the one line the dovata process started by [`start`] writes
+/// to its standard output: that it is ready, or why it stopped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StartLine {
-    /// The model is in memory and the process answers on its socket.
+    /// The process answers on its socket.
     Ready(Ready),
-    /// The process could not load the model, and has exited.
+    /// The process could not start, and has exited.
     Error(String),
 }
 
-/// Purpose: This struct holds a dovata process's status: its model, its memory region by
-/// region with how much of each is in physical memory, and the programs that mapped it.
+/// Purpose: This struct holds the dovata process's status: every model it holds, with
+/// each one's memory region by region.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
-    /// The process's name.
-    pub name: String,
-    /// Its process id.
+    /// The process id.
     pub pid: u32,
     /// The dovata version it runs.
     pub version: String,
-    /// Whether the model is still loading.
-    pub state: State,
     /// When the process started, in seconds since 1970.
     pub started_unix: u64,
-    /// The model it holds.
+    /// Every model it holds, sorted by name.
+    pub models: Vec<ModelStatus>,
+}
+
+/// Purpose: This struct holds one model's status: its plan, its memory region by region
+/// with how much of each is in physical memory, and the programs that mapped it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelStatus {
+    /// The model's name in the process, such as `qwen3-8b`.
+    pub name: String,
+    /// When it was added, in seconds since 1970.
+    pub added_unix: u64,
+    /// Whether it is still loading.
+    pub state: State,
+    /// Which model it is.
     pub model: ModelInfo,
     /// The machine its plan is for.
     pub target: Target,
-    /// The plan's table hash. A program's compiled offsets are right for this process
+    /// The plan's table hash. A program's compiled offsets are right for this model
     /// only when they came from a plan with the same hash.
     pub table_hash: String,
     /// Every part file of the model, part 1 first, mapped whole.
@@ -166,11 +180,11 @@ pub struct Status {
     /// Every region of the plan, in id order. Windows of the same file can overlap, so
     /// the weights' memory is counted in `files`, not here.
     pub regions: Vec<RegionUse>,
-    /// Every program that has mapped the memory, in the order they mapped it.
+    /// Every program that has mapped the model's memory, in the order they mapped it.
     pub clients: Vec<Client>,
 }
 
-/// Purpose: This enum lists the states a dovata process can be in.
+/// Purpose: This enum lists the states a model in the dovata process can be in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum State {
@@ -185,7 +199,7 @@ pub enum State {
     Ready,
 }
 
-/// Purpose: This struct holds which model a dovata process holds.
+/// Purpose: This struct holds which model a name in the process stands for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelInfo {
     /// `general.name`, when the model has one.
@@ -196,8 +210,8 @@ pub struct ModelInfo {
     pub file_type: Option<String>,
 }
 
-/// Purpose: This struct holds one part file of a hosted model and how much of it is in
-/// physical memory.
+/// Purpose: This struct holds one part file of a model and how much of it is in physical
+/// memory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileUse {
     /// The file's path.
@@ -210,8 +224,8 @@ pub struct FileUse {
     pub resident_bytes: u64,
 }
 
-/// Purpose: This struct holds one region of a hosted model and how much of it is in
-/// physical memory.
+/// Purpose: This struct holds one region of a model and how much of it is in physical
+/// memory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegionUse {
     /// The region's id in the plan.
@@ -242,7 +256,7 @@ pub enum Holds {
     Step,
 }
 
-/// Purpose: This struct holds one program that mapped a dovata process's memory.
+/// Purpose: This struct holds one program that mapped a model's memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Client {
     /// The program's process id.
@@ -254,8 +268,45 @@ pub struct Client {
 }
 
 impl Status {
-    /// Purpose: This function adds up the memory the process holds: every part file
-    /// once, and every allocated region.
+    /// Purpose: This function adds up the memory every model in the process holds.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the total in bytes.
+    pub fn bytes(&self) -> u64
+    {
+        self.models.iter().map(ModelStatus::bytes).sum()
+    }
+
+    /// Purpose: This function adds up the memory every model holds that is in physical
+    /// memory right now.
+    ///
+    /// Inputs: none.
+    ///
+    /// Outputs: the total in bytes.
+    pub fn resident_bytes(&self) -> u64
+    {
+        self.models.iter().map(ModelStatus::resident_bytes).sum()
+    }
+
+    /// Purpose: This function finds one model by its name.
+    ///
+    /// Inputs:
+    /// - `name`: the model's name in the process.
+    ///
+    /// Outputs: the model's status, or `None` when the process holds no such model.
+    pub fn model(
+        &self,
+        name: &str,
+    ) -> Option<&ModelStatus>
+    {
+        self.models.iter().find(|m| m.name == name)
+    }
+}
+
+impl ModelStatus {
+    /// Purpose: This function adds up the memory the model holds: every part file once,
+    /// and every allocated region.
     ///
     /// Inputs: none.
     ///
@@ -265,7 +316,7 @@ impl Status {
         self.files.iter().map(|f| f.bytes).sum::<u64>() + self.allocated().map(|r| r.bytes).sum::<u64>()
     }
 
-    /// Purpose: This function adds up the memory the process holds that is in physical
+    /// Purpose: This function adds up the memory the model holds that is in physical
     /// memory right now.
     ///
     /// Inputs: none.
@@ -276,8 +327,8 @@ impl Status {
         self.files.iter().map(|f| f.resident_bytes).sum::<u64>() + self.allocated().map(|r| r.resident_bytes).sum::<u64>()
     }
 
-    /// Purpose: This function lists the regions the process allocated, leaving out
-    /// windows of the part files.
+    /// Purpose: This function lists the regions the process allocated for the model,
+    /// leaving out windows of the part files.
     ///
     /// Inputs: none.
     ///
@@ -491,26 +542,27 @@ impl MappedRegion {
     }
 }
 
-/// Purpose: This enum lists the errors starting, talking to or running a dovata process
-/// can return.
+/// Purpose: This enum lists the errors starting, talking to or running the dovata
+/// process can return.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostError {
     /// This build of dovata cannot run a process: the `host` feature is off, or the
     /// system is not Unix.
     NotBuilt,
-    /// The name is not one a process can have.
+    /// The name is not one a model can have.
     BadName(String),
-    /// No process by this name is running.
-    NotRunning(String),
-    /// A process by this name is already running.
-    AlreadyRunning(String),
+    /// The dovata process is not running.
+    NotRunning,
+    /// The dovata process is already running, with this process id.
+    AlreadyRunning(u32),
     /// The model cannot be fetched, opened, laid out or planned.
     Model(String),
     /// The plan needs memory dovata cannot hold yet, such as CUDA's VRAM.
     Unsupported(String),
-    /// The dovata program could not be started, or stopped before it was ready.
+    /// The dovata program could not be started.
     Start(String),
-    /// The process answered with an error, such as a different table hash.
+    /// The process answered with an error, such as a different table hash or a model
+    /// that does not fit beside the others.
     Refused(String),
     /// A message was not in the expected form, or was of another protocol version.
     Protocol(String),
@@ -519,7 +571,7 @@ pub enum HostError {
 }
 
 impl fmt::Display for HostError {
-    /// Purpose: This function formats errors from running or talking to a dovata
+    /// Purpose: This function formats errors from running or talking to the dovata
     /// process.
     ///
     /// Inputs:
@@ -534,15 +586,15 @@ impl fmt::Display for HostError {
         match self {
             HostError::NotBuilt => write!(
                 f,
-                "this build of dovata cannot run a model's process: it was compiled without the `host` cargo feature, or not for Unix"
+                "this build of dovata cannot run its process: it was compiled without the `host` cargo feature, or not for Unix"
             ),
             HostError::BadName(m) => write!(f, "{m}"),
-            HostError::NotRunning(name) => write!(f, "no dovata process named {name} is running"),
-            HostError::AlreadyRunning(name) => write!(f, "a dovata process named {name} is already running"),
+            HostError::NotRunning => write!(f, "dovata is not running; start it with `dovata start`"),
+            HostError::AlreadyRunning(pid) => write!(f, "dovata is already running, pid {pid}"),
             HostError::Model(m) => write!(f, "{m}"),
             HostError::Unsupported(m) => write!(f, "{m}"),
             HostError::Start(m) => write!(f, "the dovata process did not start: {m}"),
-            HostError::Refused(m) => write!(f, "the dovata process refused: {m}"),
+            HostError::Refused(m) => write!(f, "{m}"),
             HostError::Protocol(m) => write!(f, "a message from the dovata process was not understood: {m}"),
             HostError::Io(m) => write!(f, "{m}"),
         }
@@ -551,17 +603,7 @@ impl fmt::Display for HostError {
 
 impl std::error::Error for HostError {}
 
-impl Hosted {
-    /// Purpose: This function gives the process's name.
-    ///
-    /// Inputs: none.
-    ///
-    /// Outputs: the name.
-    pub fn name(&self) -> &str
-    {
-        &self.name
-    }
-
+impl Process {
     /// Purpose: This function gives the process's socket.
     ///
     /// Inputs: none.
@@ -572,7 +614,7 @@ impl Hosted {
         &self.socket
     }
 
-    /// Purpose: This function asks the process for its status.
+    /// Purpose: This function asks the process for its status and every model's.
     ///
     /// Inputs: none.
     ///
@@ -585,24 +627,101 @@ impl Hosted {
         Err(HostError::NotBuilt)
     }
 
-    /// Purpose: This function asks the process for its whole plan, the JSON `dovata plan
-    /// --json` prints.
+    /// Purpose: This function gets a model and adds it to the process, and waits until
+    /// it is in memory.
     ///
-    /// Inputs: none.
+    /// Inputs:
+    /// - `model`: a GGUF file, or a Hugging Face link to a repo or to one file in it.
+    /// - `opts`: the add options. A repo's model is the one `opts.want` names, the
+    ///   unquantized one by default; nothing is quantized.
     ///
-    /// Outputs: the plan as JSON, or a [`HostError`].
-    pub fn plan(&self) -> Result<serde_json::Value, HostError>
+    /// Outputs: the model's status once it is in memory, or a [`HostError`], such as a
+    /// name already in use or a model that does not fit beside the others.
+    pub fn add(
+        &self,
+        model: &str,
+        opts: &AddOptions,
+    ) -> Result<ModelStatus, HostError>
     {
         #[cfg(all(feature = "host", unix))]
-        return client::plan(self);
+        return client::add(self, model, opts);
         #[cfg(not(all(feature = "host", unix)))]
-        Err(HostError::NotBuilt)
+        {
+            let _ = (model, opts);
+            Err(HostError::NotBuilt)
+        }
     }
 
-    /// Purpose: This function maps the process's memory into this program, every region
+    /// Purpose: This function adds a model already on disk to the process, and waits
+    /// until it is in memory.
+    ///
+    /// Inputs:
+    /// - `parts`: every part file of the model, part 1 first.
+    /// - `opts`: the add options; `want` and `fetch` are not used.
+    ///
+    /// Outputs: the model's status once it is in memory, or a [`HostError`].
+    pub fn add_parts(
+        &self,
+        parts: &[PathBuf],
+        opts: &AddOptions,
+    ) -> Result<ModelStatus, HostError>
+    {
+        #[cfg(all(feature = "host", unix))]
+        return client::add_parts(self, parts, opts);
+        #[cfg(not(all(feature = "host", unix)))]
+        {
+            let _ = (parts, opts);
+            Err(HostError::NotBuilt)
+        }
+    }
+
+    /// Purpose: This function removes a model from the process. Programs that mapped it
+    /// keep their mappings; its memory goes when the last of them unmaps it.
+    ///
+    /// Inputs:
+    /// - `name`: the model's name in the process.
+    ///
+    /// Outputs: `Ok(())`, or a [`HostError`] when the process holds no such model.
+    pub fn remove(
+        &self,
+        name: &str,
+    ) -> Result<(), HostError>
+    {
+        #[cfg(all(feature = "host", unix))]
+        return client::remove(self, name);
+        #[cfg(not(all(feature = "host", unix)))]
+        {
+            let _ = name;
+            Err(HostError::NotBuilt)
+        }
+    }
+
+    /// Purpose: This function asks the process for one model's whole plan, the JSON
+    /// `dovata plan --json` prints.
+    ///
+    /// Inputs:
+    /// - `name`: the model's name in the process.
+    ///
+    /// Outputs: the plan as JSON, or a [`HostError`].
+    pub fn plan(
+        &self,
+        name: &str,
+    ) -> Result<serde_json::Value, HostError>
+    {
+        #[cfg(all(feature = "host", unix))]
+        return client::plan(self, name);
+        #[cfg(not(all(feature = "host", unix)))]
+        {
+            let _ = name;
+            Err(HostError::NotBuilt)
+        }
+    }
+
+    /// Purpose: This function maps one model's memory into this program, every region
     /// where the plan's offsets expect it.
     ///
     /// Inputs:
+    /// - `name`: the model's name in the process.
     /// - `table_hash`: the table hash of the plan this program's offsets came from. The
     ///   process refuses a different one, since the offsets would then be wrong.
     ///
@@ -611,13 +730,15 @@ impl Hosted {
     #[cfg(all(feature = "host", unix))]
     pub fn map(
         &self,
+        name: &str,
         table_hash: &str,
     ) -> Result<Mapping, HostError>
     {
-        client::map(self, table_hash)
+        client::map(self, name, table_hash)
     }
 
-    /// Purpose: This function stops the process and waits until it has exited.
+    /// Purpose: This function stops the process, with every model in it, and waits until
+    /// it has exited.
     ///
     /// Inputs: none.
     ///
@@ -635,49 +756,15 @@ impl Hosted {
 /// Purpose: This function returns `NotBuilt` in a build without the `host` feature.
 ///
 /// Inputs:
-/// - `model`: the model; unused.
 /// - `opts`: the start options; unused.
 ///
 /// Outputs: always [`HostError::NotBuilt`].
 #[cfg(not(all(feature = "host", unix)))]
 pub fn start(
-    model: &str,
     opts: &StartOptions,
-) -> Result<Hosted, HostError>
+) -> Result<Process, HostError>
 {
-    let _ = (model, opts);
-    Err(HostError::NotBuilt)
-}
-
-/// Purpose: This function returns `NotBuilt` in a build without the `host` feature.
-///
-/// Inputs:
-/// - `parts`: the model's files; unused.
-/// - `opts`: the start options; unused.
-///
-/// Outputs: always [`HostError::NotBuilt`].
-#[cfg(not(all(feature = "host", unix)))]
-pub fn start_parts(
-    parts: &[PathBuf],
-    opts: &StartOptions,
-) -> Result<Hosted, HostError>
-{
-    let _ = (parts, opts);
-    Err(HostError::NotBuilt)
-}
-
-/// Purpose: This function returns `NotBuilt` in a build without the `host` feature.
-///
-/// Inputs:
-/// - `name`: the process's name; unused.
-///
-/// Outputs: always [`HostError::NotBuilt`].
-#[cfg(not(all(feature = "host", unix)))]
-pub fn attach(
-    name: &str,
-) -> Result<Hosted, HostError>
-{
-    let _ = name;
+    let _ = opts;
     Err(HostError::NotBuilt)
 }
 
@@ -687,7 +774,7 @@ pub fn attach(
 ///
 /// Outputs: always [`HostError::NotBuilt`].
 #[cfg(not(all(feature = "host", unix)))]
-pub fn running() -> Result<Vec<Hosted>, HostError>
+pub fn connect() -> Result<Process, HostError>
 {
     Err(HostError::NotBuilt)
 }
@@ -695,31 +782,29 @@ pub fn running() -> Result<Vec<Hosted>, HostError>
 /// Purpose: This function returns `NotBuilt` in a build without the `host` feature.
 ///
 /// Inputs:
-/// - `spec`: the model to load; unused.
-/// - `ready`: what to call once loaded; unused.
+/// - `ready`: what to call once the process answers; unused.
 ///
 /// Outputs: always [`HostError::NotBuilt`].
 #[cfg(not(all(feature = "host", unix)))]
 pub fn serve(
-    spec: &Spec,
-    ready: impl FnOnce(&Ready) -> bool + Send + 'static,
+    ready: impl FnOnce(&Ready) -> bool,
 ) -> Result<(), HostError>
 {
-    let _ = (spec, ready);
+    let _ = ready;
     Err(HostError::NotBuilt)
 }
 
-/// Purpose: This function builds what a dovata process needs to load a model.
+/// Purpose: This function builds what the dovata process needs to add a model.
 ///
 /// Inputs:
 /// - `parts`: every part file of the model, part 1 first.
-/// - `opts`: the start options; their name, layout, step and CPU choice are used.
+/// - `opts`: the add options; their name, layout, step and CPU choice are used.
 ///
 /// Outputs: the [`Spec`], with absolute paths and a name, or a [`HostError`] when a file
 /// cannot be found or the name is not allowed.
 pub fn spec(
     parts: &[PathBuf],
-    opts: &StartOptions,
+    opts: &AddOptions,
 ) -> Result<Spec, HostError>
 {
     // Absolute, not canonical: a Hugging Face cache path is a link into its `blobs`
@@ -741,7 +826,51 @@ pub fn spec(
     Ok(Spec { name, parts, layout, step: opts.step, cpu: opts.cpu })
 }
 
-/// Purpose: This function derives a process name from a model.
+/// Purpose: This function gives the memory a target lets the plans on it use.
+///
+/// Inputs:
+/// - `target`: the target.
+///
+/// Outputs: the budget in bytes: Metal's working set on Apple, host memory on the CPU,
+/// VRAM on CUDA.
+pub fn budget(
+    target: &Target,
+) -> u64
+{
+    match *target {
+        Target::Apple { unified_bytes, .. } => unified_bytes,
+        Target::Cpu { ram_bytes, .. } => ram_bytes,
+        Target::Cuda { vram_bytes } => vram_bytes,
+    }
+}
+
+/// Purpose: This function checks that one more model fits beside the models the process
+/// already holds. The planner checks each model alone; this keeps the sum of them within
+/// one machine's memory.
+///
+/// Inputs:
+/// - `held`: the bytes the process's models hold already, files and allocations.
+/// - `adding`: the bytes the new model needs, its files and allocations.
+/// - `target`: the new model's target, whose budget the sum must fit.
+///
+/// Outputs: `Ok(())`, or a message saying how far over the budget the sum is.
+pub fn fits(
+    held: u64,
+    adding: u64,
+    target: &Target,
+) -> Result<(), String>
+{
+    let budget = budget(target);
+    let sum = held.saturating_add(adding);
+    if held > 0 && sum > budget {
+        return Err(format!(
+            "the model needs {adding} bytes, and the models dovata holds already use {held} of the {budget} this machine allows, so it does not fit; remove one with `dovata remove`"
+        ));
+    }
+    Ok(())
+}
+
+/// Purpose: This function derives a model's name from its metadata or its file.
 ///
 /// Inputs:
 /// - `general_name`: the model's `general.name`, when it has one.
@@ -780,7 +909,7 @@ pub fn name_for(
     }
 }
 
-/// Purpose: This function checks that a name is one a process can have.
+/// Purpose: This function checks that a name is one a model can have.
 ///
 /// Inputs:
 /// - `name`: the name.
@@ -794,14 +923,14 @@ pub fn check_name(
     let starts = name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit());
     if name.is_empty() || name.len() > MAX_NAME || !starts || !name.chars().all(allowed) {
         return Err(HostError::BadName(format!(
-            "{name:?} is not a process name: use 1 to {MAX_NAME} lowercase letters, digits, dots, dashes and underscores, starting with a letter or digit"
+            "{name:?} is not a model name: use 1 to {MAX_NAME} lowercase letters, digits, dots, dashes and underscores, starting with a letter or digit"
         )));
     }
     Ok(())
 }
 
-/// Purpose: This function finds the directory that holds every dovata process's socket
-/// and log.
+/// Purpose: This function finds the directory that holds the dovata process's socket,
+/// lock and log.
 ///
 /// Inputs: none; it reads `DOVATA_RUN_DIR` and `HOME`.
 ///
@@ -831,20 +960,18 @@ fn run_dir_from(
     }
 }
 
-/// Purpose: This function gives the socket path of the process with a given name.
+/// Purpose: This function gives the dovata process's socket path.
 ///
 /// Inputs:
 /// - `dir`: the run directory.
-/// - `name`: the process's name.
 ///
 /// Outputs: the path, or a [`HostError::Io`] when it is longer than a socket path may
 /// be.
 pub fn socket_path(
     dir: &Path,
-    name: &str,
 ) -> Result<PathBuf, HostError>
 {
-    let path = dir.join(format!("{name}.sock"));
+    let path = dir.join("dovata.sock");
     if path.as_os_str().len() > MAX_SOCKET_PATH {
         return Err(HostError::Io(format!(
             "the socket path {} is longer than the {MAX_SOCKET_PATH} bytes a socket path may be; set DOVATA_RUN_DIR to a shorter directory",
@@ -854,19 +981,17 @@ pub fn socket_path(
     Ok(path)
 }
 
-/// Purpose: This function gives the log file of the process with a given name.
+/// Purpose: This function gives the dovata process's log file.
 ///
 /// Inputs:
 /// - `dir`: the run directory.
-/// - `name`: the process's name.
 ///
 /// Outputs: the path.
 pub fn log_path(
     dir: &Path,
-    name: &str,
 ) -> PathBuf
 {
-    dir.join(format!("{name}.log"))
+    dir.join("dovata.log")
 }
 
 /// Purpose: This function lists what a region of a plan holds.
@@ -912,16 +1037,31 @@ pub(crate) struct Ask {
     pub(crate) request: Request,
 }
 
-/// Purpose: This enum lists the requests a dovata process answers.
+/// Purpose: This enum lists the requests the dovata process answers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub(crate) enum Request {
     /// The process's [`Status`].
     Status,
-    /// The whole plan, as JSON.
-    Plan,
-    /// The memory, as file descriptors to map.
+    /// Add a model and start loading it.
+    Add {
+        /// The model.
+        spec: Spec,
+    },
+    /// Remove a model.
+    Remove {
+        /// The model's name.
+        name: String,
+    },
+    /// A model's whole plan, as JSON.
+    Plan {
+        /// The model's name.
+        name: String,
+    },
+    /// A model's memory, as file descriptors to map.
     Map {
+        /// The model's name.
+        name: String,
         /// The table hash of the plan the asking program's offsets came from.
         table_hash: String,
     },
@@ -929,13 +1069,17 @@ pub(crate) enum Request {
     Stop,
 }
 
-/// Purpose: This enum lists the answers a dovata process gives.
+/// Purpose: This enum lists the answers the dovata process gives.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Reply {
     /// The answer to [`Request::Status`], boxed since a status is much larger than the
     /// other replies.
     Status(Box<Status>),
+    /// The answer to [`Request::Add`]: the model is planned, fits, and is loading.
+    Added,
+    /// The answer to [`Request::Remove`].
+    Removed,
     /// The answer to [`Request::Plan`].
     Plan(serde_json::Value),
     /// The answer to [`Request::Map`]; the file descriptors come with it.
@@ -1021,27 +1165,44 @@ mod pure_tests {
     #[test]
     fn a_socket_path_must_fit()
     {
-        assert_eq!(socket_path(Path::new("/r"), "m"), Ok(PathBuf::from("/r/m.sock")));
+        assert_eq!(socket_path(Path::new("/r")), Ok(PathBuf::from("/r/dovata.sock")));
+        assert_eq!(log_path(Path::new("/r")), PathBuf::from("/r/dovata.log"));
         let deep = PathBuf::from(format!("/{}", "d".repeat(100)));
-        assert!(matches!(socket_path(&deep, "m"), Err(HostError::Io(m)) if m.contains("DOVATA_RUN_DIR")));
+        assert!(matches!(socket_path(&deep), Err(HostError::Io(m)) if m.contains("DOVATA_RUN_DIR")));
+    }
+
+    #[test]
+    fn a_model_must_fit_beside_the_others()
+    {
+        let apple = Target::Apple { unified_bytes: 100, max_buffer_bytes: 50, page_bytes: 16384 };
+        assert_eq!(budget(&apple), 100);
+        assert_eq!(budget(&Target::Cpu { ram_bytes: 7, page_bytes: 4096 }), 7);
+        assert!(fits(60, 40, &apple).is_ok());
+        let over = fits(61, 40, &apple).unwrap_err();
+        assert!(over.contains("40 bytes") && over.contains("61 of the 100") && over.contains("dovata remove"), "{over}");
+        // The first model is the planner's to judge, which counts what it holds the way
+        // its target does; this check is only between models.
+        assert!(fits(0, 1000, &apple).is_ok());
+        assert!(fits(u64::MAX, 1, &apple).is_err());
     }
 
     #[test]
     fn messages_keep_their_form()
     {
-        let ask = Ask { protocol: PROTOCOL, request: Request::Map { table_hash: "ab".into() } };
+        let ask = Ask { protocol: PROTOCOL, request: Request::Map { name: "m".into(), table_hash: "ab".into() } };
         let text = serde_json::to_string(&ask).unwrap();
-        assert_eq!(text, r#"{"protocol":1,"op":"map","table_hash":"ab"}"#);
+        assert_eq!(text, r#"{"protocol":2,"op":"map","name":"m","table_hash":"ab"}"#);
         assert_eq!(serde_json::from_str::<Ask>(&text).unwrap(), ask);
         let stop = serde_json::to_string(&Ask { protocol: PROTOCOL, request: Request::Stop }).unwrap();
-        assert_eq!(stop, r#"{"protocol":1,"op":"stop"}"#);
+        assert_eq!(stop, r#"{"protocol":2,"op":"stop"}"#);
+        let spec = Spec { name: "m".into(), parts: vec![PathBuf::from("/m.gguf")], layout: None, step: AddOptions::default().step, cpu: false };
+        let add = Ask { protocol: PROTOCOL, request: Request::Add { spec } };
+        assert_eq!(serde_json::from_str::<Ask>(&serde_json::to_string(&add).unwrap()).unwrap(), add);
 
-        let status = Status {
+        let model = ModelStatus {
             name: "m".into(),
-            pid: 7,
-            version: "3.1.0".into(),
+            added_unix: 5,
             state: State::Loading { loaded_bytes: 1, total_bytes: 2 },
-            started_unix: 3,
             model: ModelInfo { name: None, architecture: "llama".into(), file_type: Some("F32".into()) },
             target: Target::Cpu { ram_bytes: 1 << 30, page_bytes: 4096 },
             table_hash: "ab".into(),
@@ -1053,14 +1214,19 @@ mod pure_tests {
             ],
             clients: vec![Client { pid: 9, mapped_unix: 4, alive: true }],
         };
-        for reply in [Reply::Status(Box::new(status.clone())), Reply::Stopping, Reply::Error("no".into())] {
+        // The two windows overlap in the file, so the file counts once.
+        assert_eq!((model.bytes(), model.resident_bytes()), (110, 98));
+        let other = ModelStatus { name: "n".into(), ..model.clone() };
+        let status = Status { pid: 7, version: "3.1.0".into(), started_unix: 3, models: vec![model, other] };
+        assert_eq!((status.bytes(), status.resident_bytes()), (220, 196));
+        assert_eq!(status.model("n").map(|m| m.name.as_str()), Some("n"));
+        assert!(status.model("x").is_none());
+        for reply in [Reply::Status(Box::new(status.clone())), Reply::Added, Reply::Removed, Reply::Stopping, Reply::Error("no".into())] {
             let text = serde_json::to_string(&reply).unwrap();
             assert_eq!(serde_json::from_str::<Reply>(&text).unwrap(), reply, "{text}");
         }
-        // The two windows overlap in the file, so the file counts once.
-        assert_eq!((status.bytes(), status.resident_bytes()), (110, 98));
 
-        let line = StartLine::Ready(Ready { name: "m".into(), pid: 7, socket: PathBuf::from("/r/m.sock"), protocol: 1, version: "3.1.0".into() });
+        let line = StartLine::Ready(Ready { pid: 7, socket: PathBuf::from("/r/dovata.sock"), protocol: PROTOCOL, version: "3.1.0".into() });
         let text = serde_json::to_string(&line).unwrap();
         assert!(text.starts_with(r#"{"ready":{"#), "{text}");
         assert_eq!(serde_json::from_str::<StartLine>(&text).unwrap(), line);
