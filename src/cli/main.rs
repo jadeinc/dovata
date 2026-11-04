@@ -16,6 +16,7 @@ usage: dovata <command> ...
 commands:
   machine   report this machine's memory and GPUs; see `dovata machine help`
   plan      place a model's tensors in memory for one machine; see `dovata plan --help`
+  version   print dovata's version, also as --version
 ";
 
 /// Purpose: This enum lists the ways a `dovata` command can fail.
@@ -39,6 +40,10 @@ fn main() -> ExitCode
             out(HELP);
             Ok(())
         }
+        Some("version" | "--version" | "-V") => {
+            out(&version());
+            Ok(())
+        }
         Some("machine") => machine::main(&args[1..]),
         Some("plan") => plan::main(&args[1..]),
         Some(other) => Err(Fail::Usage(format!("unknown command {other:?}\n\n{HELP}"))),
@@ -54,6 +59,16 @@ fn main() -> ExitCode
             ExitCode::FAILURE
         }
     }
+}
+
+/// Purpose: This function gives the line `dovata version` prints.
+///
+/// Inputs: none.
+///
+/// Outputs: the line, such as `dovata 3.0.0`, with a newline.
+fn version() -> String
+{
+    format!("dovata {}\n", env!("CARGO_PKG_VERSION"))
 }
 
 /// Purpose: This function writes text to standard output, and stops quietly when the
@@ -162,6 +177,13 @@ pub(crate) fn target_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_version_line_is_the_package_version()
+    {
+        assert_eq!(version(), format!("dovata {}\n", env!("CARGO_PKG_VERSION")));
+        assert!(version().starts_with("dovata 3."));
+    }
 
     #[test]
     fn sizes_use_binary_units()

@@ -3,7 +3,9 @@
 `dovata` is the package's command-line program. It has two groups of commands:
 `dovata machine` reports the current machine's memory and GPUs through
 [`src/machine/`](../machine/README.md), and `dovata plan` places a model's tensors in
-memory through [`src/memplan/`](../memplan/README.md). `gguf-inspect` can join it later as
+memory through [`src/memplan/`](../memplan/README.md). `dovata version`, or
+`dovata --version`, prints a line such as `dovata 3.0.0`; the release workflow checks it
+against the tag it builds. `gguf-inspect` can join it later as
 `dovata inspect`, so dovata has one program with subcommands instead of one program per
 job.
 
@@ -140,7 +142,7 @@ read, exits with 1.
 
 ## Files
 
-- `main.rs` dispatches to the two groups and holds what they share: the `Fail` type
+- `main.rs` dispatches to the two groups, prints the version, and holds what they share: the `Fail` type
   that picks the exit code, `out`, which writes to standard output and stops quietly
   when the output is closed, and the size formatting and parsing.
 - `machine.rs` is `dovata machine`: argument parsing, the four commands, and their text.
