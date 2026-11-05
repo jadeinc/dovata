@@ -147,8 +147,18 @@ fn the_process_starts_empty_and_a_program_maps_a_model_added_to_it()
     let gguf = crate::load::Model::open(&r.model).unwrap();
     let layout = crate::layout::for_model(&gguf, None).unwrap();
     let target = crate::machine::current().unwrap().target(false);
-    let direct = crate::memplan::plan(&gguf, &layout, &opts("x").step, &target).unwrap();
+    let definition = std::fs::read_to_string(r.model.with_file_name("tokenizer.json")).unwrap();
+    let tokenizer = crate::tokenize::describe(&gguf, definition).unwrap();
+    let direct = crate::memplan::plan(&gguf, &layout, &opts("x").step, &target, Some(&tokenizer)).unwrap();
     assert_eq!(direct.table_hash, m.table_hash);
+    assert_eq!(plan["tokenizer"]["sha256"].as_str(), Some(tokenizer.sha256.as_str()), "the plan carries the tokenizer");
+    assert_eq!(m.tokenizer.as_ref().map(|t| t.tokens), Some(32));
+
+    // A program gets the tokenizer its plan carries, and only for its own plan.
+    let tok = p.tokenizer("fixture", &m.table_hash).unwrap();
+    assert_eq!(tok.encode("t3 t1 t4", false).unwrap(), [3, 1, 4]);
+    assert_eq!(tok.decode(&[3, 1, 4], false).unwrap(), "t3 t1 t4");
+    assert!(matches!(p.tokenizer("fixture", &"0".repeat(64)), Err(HostError::Refused(e)) if e.contains("table hash")));
     assert!(matches!(p.plan("nothing"), Err(HostError::Refused(e)) if e.contains("no model named nothing") && e.contains("fixture")));
 
     // A program whose offsets came from another plan is refused.

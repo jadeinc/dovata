@@ -13,10 +13,12 @@ use crate::arena;
 use crate::layout::LayoutError;
 use crate::load::{Model, PartIdentity};
 use crate::target::{ExecSite, RegionKind, Target};
+use crate::tokenize::TokenizerPlan;
 use crate::window;
 
 /// The version of the plan's JSON form. Bumped on any change the compiler must notice.
-pub const SCHEMA_VERSION: u32 = 1;
+/// Version 2 added the tokenizer.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Purpose: This struct holds one non-weight tensor from the layout for the planner to
 /// place.
@@ -218,6 +220,12 @@ pub struct Plan {
     /// [`super::plan`]. `None` from [`place`], which is given tensors without ops.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step: Option<Step>,
+    /// The model's tokenizer: what a program needs to turn text into the token ids the
+    /// step's input takes, and the ids it produces back into text. `None` when the plan
+    /// was made without one, as tests and [`place`] do; `dovata plan` and the dovata
+    /// process always give one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokenizer: Option<TokenizerPlan>,
     /// SHA-256 over everything above, in lowercase hex. Two plans with the same hash
     /// give the compiler the same constants.
     pub table_hash: String,
@@ -560,6 +568,7 @@ pub fn place(
         totals,
         notes,
         step: None,
+        tokenizer: None,
         table_hash: String::new(),
     };
     plan.seal(model)?;
@@ -764,6 +773,17 @@ impl Plan {
                 }
             }
         }
+        if let Some(t) = &self.tokenizer {
+            // Every id the tokenizer can give must index a row of the embedding table.
+            if let Some(rows) = self.entry("token_embd.weight").and_then(|e| e.dims.get(1)) {
+                if u64::from(t.tokens) > *rows || u64::from(t.embedding_rows) != *rows {
+                    return Err(format!("the tokenizer defines {} tokens for {} rows, and token_embd.weight has {rows}", t.tokens, t.embedding_rows));
+                }
+            }
+            if crate::tokenize::sha256_hex(&t.definition) != t.sha256 {
+                return Err("the tokenizer's sha256 does not match its definition".into());
+            }
+        }
         if self.table_hash != self.compute_hash() {
             return Err("table_hash does not match the table".into());
         }
@@ -956,8 +976,37 @@ mod tests {
         let c = place(&m, &scratch_reversed, &Target::apple(1 << 30, 1 << 30)).unwrap();
         assert_eq!(a.entries, c.entries);
         let v: serde_json::Value = serde_json::from_str(&a.to_json()).unwrap();
-        assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["schema_version"], SCHEMA_VERSION);
         assert_eq!(v["entries"].as_array().unwrap().len(), a.entries.len());
+        assert!(v.get("tokenizer").is_none(), "a plan made without a tokenizer leaves the key out");
+    }
+
+    #[test]
+    fn the_table_hash_covers_the_tokenizer()
+    {
+        let m = model(2, 1024);
+        let bare = place(&m, &[], &Target::cpu(1 << 30)).unwrap();
+        let definition = r#"{"model":{"type":"WordLevel"}}"#.to_owned();
+        let t = TokenizerPlan {
+            kind: "gpt2".into(),
+            tokens: 8,
+            embedding_rows: 8,
+            bos: None,
+            eos: Some(2),
+            stop: vec![2],
+            sha256: crate::tokenize::sha256_hex(&definition),
+            definition,
+        };
+        let mut with = bare.clone();
+        with.tokenizer = Some(t.clone());
+        with.seal(&m).unwrap();
+        assert_ne!(with.table_hash, bare.table_hash, "a different tokenizer is a different plan");
+        let v: serde_json::Value = serde_json::from_str(&with.to_json()).unwrap();
+        assert_eq!(v["tokenizer"]["stop"], serde_json::json!([2]));
+
+        let mut tampered = with.clone();
+        tampered.tokenizer = Some(TokenizerPlan { definition: "{}".into(), ..t });
+        assert!(tampered.check(&m).is_err(), "a definition that does not match its sha256 is refused");
     }
 
     #[test]

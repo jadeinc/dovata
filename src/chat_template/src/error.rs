@@ -60,16 +60,9 @@ pub enum ChatError {
     Hub(String),
 }
 
-/// Purpose: This struct holds one token id where `tokenizer.json` and the GGUF disagree.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Mismatch {
-    /// The token id.
-    pub id: u32,
-    /// The GGUF's string for it, or `None` when the GGUF's vocabulary ends before it.
-    pub gguf: Option<String>,
-    /// `tokenizer.json`'s string for it, or `None` when it has no such id.
-    pub tokenizer: Option<String>,
-}
+/// One token id where `tokenizer.json` and the GGUF disagree. It is dovata's own type,
+/// since dovata's tokenize capability makes the check.
+pub use dovata::tokenize::Mismatch;
 
 impl ChatError {
     /// Purpose: This function converts a template render error into a `ChatError`.

@@ -1,7 +1,7 @@
 //! Author: Joe Ricks
 //! File: src/host/fixture.rs
-//! Description: Writes a tiny llama GGUF with f32 weights into a temporary directory,
-//! for the host's tests. The library's tests and the process test both include it, each
+//! Description: Writes a tiny llama GGUF with f32 weights, and a `tokenizer.json` with
+//! the same vocabulary beside it, into a temporary directory, for the host's tests. The library's tests and the process test both include it, each
 //! giving it the GGUF writer as `super::Writer` and `super::Value`.
 
 use std::path::{Path, PathBuf};
@@ -58,12 +58,13 @@ impl Drop for TempDir {
 }
 
 /// Purpose: This function writes the fixture model: two llama layers, 64 wide, every
-/// weight f32 with values that differ from tensor to tensor.
+/// weight f32 with values that differ from tensor to tensor, and a word-level
+/// `tokenizer.json` over the same 32 tokens beside it, where dovata looks first.
 ///
 /// Inputs:
 /// - `path`: the file to write.
 ///
-/// Outputs: none; it panics when the file cannot be written.
+/// Outputs: none; it panics when a file cannot be written.
 pub fn write_llama(
     path: &Path,
 )
@@ -105,4 +106,12 @@ pub fn write_llama(
         t(&mut w, &format!("blk.{l}.ffn_up.weight"), &[N_EMBD, N_FF]);
     }
     w.write(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let vocab: serde_json::Map<String, serde_json::Value> = (0..N_VOCAB).map(|i| (format!("t{i}"), serde_json::json!(i))).collect();
+    let tokenizer = serde_json::json!({
+        "version": "1.0", "truncation": null, "padding": null, "added_tokens": [], "normalizer": null,
+        "pre_tokenizer": { "type": "WhitespaceSplit" }, "post_processor": null, "decoder": null,
+        "model": { "type": "WordLevel", "vocab": vocab, "unk_token": "t0" }
+    });
+    let json_path = path.with_file_name("tokenizer.json");
+    std::fs::write(&json_path, tokenizer.to_string()).unwrap_or_else(|e| panic!("{}: {e}", json_path.display()));
 }

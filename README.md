@@ -3,8 +3,10 @@
 A Rust library the Jade compiler uses at build time. dovata reads a model's GGUF file
 and a layout file describing its compute graph, decides where every tensor lives on the
 target machine, and quantizes the weights with existing open-source tools. It hands the
-compiler that placement as data: for each tensor, a memory region and a byte offset into
-it. The compiler generates the GPU code from that.
+compiler a plan: for each tensor, a memory region and a byte offset into it; the step's
+ops; and the model's tokenizer. The compiler generates the GPU code from the ops and
+calls dovata's tokenizer for the text going in and out, so it never reads the model's
+files itself.
 
 dovata is also the process that holds models in memory. `dovata start` starts it, with
 no models; `dovata add` loads a model into it, from a file or a Hugging Face link; and
@@ -46,9 +48,10 @@ The runtime has been removed. dovata now has these parts:
 | [`src/target/`](src/target/README.md) | the machine a plan is for: its memory, largest GPU buffer and page size, as Apple, CPU or CUDA, and the kinds of memory a region can be |
 | [`src/window/`](src/window/README.md) | splits a mapped model file into page-aligned windows no larger than one GPU buffer, so every weight fits in one |
 | [`src/arena/`](src/arena/README.md) | packs one step's short-lived tensors into shared memory, reusing bytes between tensors that are never alive together |
-| [`src/memplan/`](src/memplan/README.md) | the planner: binds a layout, works out each tensor's lifetime, gives every tensor a region and offset on one target using `window` and `arena`, checks and hashes the result, and carries the step's ops for the compiler |
+| [`src/memplan/`](src/memplan/README.md) | the planner: binds a layout, works out each tensor's lifetime, gives every tensor a region and offset on one target using `window` and `arena`, checks and hashes the result, and carries the step's ops and the tokenizer for the compiler |
+| [`src/tokenize/`](src/tokenize/README.md) | the model's tokenizer, as part of its plan: finds and checks the model's `tokenizer.json`, describes it for the plan, and runs it, text to token ids and back, so the compiler never reads a tokenizer itself |
 | [`src/moe/`](src/moe/README.md) | MoE expert ranking: which experts each layer uses most |
-| [`src/chat_template/`](src/chat_template/README.md) | `dovata-chat-template`, an optional package for Jade users: builds a model's prompt from the chat template in its GGUF, and turns the prompt into token ids and back. It does not run the model. Its own crate; dovata never depends on it. |
+| [`src/chat_template/`](src/chat_template/README.md) | `dovata-chat-template`, an optional package for Jade users: builds a model's prompt from the chat template in its GGUF. Chat templates are the programmer's to choose, so it is its own crate; dovata never depends on it, and it uses dovata's vocabulary check. |
 | [`src/machine/`](src/machine/README.md) | the current machine: its memory, page size, GPUs and their limits, and how memory is used right now |
 | [`src/host/`](src/host/README.md) | the dovata process: holds every model added to it, loaded, checks each fits beside the others, reports how much is resident, and hands a model's memory to programs to map as file descriptors over a Unix socket; and the library calls that start it, add and remove models, map them and stop it |
 | [`src/cli/`](src/cli/README.md) | `dovata`, the command line: `dovata start`, `add`, `remove`, `status` and `kill` run the dovata process and its models, `dovata machine` reports this machine, and `dovata plan` plans a model, downloading or quantizing it first when asked |
@@ -92,6 +95,11 @@ invites one question about each directory: why is it here, and not inside a neig
   a pure function of sizes and offsets that knows nothing about models. The planner
   decides what goes where; `window` decides how a mapped file fits in GPU buffers, and
   `arena` decides how short-lived tensors share bytes.
+- `tokenize/` is separate from `memplan/` because the planner places memory and the
+  tokenizer runs text; the plan only carries the tokenizer's description and hashes it.
+  It is not in `chat_template/` because the tokenizer is part of running the model,
+  which the plan describes, while a chat template is the programmer's choice. Running it
+  is behind the `tokenize` feature.
 - `moe/` is behind the `moe` feature. The planner will use its ranking to decide which
   experts stay resident in VRAM.
 - `machine/` is separate from `memplan/` because the planner never reads hardware: the Jade

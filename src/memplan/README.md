@@ -76,6 +76,20 @@ A view's entry carries its byte strides, ggml's `nb`, besides the tensor it view
 its byte offset. Views such as a permuted K are not contiguous, and a kernel needs the
 strides to read one.
 
+## The tokenizer
+
+The plan also carries the model's tokenizer, in its `tokenizer` key, so the plan is the
+whole of what a program needs to run the model: memory, ops and tokens. `plan` takes it
+as its last argument, a `TokenizerPlan` that [`src/tokenize/`](../tokenize/README.md)
+builds from the GGUF and the model's `tokenizer.json`, and puts it in the plan unchanged.
+The table hash covers it, so a program compiled against one tokenizer cannot map a model
+the dovata process loaded with another. `Plan::check` refuses a tokenizer whose ids would
+run past the rows of `token_embd.weight`, or whose definition does not match its hash.
+
+`None` plans without one, as the planner's own tests and `refback` do. `dovata plan`
+and the dovata process always give one. Adding the tokenizer took the plan's JSON to
+schema version 2.
+
 ## Trusting the table
 
 The offsets are compiled in, so a wrong one is a kernel reading the wrong bytes with no
@@ -97,7 +111,8 @@ error. Three things guard against that.
 - `address.rs` — `place`, which builds the regions and entries for a target and checks
   the result, and the `Plan` types that serialize to the JSON the compiler reads.
 - `graph.rs` — `plan` and `plan_graph`, which turn a bound layout into the list `place`
-  takes, with each tensor's lifetime, and put the step's ops into the plan as `Step`.
+  takes, with each tensor's lifetime, and put the step's ops and the tokenizer into the
+  plan.
 - `mod.rs` — re-exports.
 
 `a_real_header_plans_on_every_target` in `graph.rs` plans a real model when
@@ -109,6 +124,6 @@ DOVATA_TEST_HEADER=model.head.gguf cargo test -p dovata --lib a_real_header -- -
 
 ## Who uses it
 
-The `dovata plan` command and the Jade compiler call it. `refback`, the test-only
+The `dovata plan` command, the dovata process and the Jade compiler call it. `refback`, the test-only
 reference backend in [`src/refback/`](../refback/README.md), sets up the regions for
 real and checks every entry against the GGUF bytes.

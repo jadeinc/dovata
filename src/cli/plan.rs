@@ -5,12 +5,13 @@
 
 use std::path::{Path, PathBuf};
 
-use dovata::hf_hub::{self, FetchError, FetchOptions, Fetched, Level, ModelSource, SelectError, Want};
+use dovata::hf_hub::{self, FetchError, FetchOptions, Fetched, Level, ModelSource, Origin, SelectError, Want};
 use dovata::layout::{self, BindOptions, Layout};
 use dovata::load::{KvType, Model};
 use dovata::memplan::{Backing, Plan, Role};
 use dovata::quantize::{self, Ftype, QuantError, QuantSpec};
 use dovata::target::Target;
+use dovata::tokenize::{self, TokenizerPlan};
 
 use super::{json, out, parse_size, size, target_text, Fail};
 
@@ -30,6 +31,8 @@ model:
                        llama-quantize. A repo that offers several types needs this option.
   --allow-requantize   let --quant quantize a model that is already quantized
   --layout FILE        a layout file to use instead of dovata's built-in one
+  --tokenizer FILE     the model's tokenizer.json. By default dovata looks beside the
+                       model file, then in its Hub repo, then in its base model's repo
 
 machine (default: this machine, as `dovata machine target` shows it):
   --target KIND        apple, cpu or cuda
@@ -75,6 +78,8 @@ pub(crate) struct Opts {
     allow_requantize: bool,
     /// `--layout`.
     pub(crate) layout: Option<PathBuf>,
+    /// `--tokenizer`.
+    pub(crate) tokenizer: Option<PathBuf>,
     /// `--target`.
     kind: Option<Kind>,
     /// `--memory`.
@@ -123,6 +128,7 @@ pub(crate) fn parse(
         quant: None,
         allow_requantize: false,
         layout: None,
+        tokenizer: None,
         kind: None,
         memory: None,
         max_buffer: None,
@@ -146,6 +152,7 @@ pub(crate) fn parse(
         match flag {
             "--quant" => o.quant = Some(Ftype::parse(value()?).map_err(|e| e.to_string())?),
             "--layout" => o.layout = Some(PathBuf::from(value()?)),
+            "--tokenizer" => o.tokenizer = Some(PathBuf::from(value()?)),
             "--target" => {
                 o.kind = Some(match value()? {
                     "apple" => Kind::Apple,
@@ -226,8 +233,10 @@ fn run(
 ) -> Result<(), Fail>
 {
     let target = target(o).map_err(Fail::Run)?;
-    let parts = model_files(o)?;
-    let model = Model::from_parts(&parts).map_err(|e| Fail::Run(format!("{}: {e}", parts[0].display())))?;
+    let got = model_files(o)?;
+    let parts = &got.parts;
+    let model = Model::from_parts(parts).map_err(|e| Fail::Run(format!("{}: {e}", parts[0].display())))?;
+    let tokenizer = tokenizer(o, &got, &model)?;
     let caller = match &o.layout {
         Some(path) => {
             let text = std::fs::read_to_string(path).map_err(|e| Fail::Run(format!("{}: {e}", path.display())))?;
@@ -236,13 +245,66 @@ fn run(
         None => None,
     };
     let layout = layout::for_model(&model, caller).map_err(|e| Fail::Run(e.to_string()))?;
-    let plan = dovata::memplan::plan(&model, &layout, &o.step, &target).map_err(|e| Fail::Run(e.to_string()))?;
+    let plan = dovata::memplan::plan(&model, &layout, &o.step, &target, Some(&tokenizer)).map_err(|e| Fail::Run(e.to_string()))?;
     if o.json {
         out(&format!("{}\n", json(&plan)));
     } else {
         out(&summary(&model, &plan));
     }
     Ok(())
+}
+
+/// Purpose: This struct holds a model's files on disk and the Hub repo they came from.
+pub(crate) struct Got {
+    /// Every part file, part 1 first.
+    pub(crate) parts: Vec<PathBuf>,
+    /// The Hub repo and commit, for a model from the Hub.
+    pub(crate) origin: Option<Origin>,
+}
+
+/// Purpose: This function finds the model's `tokenizer.json`, or takes the one
+/// `--tokenizer` names, and describes it for the plan.
+///
+/// Inputs:
+/// - `o`: the command line's options.
+/// - `got`: the model's files and where they came from.
+/// - `model`: the opened model.
+///
+/// Outputs: the plan's tokenizer section, or a [`Fail`] when none is found or it does not
+/// match the model.
+pub(crate) fn tokenizer(
+    o: &Opts,
+    got: &Got,
+    model: &Model,
+) -> Result<TokenizerPlan, Fail>
+{
+    let path = tokenizer_file(o, got, model)?;
+    let fail = |e: &dyn std::fmt::Display| Fail::Run(format!("{}: {e}", path.display()));
+    let definition = std::fs::read_to_string(&path).map_err(|e| fail(&e))?;
+    tokenize::describe(model, definition).map_err(|e| fail(&e))
+}
+
+/// Purpose: This function finds the model's `tokenizer.json`, or takes the one
+/// `--tokenizer` names.
+///
+/// Inputs:
+/// - `o`: the command line's options.
+/// - `got`: the model's files and where they came from.
+/// - `model`: the opened model.
+///
+/// Outputs: the file's path, or a [`Fail`] naming every place looked.
+pub(crate) fn tokenizer_file(
+    o: &Opts,
+    got: &Got,
+    model: &Model,
+) -> Result<PathBuf, Fail>
+{
+    if let Some(t) = &o.tokenizer {
+        return Ok(t.clone());
+    }
+    let path = tokenize::find(&got.parts[0], model.meta(), got.origin.as_ref(), &FetchOptions::default()).map_err(|e| Fail::Run(e.to_string()))?;
+    eprintln!("dovata: the tokenizer is {}", path.display());
+    Ok(path)
 }
 
 /// Purpose: This function builds the target machine from the command line, or reads this
@@ -288,10 +350,11 @@ fn target(
 /// Inputs:
 /// - `o`: the command line's options.
 ///
-/// Outputs: the files to plan, part 1 first, or a [`Fail`].
+/// Outputs: the files to plan, part 1 first, and the Hub repo they came from; or a
+/// [`Fail`].
 pub(crate) fn model_files(
     o: &Opts,
-) -> Result<Vec<PathBuf>, Fail>
+) -> Result<Got, Fail>
 {
     let source = ModelSource::parse(&o.model).map_err(|e| Fail::Usage(e.to_string()))?;
     let fopts = FetchOptions::default();
@@ -318,10 +381,12 @@ pub(crate) fn model_files(
         // A local file, or a link to one file.
         _ => hf_hub::fetch(&source, Want::Unquantized, &fopts).map_err(run)?,
     };
-    match o.quant {
-        Some(want) if fetched.ftype != Some(want) => quantized(&fetched, want, o.allow_requantize).map(|p| vec![p]),
-        _ => Ok(fetched.parts),
-    }
+    let origin = source.origin(fetched.revision.as_deref());
+    let parts = match o.quant {
+        Some(want) if fetched.ftype != Some(want) => vec![quantized(&fetched, want, o.allow_requantize)?],
+        _ => fetched.parts,
+    };
+    Ok(Got { parts, origin })
 }
 
 /// Purpose: This function downloads one model a Hub repo offers.
@@ -440,6 +505,9 @@ fn summary(
         );
         s += &format!("  graph      {} ops over {} layers, {} tensors\n", step.ops.len(), step.n_layer, plan.entries.len());
     }
+    if let Some(t) = &plan.tokenizer {
+        s += &format!("  tokenizer  {}\n", tokenizer_text(t));
+    }
     s += "  regions\n";
     for r in &plan.regions {
         s += &format!("    {:<3} {:<8} {:>10}  {}\n", r.id, super::host::kind(r.kind), size(r.bytes), holds(plan, r));
@@ -452,6 +520,21 @@ fn summary(
     s += &format!("  table hash {}\n", plan.table_hash);
     s += "Add --json for every tensor's region and offset.\n";
     s
+}
+
+/// Purpose: This function describes a plan's tokenizer in one phrase.
+///
+/// Inputs:
+/// - `t`: the tokenizer section.
+///
+/// Outputs: a phrase such as `gpt2, 151669 tokens, stops on 151645`.
+pub(crate) fn tokenizer_text(
+    t: &TokenizerPlan,
+) -> String
+{
+    let ids: Vec<String> = t.stop.iter().map(u32::to_string).collect();
+    let stop = if ids.is_empty() { "no stop token named".to_owned() } else { format!("stops on {}", ids.join(", ")) };
+    format!("{}, {} tokens, {stop}", t.kind, t.tokens)
 }
 
 /// Purpose: This function says what a region holds.
@@ -515,7 +598,8 @@ mod tests {
     #[test]
     fn options_parse()
     {
-        let o = p("m.gguf --quant q4_k_m --target apple --memory 64G --max-buffer 48G --ctx 32768 --kv q8_0 --kv-v q4_0 --json").unwrap();
+        let o = p("m.gguf --quant q4_k_m --target apple --memory 64G --max-buffer 48G --ctx 32768 --kv q8_0 --kv-v q4_0 --json --tokenizer t.json").unwrap();
+        assert_eq!(o.tokenizer, Some(PathBuf::from("t.json")));
         assert_eq!(o.quant, Some(Ftype::Q4_K_M));
         assert_eq!(o.kind, Some(Kind::Apple));
         assert_eq!((o.memory, o.max_buffer), (Some(64 << 30), Some(48 << 30)));
