@@ -178,7 +178,7 @@ the release's `checksums.txt` before installing anything.
 The Jade compiler takes the library as a cargo dependency on a release tag:
 
 ```toml
-dovata = { git = "https://github.com/jadeinc/dovata", tag = "v3.1.0" }
+dovata = { git = "https://github.com/jadeinc/dovata", tag = "v3.2.0" }
 ```
 
 ## Releasing
