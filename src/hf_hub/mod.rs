@@ -774,6 +774,115 @@ pub fn offered(
     }
 }
 
+/// Purpose: This struct holds where a model came from on the Hub: the server, the repo
+/// and the revision, so other files of the same repo can be fetched to go with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    /// The Hub server, such as `https://huggingface.co`.
+    pub endpoint: String,
+    /// `org/repo`.
+    pub repo: String,
+    /// A branch, tag or commit. `None` is the repo's `main`.
+    pub revision: Option<String>,
+}
+
+impl ModelSource {
+    /// Purpose: This function says which Hub repo a model came from.
+    ///
+    /// Inputs:
+    /// - `revision`: the commit the model was downloaded at, from [`Fetched::revision`],
+    ///   which pins the repo even when the source named a branch.
+    ///
+    /// Outputs: the [`Origin`], or `None` for a model on disk.
+    pub fn origin(
+        &self,
+        revision: Option<&str>,
+    ) -> Option<Origin>
+    {
+        match self {
+            ModelSource::Path(_) => None,
+            ModelSource::Hub { endpoint, repo, revision: named, .. } => {
+                Some(Origin { endpoint: endpoint.clone(), repo: repo.clone(), revision: revision.map(str::to_owned).or_else(|| named.clone()) })
+            }
+        }
+    }
+}
+
+/// Purpose: This function gets one named file of a Hub repo, such as `tokenizer.json`,
+/// from the Hugging Face cache when it is there and from the Hub otherwise.
+///
+/// Inputs:
+/// - `origin`: the repo and revision.
+/// - `file`: the file's path in the repo.
+/// - `opts`: the cache directory and the access token.
+///
+/// Outputs: the file's path in the cache, `None` when the repo has no such file, or an
+/// error.
+pub fn fetch_file(
+    origin: &Origin,
+    file: &str,
+    opts: &FetchOptions,
+) -> Result<Option<PathBuf>, FetchError>
+{
+    #[cfg(feature = "hf-hub")]
+    {
+        fetch::file(origin, file, opts)
+    }
+    #[cfg(not(feature = "hf-hub"))]
+    {
+        let _ = (file, opts);
+        Err(FetchError::NotBuilt { source: format!("{}/{}", origin.endpoint, origin.repo) })
+    }
+}
+
+/// Purpose: This function reads the base model a Hub model card names, from the YAML
+/// at the top of its `README.md`.
+///
+/// Inputs:
+/// - `card`: the card's text.
+///
+/// Outputs: the base model's repo id, such as `Qwen/Qwen3-0.6B`, or `None`. A card that
+/// lists several, as a merge does, gives the first.
+pub fn card_base_model(
+    card: &str,
+) -> Option<String>
+{
+    let mut lines = card.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    let front: Vec<&str> = lines.take_while(|l| l.trim() != "---").collect();
+    let clean = |v: &str| v.trim().trim_matches(['"', '\'']).to_owned();
+    let at = front.iter().position(|l| l.starts_with("base_model:"))?;
+    let value = front[at].trim_start_matches("base_model:").trim();
+    let id = if value.is_empty() {
+        // A YAML list on the lines below: `- org/name`.
+        front[at + 1..].iter().map(|l| l.trim()).find_map(|l| l.strip_prefix("- ").map(clean))?
+    } else if let Some(list) = value.strip_prefix('[') {
+        clean(list.trim_end_matches(']').split(',').next()?)
+    } else {
+        clean(value)
+    };
+    is_repo_id(&id).then_some(id)
+}
+
+/// Purpose: This function reads a repo id out of a Hugging Face link.
+///
+/// Inputs:
+/// - `url`: the link, such as `https://huggingface.co/Qwen/Qwen3-0.6B`.
+///
+/// Outputs: the repo id, such as `Qwen/Qwen3-0.6B`, or `None` for a link to anywhere
+/// else, or to a dataset or a space.
+pub fn repo_from_url(
+    url: &str,
+) -> Option<String>
+{
+    let rest = url.trim().strip_prefix("https://huggingface.co/")?;
+    let mut parts = rest.trim_end_matches('/').split('/');
+    let id = format!("{}/{}", parts.next()?, parts.next()?);
+    (parts.next().is_none() && is_repo_id(&id)).then_some(id)
+}
+
 /// Purpose: This function gets a local model file and the other parts of a split model.
 ///
 /// Inputs:
@@ -836,6 +945,33 @@ fn fetched(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_names_its_base_model()
+    {
+        let card = |front: &str| format!("---\n{front}\n---\n# A model\nbase_model: not/this");
+        assert_eq!(card_base_model(&card("license: apache-2.0\nbase_model: Qwen/Qwen3-0.6B")), Some("Qwen/Qwen3-0.6B".into()));
+        assert_eq!(card_base_model(&card("base_model:\n- Qwen/Qwen3-0.6B\n- other/model\ntags: [x]")), Some("Qwen/Qwen3-0.6B".into()));
+        assert_eq!(card_base_model(&card("base_model: \"meta-llama/Llama-3.1-8B\"")), Some("meta-llama/Llama-3.1-8B".into()));
+        assert_eq!(card_base_model(&card("base_model: [a/b, c/d]")), Some("a/b".into()));
+        assert_eq!(card_base_model(&card("license: mit")), None);
+        assert_eq!(card_base_model("# no front matter\nbase_model: a/b"), None);
+        assert_eq!(card_base_model(&card("base_model: not a repo id")), None);
+    }
+
+    #[test]
+    fn a_hub_link_gives_its_repo()
+    {
+        assert_eq!(repo_from_url("https://huggingface.co/Qwen/Qwen3-0.6B"), Some("Qwen/Qwen3-0.6B".into()));
+        assert_eq!(repo_from_url("https://huggingface.co/Qwen/Qwen3-0.6B/"), Some("Qwen/Qwen3-0.6B".into()));
+        for bad in ["https://example.com/a/b", "https://huggingface.co/datasets/a/b", "https://huggingface.co/a", ""] {
+            assert_eq!(repo_from_url(bad), None, "{bad}");
+        }
+        let hub = ModelSource::parse("https://huggingface.co/unsloth/Qwen3-0.6B-GGUF").unwrap();
+        let o = hub.origin(Some("abc")).unwrap();
+        assert_eq!((o.repo.as_str(), o.revision.as_deref()), ("unsloth/Qwen3-0.6B-GGUF", Some("abc")));
+        assert_eq!(ModelSource::Path(PathBuf::from("/m.gguf")).origin(None), None);
+    }
 
     /// Purpose: This function reads a saved Hub file list from `testdata/`.
     ///

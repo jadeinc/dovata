@@ -80,10 +80,12 @@ has gone, the process stops itself.
 
 `add` gets the model the way `dovata plan` does: a local file, or one GGUF from the
 Hugging Face Hub, the unquantized one unless `AddOptions::want` names another. It never
-quantizes. It sends the process a `Spec`: the model's files, its name, its layout and
-the step to plan for. The process:
+quantizes. It finds the model's `tokenizer.json` the way `dovata plan` does, unless
+`AddOptions::tokenizer` names one, and sends the process a `Spec`: the model's files,
+its tokenizer, its name, its layout and the step to plan for. The process:
 
-1. plans the model for this machine, as `dovata machine target` describes it;
+1. checks the tokenizer against the model's vocabulary and plans the model for this
+   machine, as `dovata machine target` describes it, with the tokenizer in the plan;
 2. sets up the plan's memory: each part file mapped once, read-only, and each allocated
    region as a shared memory object with no name, `memfd_create` on Linux and an
    unlinked `shm_open` object on macOS;
@@ -99,6 +101,16 @@ Names come from the model, such as `qwen3-0.6b`, or from `AddOptions::name`.
 
 `remove` takes a model out. The process drops its mappings at once; programs that
 mapped the model keep their mappings, and the memory goes when the last one unmaps it.
+
+### The tokenizer
+
+`Process::tokenizer(name, table_hash)` gives a program the model's tokenizer, built
+from the one its plan in the process carries, to run in the program itself: encoding a
+prompt and decoding each generated id need no message to the process. It is refused for
+a plan with another table hash, the same as `map`. Because the process plans with the
+tokenizer exactly as `dovata plan` does, the hashes match for a program compiled against
+`dovata plan`'s output. How the tokenizer works is in
+[`src/tokenize/`](../tokenize/README.md).
 
 ### Mapping
 
@@ -190,6 +202,6 @@ reads is answered with an error, and the extra descriptors are closed.
 
 `src/cli/host.rs` builds `dovata start`, `add`, `remove`, `status`, `kill` and the hidden
 `dovata host` on it, and `src/cli/machine.rs` adds the process and its models to `usage`
-and `watch`. The Jade program uses `start`, `connect`, `add`, `map`, `remove` and `kill`.
-It depends on `load`, `layout`, `memplan`, `target`, `hf_hub` and `machine`, and on libc
-for the system calls.
+and `watch`. The Jade program uses `start`, `connect`, `add`, `map`, `tokenizer`, `remove` and
+`kill`. It depends on `load`, `layout`, `memplan`, `target`, `tokenize`, `hf_hub` and
+`machine`, and on libc for the system calls.

@@ -29,6 +29,9 @@ pub mod arena;
 /// Places every tensor of a model in memory on one target machine.
 pub mod memplan;
 
+/// Describes a model's tokenizer for its plan, and turns text into its token ids and back.
+pub mod tokenize;
+
 /// Reads the current machine's memory capacity, its GPUs and their use.
 pub mod machine;
 
@@ -97,6 +100,26 @@ mod capabilities {
     {
         // With the feature, the machine reads; without it, it is NotBuilt.
         assert!(crate::machine::current().is_ok_and(|m| m.memory_bytes > 0));
+    }
+
+    #[test]
+    #[cfg(feature = "tokenize")]
+    fn tokenize_runtime_half_is_present()
+    {
+        // With the feature, a tokenizer.json that does not parse is refused by the
+        // tokenizer itself; without it, describing one is NotBuilt.
+        use crate::tokenize::{Tokenizer, TokenizeError, TokenizerPlan};
+        let t = TokenizerPlan {
+            kind: "gpt2".into(),
+            tokens: 0,
+            embedding_rows: 0,
+            bos: None,
+            eos: None,
+            stop: vec![],
+            sha256: crate::tokenize::sha256_hex("{"),
+            definition: "{".into(),
+        };
+        assert!(matches!(Tokenizer::from_plan(&t), Err(TokenizeError::Unreadable(_))));
     }
 
     #[test]

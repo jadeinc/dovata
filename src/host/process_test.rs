@@ -72,12 +72,18 @@ fn a_program_starts_dovata_adds_a_model_maps_it_and_kills_dovata()
     let off = e["source"]["file_offset"].as_u64().unwrap() as usize;
     assert_eq!(got, &file[off..off + at("bytes")]);
 
+    // The tokenizer comes with the plan, from the process the program talks to.
+    assert_eq!(plan["schema_version"], 2);
+    let tok = p.tokenizer("host-fixture", &m.table_hash).unwrap();
+    assert_eq!(tok.encode("t7 t0 t31", false).unwrap(), [7, 0, 31]);
+
     // The command line sees the same process: a second model, the status, and
     // `dovata machine usage`.
     let (ok, text, err) = dovata(&dir.path, &["start"]);
     assert!(ok && text.starts_with(&format!("dovata is already running, pid {}, with 1 model.", s.pid)), "{text}{err}");
     let (ok, text, err) = dovata(&dir.path, &["add", model.to_str().unwrap(), "--name", "second", "--ctx", "64", "--tokens", "8"]);
     assert!(ok && text.starts_with("second, added ") && text.contains("state      ready"), "{text}{err}");
+    assert!(text.contains("tokenizer  gpt2, 32 tokens"), "{text}");
     let (ok, text, err) = dovata(&dir.path, &["status"]);
     assert!(ok, "{err}");
     assert!(text.starts_with(&format!("dovata {}, pid {}", env!("CARGO_PKG_VERSION"), s.pid)) && text.contains(", 2 models, "), "{text}");

@@ -1,6 +1,6 @@
 [package]
 name = "dovata"
-version = "3.1.0"
+version = "3.2.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -46,7 +46,7 @@ required-features = ["machine", "host"]
 # Every capability is on by default, so a plain `cargo build` is the whole library.
 # The features exist to make each capability's boundary explicit and checkable: if a
 # capability can't be switched off, its edges aren't real.
-default = ["moe", "quantize", "hf-hub", "machine", "host"]
+default = ["moe", "quantize", "hf-hub", "machine", "host", "tokenize"]
 
 # MoE expert ranking: the `expert_order` loader that says which experts are hot. The
 # planner will use it to decide which experts stay resident in VRAM.
@@ -66,12 +66,19 @@ hf-hub = ["dep:hf-hub"]
 # Off, `machine::current` and `machine::usage` return an error naming this feature.
 machine = ["dep:objc2-metal"]
 
+# Running a model's tokenizer: `tokenize::Tokenizer` encodes and decodes with the
+# `tokenizer.json` a plan carries, and `tokenize::describe` checks one against a GGUF's
+# vocabulary when a plan is made. Off, both return an error naming this feature; the
+# plan's tokenizer section is still a type every build has.
+tokenize = ["dep:tokenizers"]
+
 # Running a model's process: `host::serve` holds a model's memory and answers requests on
 # a Unix socket, and `host::start`, `attach` and `Hosted` start, map and stop it from
 # another program. It maps memory and passes file descriptors between processes, which
-# takes libc. It reads this machine to plan for it, so it turns on `machine`. Unix only.
+# takes libc. It reads this machine to plan for it, and checks each model's tokenizer
+# for its plan, so it turns on `machine` and `tokenize`. Unix only.
 # Off, every call returns an error naming this feature.
-host = ["machine", "dep:libc"]
+host = ["machine", "tokenize", "dep:libc"]
 
 [dependencies]
 serde_json = { version = "1", features = ["std"] }
@@ -86,6 +93,12 @@ sha2 = "0.10"
 # compiler's build does not pull in tokio. 1.x is async-first and its blocking
 # feature wraps a tokio runtime.
 hf-hub = { version = "0.4.3", default-features = false, features = ["ureq"], optional = true }
+
+# Hugging Face's tokenizer, which runs a tokenizer.json. Its default features compile C
+# and C++: the Oniguruma regex library and a suffix array used only for training. With
+# them off, `fancy-regex` is its pure-Rust regex backend. The same pin and features as
+# dovata-chat-template, so a build with both has one copy.
+tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"], optional = true }
 
 # mmap, shared memory, mincore, and passing file descriptors over a Unix socket, for
 # the `host` capability. Already in the build through other crates.
@@ -103,8 +116,9 @@ objc2-metal = { version = "0.3.2", default-features = false, features = ["std", 
 # capabilities as plain modules of this crate, and the directories under it that are
 # separate crates are members below, each for a reason stated where it sits.
 members = [
-    # `dovata-chat-template`: the optional tokenizer and chat-template package for
-    # Jade users. Its own crate so dovata never depends on a tokenizer; see its README.
+    # `dovata-chat-template`: the optional chat-template package for Jade users. Its
+    # own crate because templates are the programmer's to choose; dovata's plan carries
+    # the tokenizer, and this package uses dovata's vocabulary check. See its README.
     "src/chat_template",
     # `refback`: the test-only reference backend. It sets up a plan's memory for real
     # and checks every tensor against the model file, so it needs unsafe code and

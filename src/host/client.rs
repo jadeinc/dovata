@@ -179,7 +179,17 @@ pub(crate) fn add(
     status(p)?;
     let source = ModelSource::parse(model).map_err(|e| HostError::Model(e.to_string()))?;
     let fetched = hf_hub::fetch(&source, opts.want, &opts.fetch).map_err(|e| HostError::Model(e.to_string()))?;
-    add_parts(p, &fetched.parts, opts)
+    // A model from the Hub finds its tokenizer through its repo too, which a later step
+    // given only the files cannot.
+    let tokenizer = match &opts.tokenizer {
+        Some(t) => t.clone(),
+        None => {
+            let gguf = crate::load::Model::from_parts(&fetched.parts).map_err(|e| HostError::Model(e.to_string()))?;
+            let origin = source.origin(fetched.revision.as_deref());
+            crate::tokenize::find(&fetched.parts[0], gguf.meta(), origin.as_ref(), &opts.fetch).map_err(|e| HostError::Model(e.to_string()))?
+        }
+    };
+    add_parts(p, &fetched.parts, &AddOptions { tokenizer: Some(tokenizer), ..opts.clone() })
 }
 
 /// Purpose: This function adds a model already on disk to the process, and waits until
@@ -247,6 +257,33 @@ pub(crate) fn plan(
         (Reply::Plan(v), _) => Ok(v),
         (other, _) => Err(unexpected("plan", &other)),
     }
+}
+
+/// Purpose: This function builds one model's tokenizer from its plan in the process.
+///
+/// Inputs:
+/// - `p`: the process.
+/// - `name`: the model's name.
+/// - `table_hash`: the table hash of the plan this program was compiled against.
+///
+/// Outputs: the tokenizer, or a [`HostError`].
+#[cfg(feature = "tokenize")]
+pub(crate) fn tokenizer(
+    p: &Process,
+    name: &str,
+    table_hash: &str,
+) -> Result<crate::tokenize::Tokenizer, HostError>
+{
+    let plan = plan(p, name)?;
+    let held = plan["table_hash"].as_str().unwrap_or_default();
+    if held != table_hash {
+        return Err(HostError::Refused(format!(
+            "dovata holds {name} with a plan whose table hash is {held}, and the program comes from a plan with table hash {table_hash}"
+        )));
+    }
+    let t: crate::tokenize::TokenizerPlan = serde_json::from_value(plan["tokenizer"].clone())
+        .map_err(|e| HostError::Protocol(format!("{name}'s plan has no tokenizer dovata can read: {e}")))?;
+    crate::tokenize::Tokenizer::from_plan(&t).map_err(|e| HostError::Model(e.to_string()))
 }
 
 /// Purpose: This function maps one model's memory into this program.

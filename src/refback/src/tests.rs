@@ -51,7 +51,7 @@ fn planned(
     let f = Fixture::llama().unwrap();
     let model = Model::open(&f.path).unwrap();
     let layout = layout::for_model(&model, None).unwrap();
-    let plan = dovata::memplan::plan(&model, &layout, &opts(), &target).unwrap();
+    let plan = dovata::memplan::plan(&model, &layout, &opts(), &target, None).unwrap();
     let parts = model.paths.clone();
     (f, parts, plan)
 }

@@ -110,7 +110,7 @@ fn run(
         (false, t) => t,
     };
     let opts = BindOptions { n_ctx: 4096, n_tokens: 512, n_outputs: 1, kv_k: KvType::F16, kv_v: KvType::F16 };
-    let plan = dovata::memplan::plan(&model, &layout, &opts, &target).map_err(|e| e.to_string())?;
+    let plan = dovata::memplan::plan(&model, &layout, &opts, &target, None).map_err(|e| e.to_string())?;
     println!(
         "refback: {} ({}), {} regions and {} entries planned for {:?}, table hash {}",
         path.display(),
