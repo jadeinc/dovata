@@ -155,6 +155,21 @@ order their files come out for one real model.
 `Fetched::revision` is the commit sha, even when the source named a branch, so a build
 can record exactly what it used.
 
+## Other files of a repo
+
+`fetch_file` gets one named file of a repo, such as `tokenizer.json`, for
+[`src/tokenize/`](../tokenize/README.md). It looks in the Hugging Face cache first, by
+the commit when the revision is one and through `refs/` when it is a branch, so a file
+fetched once is found offline; otherwise it lists the repo and downloads the file into
+the cache. A repo without the file gives `None`, not an error. `ModelSource::origin`
+gives the repo and commit a fetched model came from, so its other files can be fetched
+from the same commit.
+
+`card_base_model` reads the `base_model` a model card's YAML front matter names, as a
+string or as the first entry of a list, and `repo_from_url` reads the repo id out of a
+`huggingface.co` link such as the one a GGUF header keeps in
+`general.base_model.0.repo_url`. Both are pure, and tested without a network.
+
 ## Settings from the environment
 
 The settings follow the Python `huggingface_hub`, so one setup serves both.
@@ -216,7 +231,8 @@ cargo test -p dovata --lib -- --ignored fetches_a_small_public_gguf
 
 ## Who uses it
 
-Nothing inside dovata's library calls `fetch`. Its callers are the Jade compiler and
-the `dovata plan` command, which calls `offered` first and stops to ask for `--quant`
+Inside dovata's library, `host`'s `Process::add` calls `fetch`, and `tokenize::find`
+calls `fetch_file`. The other callers are the Jade compiler and the `dovata plan` and
+`dovata add` commands; `dovata plan` which calls `offered` first and stops to ask for `--quant`
 when a repo offers several models. They hand the parts to `load::Model::from_parts`,
 and they call `quantize::quantize` themselves when the type they want is not offered.

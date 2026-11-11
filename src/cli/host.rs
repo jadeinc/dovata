@@ -40,7 +40,8 @@ options:
   --json        print the model's status as JSON once it is loaded
 
 The model and step options of `dovata plan` apply too: --quant, --allow-requantize,
---layout, --ctx, --tokens, --outputs, --kv, --kv-k and --kv-v. See `dovata plan --help`.
+--layout, --tokenizer, --ctx, --tokens, --outputs, --kv, --kv-k and --kv-v. See
+`dovata plan --help`.
 ";
 
 /// The help text for `dovata remove`.
@@ -150,8 +151,11 @@ pub(crate) fn add(
     let o = parse_add(args).map_err(|msg| Fail::Usage(format!("{msg}\n\nRun `dovata add --help` for the options.")))?;
     // Found first, so a stopped process is reported before anything is downloaded.
     let p = host::connect().map_err(fail)?;
-    let parts = plan::model_files(&o.plan)?;
-    let opts = AddOptions { name: o.name.clone(), layout: o.plan.layout.clone(), step: o.plan.step, cpu: o.cpu, ..AddOptions::default() };
+    let got = plan::model_files(&o.plan)?;
+    let parts = got.parts.clone();
+    let gguf = dovata::load::Model::from_parts(&parts).map_err(|e| Fail::Run(format!("{}: {e}", parts[0].display())))?;
+    let tokenizer = plan::tokenizer_file(&o.plan, &got, &gguf)?;
+    let opts = AddOptions { name: o.name.clone(), layout: o.plan.layout.clone(), tokenizer: Some(tokenizer), step: o.plan.step, cpu: o.cpu, ..AddOptions::default() };
     let spec = host::spec(&parts, &opts).map_err(fail)?;
     eprintln!("dovata: adding {} as {}", parts[0].display(), spec.name);
     let m = p.add_parts(&parts, &AddOptions { name: Some(spec.name), ..opts }).map_err(fail)?;
@@ -461,6 +465,10 @@ pub(crate) fn model_text(
         t += &format!("    {:<3} {:<8} {:>10}  {:>10} resident  {}\n", r.id, kind(r.kind), size(r.bytes), size(r.resident_bytes), holds_text(&r.holds));
     }
     t += &format!("  memory     {} resident of {}, the file once and every allocation\n", size(m.resident_bytes()), size(m.bytes()));
+    if let Some(k) = &m.tokenizer {
+        let ids: Vec<String> = k.stop.iter().map(u32::to_string).collect();
+        t += &format!("  tokenizer  {}, {} tokens, stops on {}\n", k.kind, k.tokens, ids.join(", "));
+    }
     if m.clients.is_empty() {
         t += "  mapped by  no program yet\n";
     }
@@ -553,7 +561,7 @@ fn duration(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dovata::host::{Client, FileUse, ModelInfo, RegionUse};
+    use dovata::host::{Client, FileUse, ModelInfo, RegionUse, TokenizerUse};
     use dovata::target::Target;
     use std::path::PathBuf;
 
@@ -594,6 +602,7 @@ mod tests {
                 RegionUse { id: 2, kind: RegionKind::Unified, holds: vec![Holds::Step], bytes: 300 << 20, resident_bytes: 300 << 20 },
             ],
             clients: vec![Client { pid: 5120, mapped_unix: 1100, alive: true }, Client { pid: 5121, mapped_unix: 1200, alive: false }],
+            tokenizer: Some(TokenizerUse { kind: "gpt2".into(), tokens: 151669, stop: vec![151645, 151643], sha256: "ab".into() }),
         }
     }
 
@@ -631,6 +640,7 @@ mod tests {
         assert!(t.contains("1   unified   576.0 MiB   576.0 MiB resident  KV cache"), "{t}");
         assert!(t.contains("memory     4.9 GiB resident of 5.9 GiB"), "{t}");
         assert!(t.contains("mapped by  pid 5120, running") && t.contains("pid 5121, exited"), "{t}");
+        assert!(t.contains("tokenizer  gpt2, 151669 tokens, stops on 151645, 151643"), "{t}");
         let loading = ModelStatus { state: State::Loading { loaded_bytes: 1 << 30, total_bytes: 6 << 30 }, clients: vec![], ..m };
         assert!(model_text(&loading, 1000).contains("state      loading, 1.0 GiB of 6.0 GiB"));
         assert!(model_text(&loading, 1000).contains("mapped by  no program yet"));

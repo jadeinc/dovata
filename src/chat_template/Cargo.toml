@@ -20,9 +20,10 @@ hf-hub = ["dep:hf-hub", "dep:ureq"]
 preserve_order = ["serde_json/preserve_order"]
 
 [dependencies]
-# The GGUF reader, for the chat template and the vocabulary. No default features, so
-# dovata compiles no llama.cpp and pulls in no network code on our account.
-dovata = { path = "../..", default-features = false }
+# The GGUF reader, for the chat template and the vocabulary, and dovata's tokenize
+# capability, whose vocabulary check this package uses rather than keeping a copy. No
+# other features, so dovata pulls in no network code on our account.
+dovata = { path = "../..", default-features = false, features = ["tokenize"] }
 
 # Hugging Face's tokenizer, reading tokenizer.json. Its default features are C and C++:
 # `onig` is the Oniguruma regex library and `esaxx_fast` is a C++ suffix array used only

@@ -24,7 +24,7 @@ use crate::target::{RegionKind, Target};
 use super::memory::{self, Map};
 use super::{
     check_name, fits, holds, run_dir, socket_path, wire, Ask, Client, FileUse, HostError, MapReply, ModelInfo, ModelStatus, Ready, RegionMap,
-    RegionUse, Reply, Request, Spec, State, Status, PROTOCOL,
+    RegionUse, Reply, Request, Spec, State, Status, TokenizerUse, PROTOCOL,
 };
 
 /// Purpose: This struct holds one part file of a model: open, and mapped whole.
@@ -290,6 +290,9 @@ fn plan(
         None => None,
     };
     let layout = layout::for_model(&model, caller).map_err(|e| bad(&e))?;
+    let tok = |e: &dyn std::fmt::Display| HostError::Model(format!("{}: {e}", spec.tokenizer.display()));
+    let definition = std::fs::read_to_string(&spec.tokenizer).map_err(|e| tok(&e))?;
+    let tokenizer = crate::tokenize::describe(&model, definition).map_err(|e| tok(&e))?;
     let machine = crate::machine::current().map_err(|e| HostError::Model(format!("cannot read this machine: {e}")))?;
     let target = machine.target(spec.cpu);
     if let Target::Cuda { .. } = target {
@@ -297,7 +300,7 @@ fn plan(
             "this machine's plan is for CUDA, and dovata holds Apple and CPU plans only so far; add the model with --cpu to hold it in host memory".into(),
         ));
     }
-    let plan = crate::memplan::plan(&model, &layout, &spec.step, &target).map_err(|e| bad(&e))?;
+    let plan = crate::memplan::plan(&model, &layout, &spec.step, &target, Some(&tokenizer)).map_err(|e| bad(&e))?;
     let meta = model.meta();
     let info = ModelInfo {
         name: meta.name().map(str::to_owned),
@@ -502,6 +505,7 @@ fn model_status(
         files,
         regions,
         clients,
+        tokenizer: m.plan.tokenizer.as_ref().map(|t| TokenizerUse { kind: t.kind.clone(), tokens: t.tokens, stop: t.stop.clone(), sha256: t.sha256.clone() }),
     }
 }
 

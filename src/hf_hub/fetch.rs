@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use ::hf_hub::api::sync::{ApiBuilder, ApiError};
 use ::hf_hub::{Cache, Repo, RepoType};
 
-use super::{fetched, is_repo_id, levels, select, select_file, FetchError, FetchOptions, Fetched, Level, Want};
+use super::{fetched, is_repo_id, levels, select, select_file, FetchError, FetchOptions, Fetched, Level, Origin, Want};
 use crate::load::Model;
 
 /// Purpose: This struct holds a Hub client for one repo, its cache directory, and the
@@ -138,6 +138,44 @@ pub(super) fn from_hub(
         }
     }
     Ok(fetched(&model, Some(repo.to_owned()), Some(sha)))
+}
+
+/// Purpose: This function gets one named file of a Hub repo, from the cache when it is
+/// there and from the Hub otherwise.
+///
+/// Inputs:
+/// - `origin`: the repo and revision.
+/// - `file`: the file's path in the repo.
+/// - `opts`: the cache directory and the access token.
+///
+/// Outputs: the file's path, `None` when the repo has no such file, or an error.
+pub(super) fn file(
+    origin: &Origin,
+    file: &str,
+    opts: &FetchOptions,
+) -> Result<Option<PathBuf>, FetchError>
+{
+    // The cache first, so a file downloaded before needs no network. A revision that is
+    // a commit names its snapshot directly; a branch is looked up in `refs/`.
+    let home: Option<PathBuf> = std::env::var_os("HOME").map(PathBuf::from);
+    if let Some(cache) = cache_dir(opts, env, home.as_deref()) {
+        let folder = cache.join(Repo::model(origin.repo.clone()).folder_name());
+        let rev = origin.revision.as_deref().unwrap_or("main");
+        let is_commit = rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit());
+        let sha = if is_commit { Some(rev.to_owned()) } else { std::fs::read_to_string(folder.join("refs").join(rev)).ok().map(|s| s.trim().to_owned()) };
+        if let Some(sha) = sha {
+            let cached = folder.join("snapshots").join(sha).join(file);
+            if cached.exists() {
+                return Ok(Some(cached));
+            }
+        }
+    }
+    let Listing { api, sha, names, .. } = list(&origin.endpoint, &origin.repo, origin.revision.as_deref(), opts)?;
+    if !names.iter().any(|n| n == file) {
+        return Ok(None);
+    }
+    let pinned = api.repo(Repo::with_revision(origin.repo.clone(), RepoType::Model, sha));
+    pinned.get(file).map(Some).map_err(|e| hub_error(&origin.repo, &format!("cannot download {file}"), &e))
 }
 
 /// Purpose: This function reads an environment variable, treating an empty one as unset.

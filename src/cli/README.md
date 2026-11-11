@@ -53,7 +53,7 @@ what a program compiled against that plan asks for when it maps the model.
 
 The model's name comes from the model unless `--name` gives one, and the process holds
 each name once. `--cpu` plans for the CPU even on a machine with a GPU. The model and
-step options are `dovata plan`'s, below; the machine options are not, since the process
+step options are `dovata plan`'s, below, `--tokenizer` included; the machine options are not, since the process
 holds models on this machine. A model that does not fit beside the ones already held is
 refused, and `dovata remove` makes room. `dovata add` with no process running stops
 before downloading anything and says to run `dovata start`.
@@ -145,7 +145,7 @@ the CPU target even when there is a GPU.
 ## `dovata plan`
 
 ```text
-dovata plan <model> [--quant TYPE] [--allow-requantize] [--layout FILE]
+dovata plan <model> [--quant TYPE] [--allow-requantize] [--layout FILE] [--tokenizer FILE]
                     [--target apple|cpu|cuda] [--memory SIZE] [--max-buffer SIZE] [--page SIZE]
                     [--ctx N] [--tokens N] [--outputs N] [--kv TYPE] [--kv-k TYPE] [--kv-v TYPE]
                     [--json]
@@ -157,22 +157,30 @@ machine is this one, as `dovata machine target` shows it, unless `--target` and
 tokens in f16, 512 tokens per step, and logits for one of them.
 
 ```text
-$ dovata plan Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
-Qwen3-Coder-30B-A3B-Instruct, qwen3moe, Q4_K_M
+$ dovata plan https://huggingface.co/unsloth/Qwen3-0.6B-GGUF --quant Q4_K_M
+dovata: the tokenizer is .../models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca/tokenizer.json
+Qwen3-0.6B, qwen3, Q4_K_M
   machine    apple target, 17.8 GiB, buffers up to 13.3 GiB
   step       512 tokens, 1 with logits, a KV cache of 4096 tokens in f16 for K and f16 for V
-  graph      3030 ops over 48 layers, 3711 tensors
+  graph      986 ops over 28 layers, 1358 tensors
+  tokenizer  gpt2, 151669 tokens, stops on 151645
   regions
-    0   mmap       13.3 GiB  weights, part 1 from byte 0
-    1   mmap        4.0 GiB  weights, part 1 from byte 14284275712
-    2   unified   384.0 MiB  KV cache
-    3   unified    72.0 MiB  step inputs, scratch and outputs
-  total      17.3 GiB mapped from the model file, 456.0 MiB allocated
-  table hash e9f5585e748e20f13fb48c4000287fb96556a372133e02b9e0d6708c552294b6
+    0   mmap      378.3 MiB  weights, part 1 from byte 0
+    1   unified   448.0 MiB  KV cache
+    2   unified    24.0 MiB  step inputs, scratch and outputs
+  total      378.3 MiB mapped from the model file, 472.0 MiB allocated
+  table hash 11c1988030d33c42e844c0716741123bdaea1fe0a52194af017535422dde973e
 Add --json for every tensor's region and offset.
 ```
 
-`--json` prints the whole plan, the form the Jade compiler reads.
+The plan carries the model's tokenizer, so dovata finds its `tokenizer.json`: beside the
+model file, then in its Hub repo, then in the repo of the base model the GGUF header
+names, which is where Qwen3's came from above. A tokenizer whose vocabulary differs from
+the GGUF's is refused. `--tokenizer FILE` names one instead. How it is found and checked
+is in [`src/tokenize/`](../tokenize/README.md).
+
+`--json` prints the whole plan, the form the Jade compiler reads, with the tokenizer's
+`tokenizer.json` in it as text.
 
 ### Choosing a quantization
 
@@ -214,8 +222,8 @@ read, exits with 1.
   when the output is closed, and the size formatting and parsing.
 - `machine.rs` is `dovata machine`: argument parsing, the four commands, and their text.
 - `plan.rs` is `dovata plan`: argument parsing, getting and quantizing the model,
-  building the target, and the plan's summary. `dovata add` reuses its parsing and its
-  model download.
+  finding its tokenizer, building the target, and the plan's summary. `dovata add`
+  reuses its parsing, its model download and its tokenizer search.
 - `host.rs` is `dovata start`, `add`, `remove`, `status`, `kill` and `host`: their
   parsing, the status text, and the lines `machine usage` and `watch` show for the
   process.

@@ -8,10 +8,12 @@ program that does gives it the token ids the model produced, and gets text back.
 
 ## Why it is separate, and why it is optional
 
-dovata plans where a model's tensors live in memory. It runs at build time and never runs
-the model, so it has no use for a tokenizer, and it does not depend on one. Keeping this
-package out of dovata keeps it that way: the Jade compiler can plan a model without
-building a tokenizer, a template engine, or anything else here.
+dovata itself now tokenizes: since 2026-11-04 a model's plan carries its tokenizer, and
+dovata's [`src/tokenize/`](../tokenize/README.md) runs it, so the Jade compiler never
+reads a tokenizer itself. What stays here is the chat template, which is the
+programmer's to choose: it builds the prompt string from messages, and dovata's
+tokenizer turns that string into ids. This package also tokenizes, for a program that
+uses it on its own, and its vocabulary check is dovata's.
 
 A program that runs the model still has to build prompts, and that is where mistakes are
 quiet. A prompt with the wrong turn markers still runs; the model only answers worse.
@@ -135,7 +137,9 @@ them off.
 
 ### The vocabulary check
 
-Because the template and the tokenizer come from two files, every constructor that has
+The check is dovata's `tokenize::check_vocab`, which dovata also runs when a plan takes a
+tokenizer; this package calls it. Because the template and the tokenizer come from two
+files, every constructor that has
 both checks that they describe the same vocabulary, and refuses a pair that does not. A
 `tokenizer.json` from a sibling model gives plausible token ids that are wrong, with no
 error anywhere.

@@ -65,6 +65,8 @@ pub struct Spec {
     pub parts: Vec<PathBuf>,
     /// A layout file to use instead of dovata's built-in one.
     pub layout: Option<PathBuf>,
+    /// The model's `tokenizer.json`, which the plan carries.
+    pub tokenizer: PathBuf,
     /// The step to plan for.
     pub step: BindOptions,
     /// Plan for the CPU even when the machine has a GPU.
@@ -92,6 +94,10 @@ pub struct AddOptions {
     pub fetch: FetchOptions,
     /// A layout file to use instead of dovata's built-in one.
     pub layout: Option<PathBuf>,
+    /// The model's `tokenizer.json`. `None` finds it the way
+    /// [`crate::tokenize::find`] does: beside the model file, in its Hub repo, or in its
+    /// base model's repo.
+    pub tokenizer: Option<PathBuf>,
     /// The step to plan for. The default is `dovata plan`'s: a KV cache of 4096 tokens
     /// in f16, 512 tokens per step, and logits for one of them.
     pub step: BindOptions,
@@ -113,6 +119,7 @@ impl Default for AddOptions {
             want: Want::Unquantized,
             fetch: FetchOptions::default(),
             layout: None,
+            tokenizer: None,
             step: BindOptions { n_ctx: 4096, n_tokens: 512, n_outputs: 1, kv_k: KvType::F16, kv_v: KvType::F16 },
             cpu: false,
         }
@@ -182,6 +189,21 @@ pub struct ModelStatus {
     pub regions: Vec<RegionUse>,
     /// Every program that has mapped the model's memory, in the order they mapped it.
     pub clients: Vec<Client>,
+    /// The tokenizer the model's plan carries.
+    pub tokenizer: Option<TokenizerUse>,
+}
+
+/// Purpose: This struct holds a short description of a model's tokenizer, for status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenizerUse {
+    /// The GGUF's tokenizer kind, such as `gpt2`.
+    pub kind: String,
+    /// The tokens it defines.
+    pub tokens: u32,
+    /// The ids that end the model's turn.
+    pub stop: Vec<u32>,
+    /// The SHA-256 of its `tokenizer.json`.
+    pub sha256: String,
 }
 
 /// Purpose: This enum lists the states a model in the dovata process can be in.
@@ -737,6 +759,25 @@ impl Process {
         client::map(self, name, table_hash)
     }
 
+    /// Purpose: This function gives one model's tokenizer, built from the tokenizer its
+    /// plan carries, to run in this program.
+    ///
+    /// Inputs:
+    /// - `name`: the model's name in the process.
+    /// - `table_hash`: the table hash of the plan this program was compiled against. The
+    ///   process refuses a different one, since the tokenizer could then be another.
+    ///
+    /// Outputs: the [`crate::tokenize::Tokenizer`], or a [`HostError`].
+    #[cfg(all(feature = "host", feature = "tokenize", unix))]
+    pub fn tokenizer(
+        &self,
+        name: &str,
+        table_hash: &str,
+    ) -> Result<crate::tokenize::Tokenizer, HostError>
+    {
+        client::tokenizer(self, name, table_hash)
+    }
+
     /// Purpose: This function stops the process, with every model in it, and waits until
     /// it has exited.
     ///
@@ -798,10 +839,11 @@ pub fn serve(
 ///
 /// Inputs:
 /// - `parts`: every part file of the model, part 1 first.
-/// - `opts`: the add options; their name, layout, step and CPU choice are used.
+/// - `opts`: the add options; their name, layout, tokenizer, step and CPU choice are
+///   used, and their fetch options when the tokenizer has to be found on the Hub.
 ///
-/// Outputs: the [`Spec`], with absolute paths and a name, or a [`HostError`] when a file
-/// cannot be found or the name is not allowed.
+/// Outputs: the [`Spec`], with absolute paths, a name and a tokenizer, or a
+/// [`HostError`] when a file cannot be found or the name is not allowed.
 pub fn spec(
     parts: &[PathBuf],
     opts: &AddOptions,
@@ -814,16 +856,15 @@ pub fn spec(
     };
     let parts = parts.iter().map(absolute).collect::<Result<Vec<_>, _>>()?;
     let first = parts.first().ok_or_else(|| HostError::Model("the model has no files".into()))?;
-    let name = match &opts.name {
-        Some(n) => n.clone(),
-        None => {
-            let model = Model::from_parts(&parts).map_err(|e| HostError::Model(format!("{}: {e}", first.display())))?;
-            name_for(model.meta().name(), first)
-        }
-    };
+    let model = Model::from_parts(&parts).map_err(|e| HostError::Model(format!("{}: {e}", first.display())))?;
+    let name = opts.name.clone().unwrap_or_else(|| name_for(model.meta().name(), first));
     check_name(&name)?;
     let layout = opts.layout.as_ref().map(absolute).transpose()?;
-    Ok(Spec { name, parts, layout, step: opts.step, cpu: opts.cpu })
+    let tokenizer = match &opts.tokenizer {
+        Some(t) => absolute(t)?,
+        None => crate::tokenize::find(first, model.meta(), None, &opts.fetch).map_err(|e| HostError::Model(e.to_string()))?,
+    };
+    Ok(Spec { name, parts, layout, tokenizer, step: opts.step, cpu: opts.cpu })
 }
 
 /// Purpose: This function gives the memory a target lets the plans on it use.
@@ -1028,6 +1069,7 @@ pub fn holds(
 
 /// Purpose: This struct holds one request to a dovata process, with the protocol
 /// version it was written for.
+#[cfg_attr(not(all(feature = "host", unix)), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Ask {
     /// [`PROTOCOL`] in the program that asks.
@@ -1038,6 +1080,7 @@ pub(crate) struct Ask {
 }
 
 /// Purpose: This enum lists the requests the dovata process answers.
+#[cfg_attr(not(all(feature = "host", unix)), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub(crate) enum Request {
@@ -1070,6 +1113,7 @@ pub(crate) enum Request {
 }
 
 /// Purpose: This enum lists the answers the dovata process gives.
+#[cfg_attr(not(all(feature = "host", unix)), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Reply {
@@ -1092,6 +1136,7 @@ pub(crate) enum Reply {
 
 /// Purpose: This struct holds how to map each region from the file descriptors sent
 /// with it.
+#[cfg_attr(not(all(feature = "host", unix)), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MapReply {
     /// The plan's table hash.
@@ -1103,6 +1148,7 @@ pub(crate) struct MapReply {
 }
 
 /// Purpose: This struct holds how to map one region.
+#[cfg_attr(not(all(feature = "host", unix)), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RegionMap {
     /// The region's id.
@@ -1195,7 +1241,7 @@ mod pure_tests {
         assert_eq!(serde_json::from_str::<Ask>(&text).unwrap(), ask);
         let stop = serde_json::to_string(&Ask { protocol: PROTOCOL, request: Request::Stop }).unwrap();
         assert_eq!(stop, r#"{"protocol":2,"op":"stop"}"#);
-        let spec = Spec { name: "m".into(), parts: vec![PathBuf::from("/m.gguf")], layout: None, step: AddOptions::default().step, cpu: false };
+        let spec = Spec { name: "m".into(), parts: vec![PathBuf::from("/m.gguf")], layout: None, tokenizer: PathBuf::from("/tokenizer.json"), step: AddOptions::default().step, cpu: false };
         let add = Ask { protocol: PROTOCOL, request: Request::Add { spec } };
         assert_eq!(serde_json::from_str::<Ask>(&serde_json::to_string(&add).unwrap()).unwrap(), add);
 
@@ -1213,6 +1259,7 @@ mod pure_tests {
                 RegionUse { id: 2, kind: RegionKind::Host, holds: vec![Holds::KvCache], bytes: 10, resident_bytes: 8 },
             ],
             clients: vec![Client { pid: 9, mapped_unix: 4, alive: true }],
+            tokenizer: Some(TokenizerUse { kind: "gpt2".into(), tokens: 32, stop: vec![2], sha256: "cd".into() }),
         };
         // The two windows overlap in the file, so the file counts once.
         assert_eq!((model.bytes(), model.resident_bytes()), (110, 98));
@@ -1239,6 +1286,7 @@ mod pure_tests {
             name: "m".into(),
             parts: vec![PathBuf::from("/m.gguf")],
             layout: None,
+            tokenizer: PathBuf::from("/m/tokenizer.json"),
             step: BindOptions { n_ctx: 8192, n_tokens: 64, n_outputs: 1, kv_k: KvType::Q8_0, kv_v: KvType::BF16 },
             cpu: true,
         };

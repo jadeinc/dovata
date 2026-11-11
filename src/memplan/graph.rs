@@ -11,6 +11,7 @@ use super::address::{place, Plan, PlanError, PlanTensor, Role};
 use crate::layout::{BindOptions, BoundGraph, Layout, Param, TensorKind};
 use crate::load::Model;
 use crate::target::Target;
+use crate::tokenize::TokenizerPlan;
 
 /// Purpose: This struct holds the forward step a plan's tensors belong to: its ops in
 /// run order, by tensor name, so the Jade compiler can generate one kernel per op.
@@ -51,18 +52,21 @@ pub struct StepOp {
 /// - `layout`: the model's layout, from [`crate::layout::for_model`].
 /// - `opts`: the step's sizes and KV cache types.
 /// - `target`: the machine to plan for.
+/// - `tokenizer`: the model's tokenizer, from [`crate::tokenize::describe`], which the
+///   plan carries and its table hash covers. `None` plans without one.
 ///
-/// Outputs: the [`Plan`] with its step, or a [`PlanError`] saying why the model cannot be
-/// bound or placed.
+/// Outputs: the [`Plan`] with its step and tokenizer, or a [`PlanError`] saying why the
+/// model cannot be bound or placed.
 pub fn plan(
     model: &Model,
     layout: &Layout,
     opts: &BindOptions,
     target: &Target,
+    tokenizer: Option<&TokenizerPlan>,
 ) -> Result<Plan, PlanError>
 {
     let graph = layout.bind(model, opts).map_err(PlanError::Layout)?;
-    plan_graph(model, &graph, target)
+    plan_graph(model, &graph, target, tokenizer)
 }
 
 /// Purpose: This function plans an already bound layout on one target.
@@ -71,12 +75,14 @@ pub fn plan(
 /// - `model`: the model the graph was bound to.
 /// - `graph`: the bound forward step.
 /// - `target`: the machine to plan for.
+/// - `tokenizer`: the model's tokenizer, or `None`.
 ///
-/// Outputs: the [`Plan`] with its step, or a [`PlanError`].
+/// Outputs: the [`Plan`] with its step and tokenizer, or a [`PlanError`].
 pub fn plan_graph(
     model: &Model,
     graph: &BoundGraph,
     target: &Target,
+    tokenizer: Option<&TokenizerPlan>,
 ) -> Result<Plan, PlanError>
 {
     check_weights(model, graph)?;
@@ -100,6 +106,7 @@ pub fn plan_graph(
             })
             .collect(),
     });
+    plan.tokenizer = tokenizer.cloned();
     plan.seal(model)?;
     Ok(plan)
 }
@@ -232,7 +239,7 @@ mod tests {
         let model = qwen3moe(&SMALL, F16, false).model();
         let layout = builtin("qwen3moe").unwrap();
         let graph = layout.bind(&model, &opts(KvType::Q8_0)).unwrap();
-        let plan = plan_graph(&model, &graph, target).unwrap();
+        let plan = plan_graph(&model, &graph, target, None).unwrap();
         (model, graph, plan)
     }
 
@@ -311,7 +318,7 @@ mod tests {
     {
         let model = qwen3moe(&SMALL, F16, false).model();
         let layout = builtin("qwen3moe").unwrap();
-        let err = plan(&model, &layout, &BindOptions { n_tokens: 0, ..opts(KvType::F16) }, &Target::cpu(1 << 30)).unwrap_err();
+        let err = plan(&model, &layout, &BindOptions { n_tokens: 0, ..opts(KvType::F16) }, &Target::cpu(1 << 30), None).unwrap_err();
         assert!(matches!(err, PlanError::Layout(_)), "{err:?}");
     }
 
@@ -321,7 +328,7 @@ mod tests {
         let model = qwen3moe(&SMALL, F16, false).model();
         let tied = qwen3moe(&SMALL, F16, true).model();
         let graph = builtin("qwen3moe").unwrap().bind(&tied, &opts(KvType::F16)).unwrap();
-        assert!(matches!(plan_graph(&model, &graph, &Target::cpu(1 << 30)), Err(PlanError::Invariant(_))));
+        assert!(matches!(plan_graph(&model, &graph, &Target::cpu(1 << 30), None), Err(PlanError::Invariant(_))));
     }
 
     /// Plans a real model on all three targets when `DOVATA_TEST_HEADER` names a GGUF
@@ -337,7 +344,7 @@ mod tests {
         let layout = for_model(&model, None).unwrap_or_else(|e| panic!("{e}"));
         let o = BindOptions { n_ctx: 32768, n_tokens: 512, n_outputs: 1, kv_k: KvType::Q8_0, kv_v: KvType::Q8_0 };
         for target in [Target::apple(1 << 40, 1 << 34), Target::cpu(1 << 40), Target::cuda(1 << 40)] {
-            let p = plan(&model, &layout, &o, &target).unwrap_or_else(|e| panic!("{path} on {target:?}: {e}"));
+            let p = plan(&model, &layout, &o, &target, None).unwrap_or_else(|e| panic!("{path} on {target:?}: {e}"));
             eprintln!("{path} on {:?}: {} regions, {} entries, {:?}", target.site(), p.regions.len(), p.entries.len(), p.totals);
         }
     }
